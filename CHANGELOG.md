@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial project structure extracted from `Logis-converters`.
+- Initial project structure extracted from a legacy DBF migration toolkit.
 - `dbf_bridge.exporter` — streaming, atomic DBF → CSV/JSON/JSONL export with:
   - SHA-256 validation and round-trip verification
   - Migration reports (`migration_report.jsonl` + `.csv`)

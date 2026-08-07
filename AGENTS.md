@@ -15,9 +15,9 @@
 
 ## Historia powstania
 
-Projekt wywodzi się z `Logis-converters` (D:\PycharmProjects\Logis-converters) — zestawu skryptów do migracji danych systemu Logis (Visual FoxPro 9.0 SP2, pliki DBF/FPT/CDX z polskimi znakami) do nowoczesnych formatów, a docelowo do bazy Neo4j.
+Projekt wywodzi się z wewnętrznego zestawu skryptów do migracji danych z systemu opartego na Visual FoxPro 9.0 SP2 (pliki DBF/FPT/CDX z polskimi znakami) do nowoczesnych formatów, a docelowo do bazy Neo4j. Skrypty te zostały uogólnione i wydzielone do samodzielnego pakietu `dbfbridge`.
 
-### Co zostało zrobione w Logis-converters:
+### Co zostało zrobione w pierwotnym projekcie:
 
 1. **`exporter/`** — streamingowy, atomowy pakiet eksportu DBF → JSONL/CSV
    - `models.py` — dataclassy: `ExportConfig`, `FieldMetadata`, `TableMetadata`, `TableResult`, `StreamStats`
@@ -41,7 +41,7 @@ Projekt wywodzi się z `Logis-converters` (D:\PycharmProjects\Logis-converters) 
 
 4. **`synthetic_data/generate_sample_dbf.py`** — generator syntetycznych DBF (3 tabele: klienci, zamowienia, archiwum) z polskimi znakami w cp1250
 
-5. **Testy na danych rzeczywistych**: 93 pliki DBF z `K:\Logis` — wszystkie 93 OK po dodaniu fallback Mazovia (wcześniej 6 failed na `UnicodeDecodeError` z cp1250)
+5. **Testy na danych rzeczywistych**: 93 pliki DBF z `K:\dbf_source` — wszystkie 93 OK po dodaniu fallback Mazovia (wcześniej 6 failed na `UnicodeDecodeError` z cp1250)
 
 ### Kluczowe decyzje architektoniczne:
 
@@ -67,7 +67,7 @@ dbfbridge/
 │       ├── __init__.py          # wersja 0.1.0.dev0
 │       ├── cli.py               # dbf-bridge (eksport) — z 05_dbf_tree_to_csv.py
 │       ├── verifier.py          # dbf-bridge-verify — z 06_verify_conversion.py
-│       └── exporter/           # z Logis-converters/exporter/
+│       └── exporter/           # eksporter DBF
 │           ├── __init__.py
 │           ├── config.py        # make_config()
 │           ├── discovery.py     # discover_tables()
@@ -80,8 +80,8 @@ dbfbridge/
 │           └── writer.py        # export_table() streaming atomowy
 ├── examples/
 │   ├── README.md                # instrukcje uruchamiania przykładów
-│   ├── export_logis.py          # eksport K:\Logis -> K:\Logis_out (domyślne)
-│   └── verify_logis.py          # weryfikacja konwersji
+│   ├── export_dbf.py            # eksport K:\dbf_source -> K:\dbf_output (domyślne)
+│   └── verify_dbf.py            # weryfikacja konwersji
 ├── tests/
 │   └── fixtures/
 │       ├── generate_sample_dbf.py  # generator syntetycznych DBF (3 tabele)
@@ -169,16 +169,16 @@ python tests/fixtures/generate_sample_dbf.py
 # Eksport (domyślnie: tests/fixtures/input -> tests/fixtures/output, 3 formaty)
 dbf-bridge
 # lub z własnymi ścieżkami:
-dbf-bridge --source "K:\Logis" --output "K:\Logis_out"
+dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output"
 
 # Weryfikacja
 dbf-bridge-verify
 # lub:
-dbf-bridge-verify --source "K:\Logis" --output "K:\Logis_out"
+dbf-bridge-verify --source "K:\dbf_source" --output "K:\dbf_output"
 
-# Przykłady (z domyślnymi ścieżkami Logis)
-python examples/export_logis.py
-python examples/verify_logis.py
+# Przykłady (z domyślnymi ścieżkami)
+python examples/export_dbf.py
+python examples/verify_dbf.py
 
 # Testy
 pytest

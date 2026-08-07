@@ -27,10 +27,10 @@ pip install "dbfbridge[xlsx]"
 
 ```bash
 # Export all DBF files in a directory tree to CSV + JSON + JSONL
-dbf-bridge --source "K:\Logis" --output "K:\Logis_out"
+dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output"
 
 # Verify the conversion
-dbf-bridge-verify --source "K:\Logis" --output "K:\Logis_out"
+dbf-bridge-verify --source "K:\dbf_source" --output "K:\dbf_output"
 ```
 
 ### Python API
@@ -42,8 +42,8 @@ from dbf_bridge.exporter.writer import export_table
 from dbf_bridge.exporter.reporting import write_reports
 
 config = make_config(
-    source="K:/Logis",
-    output="K:/Logis_out",
+    source="K:/dbf_source",
+    output="K:/dbf_output",
     export_format="jsonl",
     memo="inline",
     overwrite=True,
@@ -65,8 +65,8 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source` | `tests/fixtures/synthetic_data/input` | Source directory with DBF files |
-| `--output` | `tests/fixtures/synthetic_data/output` | Output directory |
+| `--source` | `tests/fixtures/input` | Source directory with DBF files |
+| `--output` | `tests/fixtures/output` | Output directory |
 | `--formats` | `csv,json,jsonl` | Comma-separated list of formats |
 | `--memo` | per-format | `skip` (null), `inline` (full text), `null` |
 | `--encoding` | `auto` | DBF codepage or `auto` (detect from header) |

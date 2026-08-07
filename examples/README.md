@@ -6,29 +6,29 @@ Przykłady uruchamiania konwertera `dbfbridge` na rzeczywistych danych.
 
 | Plik | Opis |
 |------|------|
-| `export_logis.py` | Eksport DBF → CSV/JSON/JSONL (domyślnie `K:\Logis` → `K:\Logis_out`) |
-| `verify_logis.py` | Weryfikacja poprawności konwersji |
+| `export_dbf.py` | Eksport DBF → CSV/JSON/JSONL (domyślnie `K:\dbf_source` → `K:\dbf_output`) |
+| `verify_dbf.py` | Weryfikacja poprawności konwersji |
 
 ## Uruchamianie
 
 ### Z PyCharm
 
-Otwórz plik `export_logis.py` w PyCharm i kliknij „Run" — skrypt użyje domyślnych ścieżek:
-- source: `K:\Logis`
-- output: `K:\Logis_out`
+Otwórz plik `export_dbf.py` w PyCharm i kliknij „Run" — skrypt użyje domyślnych ścieżek:
+- source: `K:\dbf_source`
+- output: `K:\dbf_output`
 - formats: `csv,json,jsonl`
 
 ### Z linii poleceń
 
 ```powershell
-# Eksport (domyślne ścieżki Logis)
-python examples/export_logis.py
+# Eksport (domyślne ścieżki)
+python examples/export_dbf.py
 
 # Eksport z własnymi ścieżkami
-python examples/export_logis.py --source "D:\MojeDBF" --output "D:\Wynik" --formats jsonl
+python examples/export_dbf.py --source "D:\MojeDBF" --output "D:\Wynik" --formats jsonl
 
 # Weryfikacja
-python examples/verify_logis.py
+python examples/verify_dbf.py
 ```
 
 ## Uwaga o danych

@@ -1,13 +1,13 @@
 """
-examples/export_logis.py
-========================
+examples/export_dbf.py
+======================
 
 Przykład uruchomienia konwertera dbf_bridge na rzeczywistych danych
-systemu Logis (Visual FoxPro 9.0 SP2, pliki DBF/FPT/CDX z polskimi znakami).
+(Visual FoxPro 9.0 SP2, pliki DBF/FPT/CDX z polskimi znakami).
 
 Domyślne ścieżki (do edycji w razie potrzeby):
-    source = K:\\Logis       — katalog z plikami DBF systemu Logis
-    output = K:\\Logis_out   — katalog wyjściowy (CSV/JSON/JSONL)
+    source = K:\\dbf_source   — katalog z plikami DBF
+    output = K:\\dbf_output   — katalog wyjściowy (CSV/JSON/JSONL)
 
 Uruchamianie z PyCharm:
     Otwórz ten plik w PyCharm i kliknij „Run" — skrypt użyje domyślnych
@@ -16,8 +16,8 @@ Uruchamianie z PyCharm:
         --source "D:\\InneDane" --output "D:\\Wynik"
 
 Uruchamianie z linii poleceń:
-    python examples/export_logis.py
-    python examples/export_logis.py --source "K:\\Logis" --output "K:\\Logis_out" --formats jsonl
+    python examples/export_dbf.py
+    python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --formats jsonl
 
 Wymagania:
     pip install dbfbridge
@@ -47,13 +47,13 @@ if __name__ == "__main__":
     # Domyślne argumenty — używane gdy skrypt uruchomiony bez parametrów
     # (np. kliknięcie „Run" w PyCharm). Z linii poleceń można nadpisać.
     default_args = [
-        "--source", r"K:\Logis",
-        "--output", r"K:\Logis_out",
+        "--source", r"K:\dbf_source",
+        "--output", r"K:\dbf_output",
         "--formats", "csv,json,jsonl",
         "--overwrite",
     ]
 
     # Jeśli podano argumenty w linii poleceń, użyj ich; w przeciwnym razie
-    # użyj domyślnych ścieżek Logis.
+    # użyj domyślnych ścieżek.
     cli_args = sys.argv[1:] if len(sys.argv) > 1 else default_args
     sys.exit(main(cli_args))
