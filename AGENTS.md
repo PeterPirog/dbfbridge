@@ -61,15 +61,14 @@ dbfbridge/
 ├── CHANGELOG.md                 # historia zmian
 ├── AGENTS.md                    # TEN PLIK — kontekst dla nowej sesji
 ├── LICENSE                      # MIT
-├── .gitignore
+├── .gitignore                   # ignoruje *.dbf/*.fpt/*.cdx/*.csv/*.json/*.jsonl
 ├── src/
 │   └── dbf_bridge/
-│       ├── __init__.py          # wersja, public API
+│       ├── __init__.py          # wersja 0.1.0.dev0
 │       ├── cli.py               # dbf-bridge (eksport) — z 05_dbf_tree_to_csv.py
 │       ├── verifier.py          # dbf-bridge-verify — z 06_verify_conversion.py
 │       └── exporter/           # z Logis-converters/exporter/
 │           ├── __init__.py
-│           ├── cli.py           # (do usunięcia — dubluje dbf_bridge.cli)
 │           ├── config.py        # make_config()
 │           ├── discovery.py     # discover_tables()
 │           ├── models.py        # ExportConfig, FieldMetadata, TableMetadata, TableResult
@@ -79,26 +78,32 @@ dbfbridge/
 │           ├── serialization.py # serialize_record() z memo_policy
 │           ├── validation.py    # validate_output()
 │           └── writer.py        # export_table() streaming atomowy
+├── examples/
+│   ├── README.md                # instrukcje uruchamiania przykładów
+│   ├── export_logis.py          # eksport K:\Logis -> K:\Logis_out (domyślne)
+│   └── verify_logis.py          # weryfikacja konwersji
 ├── tests/
 │   └── fixtures/
-│       └── generate_sample_dbf.py  # generator syntetycznych DBF
-└── docs/                        # (do utworzenia)
+│       ├── generate_sample_dbf.py  # generator syntetycznych DBF (3 tabele)
+│       ├── input/                  # (generowane lokalnie, gitignored)
+│       └── output/                 # (generowane lokalnie, gitignored)
+└── docs/                        # (do utworzenia w przyszłości)
 ```
 
 ## Co trzeba zrobić (kolejne kroki)
 
-### Krok 1 — Oczyszczenie i dostosowanie importów (najpilniejsze)
-- [ ] Usunąć `src/dbf_bridge/exporter/cli.py` (dubluje `dbf_bridge.cli`)
-- [ ] Sprawdzić i poprawić importy w `exporter/` — wszystkie `from .` muszą działać w nowej strukturze
-- [ ] Usunąć `from exporter.` → `from dbf_bridge.exporter.` w `cli.py` i `verifier.py` (już zrobione)
-- [ ] Utworzyć `.venv` w `dbfbridge/` i zainstalować `pip install -e .[dev]`
-- [ ] Przetestować: `python -m dbf_bridge.cli --help` i `dbf-bridge --help`
+### Krok 1 — Oczyszczenie i dostosowanie importów (najpilniejsze) — UKOŃCZONE
+- [x] Usunąć `src/dbf_bridge/exporter/cli.py` (dubluje `dbf_bridge.cli`)
+- [x] Poprawić import w `polish_codecs.py` (`from exporter.` → `from dbf_bridge.exporter.`)
+- [x] Utworzyć `.venv` w `dbfbridge/` i zainstalować `pip install -e ".[dev]"`
+- [x] Przetestować: `python -m dbf_bridge.cli --help` i `dbf-bridge --help`
+- [x] Poprawić domyślne ścieżki w cli.py i verifier.py (`synthetic_data/` → `tests/fixtures/`)
+- [x] Przetestować pełny round-trip: generate_sample_dbf → cli → verifier — 3/3 OK
 
-### Krok 2 — Testy na danych syntetycznych
-- [ ] Uruchomić `tests/fixtures/generate_sample_dbf.py` (wymaga `pip install dbf`)
-- [ ] Uruchomić `dbf-bridge --source tests/fixtures/synthetic_data/input --output tests/fixtures/synthetic_data/output`
-- [ ] Uruchomić `dbf-bridge-verify` na wyniku
-- [ ] Naprawić ewentualne błędy importów
+### Krok 2 — Testy na danych syntetycznych — UKOŃCZONE
+- [x] Uruchomić `tests/fixtures/generate_sample_dbf.py` (wymaga `pip install dbf`)
+- [x] Uruchomić `dbf-bridge --source tests/fixtures/input --output tests/fixtures/output`
+- [x] Uruchomić `dbf-bridge-verify` na wyniku — 3/3 OK, 80 rekordów, 0 błędów
 
 ### Krok 3 — Implementacja round-trip X → DBF (nowa funkcjonalność)
 - [ ] Utworzyć `src/dbf_bridge/importer/` subpackage
@@ -155,19 +160,38 @@ cd D:\PycharmProjects\dbfbridge
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e ".[dev]"
+pip install dbf  # do generowania syntetycznych DBF
 
-# Generuj dane syntetyczne
+# Generuj dane syntetyczne (3 tabele: klienci, zamowienia, archiwum)
 python tests/fixtures/generate_sample_dbf.py
+# -> tests/fixtures/input/*.dbf + *.fpt
 
-# Eksport
-dbf-bridge --source tests/fixtures/synthetic_data/input --output tests/fixtures/synthetic_data/output
+# Eksport (domyślnie: tests/fixtures/input -> tests/fixtures/output, 3 formaty)
+dbf-bridge
+# lub z własnymi ścieżkami:
+dbf-bridge --source "K:\Logis" --output "K:\Logis_out"
 
 # Weryfikacja
-dbf-bridge-verify --source tests/fixtures/synthetic_data/input --output tests/fixtures/synthetic_data/output
+dbf-bridge-verify
+# lub:
+dbf-bridge-verify --source "K:\Logis" --output "K:\Logis_out"
+
+# Przykłady (z domyślnymi ścieżkami Logis)
+python examples/export_logis.py
+python examples/verify_logis.py
 
 # Testy
 pytest
 ```
+
+## Weryfikacja projektu (stan na ostatni commit)
+
+- `pip install -e ".[dev]"` — instalacja pakietu w trybie edytowalnym ✓
+- `python -m dbf_bridge.cli --help` — CLI działa ✓
+- `dbf-bridge` — eksport 3/3 tabel OK, 0 błędów ✓
+- `dbf-bridge-verify` — weryfikacja 3/3 OK, 80 rekordów round-trip ✓
+- `mazovia` codec — `bytes([0x81,0x83,0x88]).decode('mazovia')` = `ąęź` ✓
+- `.gitignore` — `*.dbf`, `*.fpt`, `*.cdx`, `*.csv`, `*.json`, `*.jsonl` ignorowane ✓
 
 ## Kontakt / issues
 

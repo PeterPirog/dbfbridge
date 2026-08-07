@@ -31,7 +31,7 @@ htmlcov/
 .tox/
 
 # Synthetic data output (regenerated locally)
-tests/fixtures/synthetic_data/output/
+tests/fixtures/output/
 
 # Data files — avoid leaking sensitive real-world data
 # Visual FoxPro / DBF source files
@@ -53,3 +53,5 @@ verification_report.*
 # Exception: keep test fixture scripts and .gitkeep files
 !tests/fixtures/**/generate_sample_dbf.py
 !**/.gitkeep
+# Exception: keep examples README
+!examples/README.md

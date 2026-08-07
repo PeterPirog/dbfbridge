@@ -35,8 +35,8 @@ from dbf_bridge.exporter.models import DiscoveredTable
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULTS = {
-    "source": PROJECT_DIR / "tests" / "fixtures" / "synthetic_data" / "input",
-    "output": PROJECT_DIR / "tests" / "fixtures" / "synthetic_data" / "output",
+    "source": PROJECT_DIR / "tests" / "fixtures" / "input",
+    "output": PROJECT_DIR / "tests" / "fixtures" / "output",
     "formats": "csv,json,jsonl",
     "verbose": True,
     "strict": True,
