@@ -1,0 +1,509 @@
+"""
+dbf_bridge.verifier
+====================
+
+Weryfikuje poprawność konwersji plików DBF (wraz z FPT/CDX) do formatów
+pośrednich CSV / JSON / JSONL. Skrypt sprawdza:
+  1. Kompletność plików (każdy DBF ma odpowiednik w każdym formacie).
+  2. Liczbę rekordów (CSV/JSON/JSONL vs DBF).
+  3. SHA-256 plików wyjściowych vs raport migracji.
+  4. Zgodność schema (nazwy pól, typy, długości).
+  5. Poprawność składniową (CSV, JSON, JSONL).
+  6. Obecność FPT/CDX.
+
+Punkt wejścia: dbf-bridge-verify
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from dbfread import DBF
+from dbfread.codepages import guess_encoding
+
+from dbf_bridge.exporter.discovery import discover_tables
+from dbf_bridge.exporter.models import DiscoveredTable
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+
+DEFAULTS = {
+    "source": PROJECT_DIR / "tests" / "fixtures" / "synthetic_data" / "input",
+    "output": PROJECT_DIR / "tests" / "fixtures" / "synthetic_data" / "output",
+    "formats": "csv,json,jsonl",
+    "verbose": True,
+    "strict": True,
+}
+
+ALL_FORMATS: tuple[str, ...] = ("csv", "json", "jsonl")
+
+
+@dataclass
+class FileCheck:
+    relative_path: str
+    exists: bool = False
+    size_bytes: int = 0
+    sha256: str | None = None
+    record_count: int = 0
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TableCheck:
+    dbf_relative: str
+    output_base: str
+    formats: dict[str, FileCheck] = field(default_factory=dict)
+    schema: FileCheck | None = None
+    dbf_record_count: int = 0
+    dbf_deleted_count: int = 0
+    dbf_fields: list[dict[str, Any]] = field(default_factory=list)
+    dbf_codepage: str | None = None
+    dbf_version: str | None = None
+    has_fpt: bool = False
+    has_cdx: bool = False
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        if self.errors:
+            return "FAILED"
+        if self.warnings:
+            return "WARNING"
+        return "OK"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as infile:
+        for chunk in iter(lambda: infile.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def count_jsonl_records(path: Path) -> tuple[int, list[str]]:
+    errors: list[str] = []
+    count = 0
+    with path.open("r", encoding="utf-8", newline="") as infile:
+        for line_number, line in enumerate(infile, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if not isinstance(obj, dict):
+                    errors.append(f"line {line_number}: not a JSON object")
+                    continue
+                count += 1
+            except json.JSONDecodeError as exc:
+                errors.append(f"line {line_number}: {exc.msg}")
+    return count, errors
+
+
+def count_json_records(path: Path) -> tuple[int, list[str]]:
+    errors: list[str] = []
+    try:
+        with path.open("r", encoding="utf-8") as infile:
+            data = json.load(infile)
+    except json.JSONDecodeError as exc:
+        return 0, [f"JSON parse error: {exc.msg}"]
+    if not isinstance(data, list):
+        return 0, ["JSON top-level is not an array"]
+    for i, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            errors.append(f"element {i}: not a JSON object")
+    return len(data), errors
+
+
+def count_csv_records(path: Path) -> tuple[int, list[str]]:
+    errors: list[str] = []
+    count = 0
+    with path.open("r", encoding="utf-8", newline="") as infile:
+        reader = csv.reader(infile)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return 0, ["empty CSV (no header)"]
+        for row_number, row in enumerate(reader, start=2):
+            count += 1
+            if len(row) != len(header):
+                errors.append(f"row {row_number}: {len(row)} cols, expected {len(header)}")
+    return count, errors
+
+
+def read_dbf_stats(dbf_path: Path) -> tuple[int, int, list[dict[str, Any]], str | None, str | None]:
+    table = DBF(dbf_path, load=False, ignore_missing_memofile=True)
+    fields: list[dict[str, Any]] = []
+    for f in table.fields:
+        fields.append({
+            "name": f.name, "dbf_type": f.type,
+            "length": f.length, "decimal_count": f.decimal_count,
+        })
+    active = len(table)
+    deleted = len(table.deleted) if hasattr(table, "deleted") else 0
+    try:
+        codepage_name = guess_encoding(table.header.language_driver)
+    except Exception:
+        codepage_name = None
+    version = getattr(table, "dbversion", None)
+    return active, deleted, fields, codepage_name, version
+
+
+def find_related_file(dbf_path: Path, extension: str) -> Path | None:
+    wanted = extension.lower()
+    for candidate in dbf_path.parent.iterdir():
+        if (
+            candidate.is_file()
+            and candidate.stem.lower() == dbf_path.stem.lower()
+            and candidate.suffix.lower() == wanted
+        ):
+            return candidate
+    return None
+
+
+def load_schema(schema_path: Path) -> dict[str, Any] | None:
+    if not schema_path.is_file():
+        return None
+    with schema_path.open("r", encoding="utf-8") as infile:
+        line = infile.readline().strip()
+        if not line:
+            return None
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            return None
+
+
+def load_migration_report(output_dir: Path) -> dict[str, Any] | None:
+    report_path = output_dir / "migration_report.jsonl"
+    if not report_path.is_file():
+        return None
+    tables: dict[str, Any] = {}
+    with report_path.open("r", encoding="utf-8") as infile:
+        for line in infile:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("type") == "table":
+                rel = entry.get("table")
+                if rel:
+                    tables[rel] = entry
+    return tables
+
+
+def verify_table(
+    discovered: DiscoveredTable, source_root: Path, output_root: Path,
+    formats: list[str], migration_report: dict[str, Any] | None, verbose: bool,
+) -> TableCheck:
+    rel = discovered.relative_path.as_posix()
+    base_rel = discovered.relative_path.with_suffix("")
+    check = TableCheck(dbf_relative=rel, output_base=base_rel.as_posix())
+
+    try:
+        active, deleted, fields, codepage, version = read_dbf_stats(discovered.source_path)
+        check.dbf_record_count = active
+        check.dbf_deleted_count = deleted
+        check.dbf_fields = fields
+        check.dbf_codepage = codepage
+        check.dbf_version = version
+    except Exception as exc:
+        check.errors.append(f"DBF read failed: {exc}")
+        return check
+
+    check.has_fpt = discovered.memo_present
+    check.has_cdx = find_related_file(discovered.source_path, ".cdx") is not None
+    if not check.has_fpt and any(f["dbf_type"] == "M" for f in fields):
+        check.warnings.append("DBF has M fields but no FPT memo file")
+    if check.has_cdx:
+        check.warnings.append("CDX index file present (not converted — informational)")
+
+    schema_path = output_root / base_rel.with_suffix(".schema.jsonl")
+    schema_check = FileCheck(relative_path=schema_path.relative_to(output_root).as_posix())
+    if schema_path.is_file():
+        schema_check.exists = True
+        schema_check.size_bytes = schema_path.stat().st_size
+        schema_check.sha256 = sha256_file(schema_path)
+        schema = load_schema(schema_path)
+        if schema is None:
+            schema_check.errors.append("schema not valid JSONL")
+        else:
+            schema_fields = schema.get("fields", [])
+            if len(schema_fields) != len(fields):
+                schema_check.errors.append(
+                    f"schema field count {len(schema_fields)} != DBF {len(fields)}"
+                )
+            for sf, df in zip(schema_fields, fields):
+                if sf.get("name") != df["name"]:
+                    schema_check.errors.append(
+                        f"schema field name {sf.get('name')!r} != DBF {df['name']!r}"
+                    )
+                if sf.get("dbf_type") != df["dbf_type"]:
+                    schema_check.errors.append(
+                        f"schema field type {sf.get('dbf_type')!r} != DBF {df['dbf_type']!r}"
+                    )
+                if sf.get("length") != df["length"]:
+                    schema_check.errors.append(
+                        f"schema field length {sf.get('length')} != DBF {df['length']}"
+                    )
+    else:
+        schema_check.errors.append("schema file missing")
+    check.schema = schema_check
+
+    for fmt in formats:
+        out_path = output_root / base_rel.with_suffix(f".{fmt}")
+        fc = FileCheck(relative_path=out_path.relative_to(output_root).as_posix())
+        if not out_path.is_file():
+            fc.errors.append(f"{fmt} output missing")
+            check.formats[fmt] = fc
+            continue
+        fc.exists = True
+        fc.size_bytes = out_path.stat().st_size
+        fc.sha256 = sha256_file(out_path)
+
+        if fmt == "csv":
+            fc.record_count, errs = count_csv_records(out_path)
+        elif fmt == "jsonl":
+            fc.record_count, errs = count_jsonl_records(out_path)
+        elif fmt == "json":
+            fc.record_count, errs = count_json_records(out_path)
+        else:
+            errs = [f"unknown format {fmt}"]
+            fc.record_count = 0
+        fc.errors.extend(errs)
+
+        expected = check.dbf_record_count
+        if fc.record_count != expected:
+            fc.errors.append(f"record count {fc.record_count} != DBF active {expected}")
+
+        if migration_report is not None:
+            report_entry = migration_report.get(rel)
+            if report_entry is None:
+                fc.warnings.append("no migration_report entry for this table")
+            else:
+                report_output = report_entry.get("output", "") or ""
+                expected_sha = report_entry.get("sha256")
+                if report_output.endswith(f".{fmt}"):
+                    if expected_sha and fc.sha256 and expected_sha != fc.sha256:
+                        fc.errors.append(
+                            f"SHA-256 mismatch with migration_report "
+                            f"(report={expected_sha[:12]}…, file={fc.sha256[:12]}…)"
+                        )
+
+        check.formats[fmt] = fc
+        if verbose:
+            print(
+                f"  [{fmt:5}] {fc.relative_path}: "
+                f"{fc.record_count} rekordów, {fc.size_bytes} B, "
+                f"sha={fc.sha256[:12] if fc.sha256 else 'N/A'}…"
+            )
+
+    for fmt, fc in check.formats.items():
+        check.errors.extend(f"[{fmt}] {e}" for e in fc.errors)
+        check.warnings.extend(f"[{fmt}] {w}" for w in fc.warnings)
+    if check.schema:
+        check.errors.extend(f"[schema] {e}" for e in check.schema.errors)
+        check.warnings.extend(f"[schema] {w}" for w in check.schema.warnings)
+
+    return check
+
+
+def verify_all(
+    source_dir: Path, output_dir: Path, formats: list[str], verbose: bool,
+) -> tuple[list[TableCheck], list[str]]:
+    tables = discover_tables(source_dir)
+    global_errors: list[str] = []
+    if not tables:
+        global_errors.append(f"no DBF files found in {source_dir}")
+        return [], global_errors
+
+    if not output_dir.is_dir():
+        global_errors.append(f"output directory does not exist: {output_dir}")
+        return [], global_errors
+
+    migration_report = load_migration_report(output_dir)
+    if migration_report is None:
+        global_errors.append("migration_report.jsonl missing in output directory")
+
+    checks: list[TableCheck] = []
+    for discovered in tables:
+        if verbose:
+            print(f"\n[verify] Weryfikacja: {discovered.relative_path.as_posix()}")
+        check = verify_table(
+            discovered, source_dir, output_dir, formats, migration_report, verbose
+        )
+        checks.append(check)
+        if check.status == "FAILED":
+            global_errors.append(f"{check.dbf_relative}: FAILED")
+    return checks, global_errors
+
+
+def summarize(checks: list[TableCheck], global_errors: list[str]) -> dict[str, Any]:
+    ok = sum(1 for c in checks if c.status == "OK")
+    warning = sum(1 for c in checks if c.status == "WARNING")
+    failed = sum(1 for c in checks if c.status == "FAILED")
+    total_records_dbf = sum(c.dbf_record_count for c in checks)
+    total_records_out = {
+        fmt: sum(c.formats[fmt].record_count for c in checks if fmt in c.formats)
+        for fmt in ALL_FORMATS
+    }
+    return {
+        "tables": len(checks), "ok": ok, "warning": warning, "failed": failed,
+        "total_records_dbf": total_records_dbf, "total_records_out": total_records_out,
+        "global_errors": global_errors,
+        "checks": [
+            {
+                "dbf": c.dbf_relative, "status": c.status,
+                "dbf_records": c.dbf_record_count, "dbf_deleted": c.dbf_deleted_count,
+                "has_fpt": c.has_fpt, "has_cdx": c.has_cdx,
+                "codepage": c.dbf_codepage, "version": c.dbf_version,
+                "formats": {
+                    fmt: {
+                        "exists": fc.exists, "records": fc.record_count,
+                        "size_bytes": fc.size_bytes, "sha256": fc.sha256,
+                        "errors": fc.errors, "warnings": fc.warnings,
+                    }
+                    for fmt, fc in c.formats.items()
+                },
+                "schema_errors": c.schema.errors if c.schema else [],
+                "errors": c.errors, "warnings": c.warnings,
+            }
+            for c in checks
+        ],
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dbf-bridge-verify",
+        description="Weryfikuje poprawność konwersji DBF -> CSV/JSON/JSONL.",
+    )
+    parser.add_argument(
+        "--source", type=Path, default=DEFAULTS["source"],
+        help=f"Katalog źródłowy DBF (domyślnie: {DEFAULTS['source']}).",
+    )
+    parser.add_argument(
+        "--output", type=Path, default=DEFAULTS["output"],
+        help=f"Katalog wyjściowy (domyślnie: {DEFAULTS['output']}).",
+    )
+    parser.add_argument(
+        "--formats", default=DEFAULTS["formats"],
+        help=f"Lista formatów do weryfikacji (domyślnie: {DEFAULTS['formats']}).",
+    )
+    parser.add_argument(
+        "--verbose", action=argparse.BooleanOptionalAction, default=DEFAULTS["verbose"],
+        help="Wypisuj szczegóły per plik (domyślnie: włączone).",
+    )
+    parser.add_argument(
+        "--no-strict", dest="strict", action="store_false", default=DEFAULTS["strict"],
+        help="Ostrzeżenia nie powodują kodu wyjścia 1.",
+    )
+    parser.add_argument(
+        "--report", type=Path, default=None,
+        help="Ścieżka do raportu JSON (domyślnie: <output>/verification_report.json).",
+    )
+    return parser
+
+
+def _resolve_formats(formats_arg: str) -> list[str]:
+    requested = [f.strip().lower() for f in formats_arg.split(",") if f.strip()]
+    if not requested:
+        return list(ALL_FORMATS)
+    invalid = [f for f in requested if f not in ALL_FORMATS]
+    if invalid:
+        raise ValueError(f"Nieobsługiwany format(y): {invalid}. Dostępne: {list(ALL_FORMATS)}")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for f in requested:
+        if f not in seen:
+            ordered.append(f)
+            seen.add(f)
+    return ordered
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if not args.source.is_dir():
+        print(f"[verify] Błąd: katalog źródłowy nie istnieje: {args.source}", file=sys.stderr)
+        return 1
+    if not args.output.is_dir():
+        print(f"[verify] Błąd: katalog wyjściowy nie istnieje: {args.output}", file=sys.stderr)
+        return 1
+
+    try:
+        formats = _resolve_formats(args.formats)
+    except ValueError as exc:
+        print(f"[verify] Błąd: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"[verify] Source:  {args.source}")
+    print(f"[verify] Output:  {args.output}")
+    print(f"[verify] Formats: {', '.join(formats)}")
+    print(f"[verify] Strict:  {args.strict}")
+    print()
+
+    checks, global_errors = verify_all(args.source, args.output, formats, args.verbose)
+    summary = summarize(checks, global_errors)
+
+    print("\n" + "=" * 70)
+    print("[verify] Podsumowanie weryfikacji")
+    print("=" * 70)
+    print(f"  Tabele DBF:     {summary['tables']}")
+    print(f"  OK:             {summary['ok']}")
+    print(f"  Ostrzeżenia:    {summary['warning']}")
+    print(f"  Błędy:          {summary['failed']}")
+    print(f"  Rekordy w DBF:  {summary['total_records_dbf']}")
+    for fmt, count in summary["total_records_out"].items():
+        if fmt in formats:
+            mark = "OK" if count == summary["total_records_dbf"] else "MISMATCH"
+            print(f"  Rekordy {fmt:5}: {count}  [{mark}]")
+
+    if global_errors:
+        print("\n  Błędy globalne:")
+        for e in global_errors:
+            print(f"    - {e}")
+
+    failed_tables = [c for c in checks if c.status == "FAILED"]
+    if failed_tables:
+        print("\n  Nieudane tabele:")
+        for c in failed_tables:
+            print(f"    - {c.dbf_relative}:")
+            for err in c.errors[:5]:
+                print(f"        {err}")
+
+    warned_tables = [c for c in checks if c.status == "WARNING"]
+    if warned_tables:
+        print("\n  Tabele z ostrzeżeniami:")
+        for c in warned_tables:
+            print(f"    - {c.dbf_relative}:")
+            for w in c.warnings[:3]:
+                print(f"        {w}")
+
+    report_path = args.report or (args.output / "verification_report.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with report_path.open("w", encoding="utf-8") as outfile:
+        json.dump(summary, outfile, ensure_ascii=False, indent=2)
+    print(f"\n[verify] Raport: {report_path}")
+
+    if summary["failed"] > 0 or global_errors:
+        return 1
+    if args.strict and summary["warning"] > 0:
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
