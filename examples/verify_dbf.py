@@ -1,18 +1,18 @@
 """
-examples/verify_logis.py
-========================
+examples/verify_dbf.py
+======================
 
 Przykład uruchomienia weryfikatora dbf_bridge na wynikach konwersji
-danych systemu Logis. Sprawdza, czy eksport DBF -> CSV/JSON/JSONL
+danych DBF. Sprawdza, czy eksport DBF -> CSV/JSON/JSONL
 zakończył się poprawnie (liczba rekordów, SHA-256, schema, składnia).
 
 Domyślne ścieżki:
-    source = K:\\Logis       — katalog z oryginalnymi plikami DBF
-    output = K:\\Logis_out   — katalog z wynikami konwersji
+    source = K:\\dbf_source   — katalog z oryginalnymi plikami DBF
+    output = K:\\dbf_output   — katalog z wynikami konwersji
 
 Uruchamianie:
-    python examples/verify_logis.py
-    python examples/verify_logis.py --source "K:\\Logis" --output "K:\\Logis_out"
+    python examples/verify_dbf.py
+    python examples/verify_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output"
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from dbf_bridge.verifier import main
 
 if __name__ == "__main__":
     default_args = [
-        "--source", r"K:\Logis",
-        "--output", r"K:\Logis_out",
+        "--source", r"K:\dbf_source",
+        "--output", r"K:\dbf_output",
         "--formats", "csv,json,jsonl",
     ]
     cli_args = sys.argv[1:] if len(sys.argv) > 1 else default_args
