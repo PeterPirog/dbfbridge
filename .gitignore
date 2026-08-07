@@ -32,3 +32,24 @@ htmlcov/
 
 # Synthetic data output (regenerated locally)
 tests/fixtures/synthetic_data/output/
+
+# Data files — avoid leaking sensitive real-world data
+# Visual FoxPro / DBF source files
+*.dbf
+*.dbf.*
+*.fpt
+*.cdx
+*.ndx
+*.mdx
+# Export formats (output of conversion)
+*.csv
+*.json
+*.jsonl
+# Schema/metadata/report files (generated)
+*.schema.jsonl
+*.metadata.json
+migration_report.*
+verification_report.*
+# Exception: keep test fixture scripts and .gitkeep files
+!tests/fixtures/**/generate_sample_dbf.py
+!**/.gitkeep
