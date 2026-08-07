@@ -135,13 +135,26 @@ dbfbridge/
 
 ### Podstawowe (zawsze):
 - `dbfread>=2.0.7` — odczyt DBF (streaming, natywna obsługa codepage)
+  - **Uwaga**: ostatni release 2016-11-25, biblioteka stabilna ale nieaktywnie rozwijana
+    (40 otwartych issues na GitHub, ostatni push 2024). Pozostaje najlepszym wyborem
+    do streamingowego odczytu DBF (niskie zużycie pamięci, obsługa FPT, codepage).
+    Warstwa `dbf_bridge/exporter/reader.py` izoluje tę zależność — w razie potrzeby
+    można ją zastąpić alternatywą (np. `dbf` lub własny parser) bez zmiany API.
 
 ### Opcjonalne:
-- `openpyxl>=3.1.5` — XLSX (`pip install dbfbridge[xlsx]`)
-- `dbf>=0.99.11` — zapis DBF (do round-trip, dodana gdy implementujemy importer)
+- `dbf>=0.99.11` — zapis DBF (round-trip import, generowanie fixture)
+  - Aktywnie rozwijana przez Ethan Furman (release 2025-09-02, Python 3.10-3.13)
+  - `pip install "dbfbridge[import]"` lub `pip install "dbfbridge[dev]"`
+- `openpyxl>=3.1.5` — XLSX (`pip install "dbfbridge[xlsx]"`)
 
 ### Dev:
 - `pytest>=8.0`, `pytest-cov>=5.0`, `build>=1.2`, `twine>=5.1`
+- `pip install -e ".[dev]"` instaluje wszystkie powyższe + `dbf`
+
+### Wersja Pythona:
+- Minimum: 3.10 (używa `X | None` syntax, `argparse.BooleanOptionalAction`)
+- Testowane: 3.10, 3.11, 3.12, 3.13
+- `pyproject.toml`: `requires-python = ">=3.10"`, classifiers do 3.13
 
 ## Konwencje kodowe
 
@@ -159,8 +172,7 @@ dbfbridge/
 cd D:\PycharmProjects\dbfbridge
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e ".[dev]"
-pip install dbf  # do generowania syntetycznych DBF
+pip install -e ".[dev]"  # instaluje dbfread + dbf + pytest + build + twine
 
 # Generuj dane syntetyczne (3 tabele: klienci, zamowienia, archiwum)
 python tests/fixtures/generate_sample_dbf.py
