@@ -21,7 +21,31 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 pip install dbfbridge
 # with XLSX support:
 pip install "dbfbridge[xlsx]"
+# with round-trip import (CSV/JSON/JSONL -> DBF) and test fixtures:
+pip install "dbfbridge[import]"
+# full (all optional features + dev tools):
+pip install "dbfbridge[xlsx,import,dev]"
 ```
+
+## Requirements
+
+- **Python**: 3.10+ (tested on 3.10, 3.11, 3.12, 3.13)
+- **`dbfread`** (>=2.0.7) — core dependency for reading DBF files (streaming, low-memory)
+- **`dbf`** (>=0.99.11, optional) — for writing DBF files (round-trip import) and generating test fixtures
+
+### Notes on dependencies
+
+| Package | Version | Last release | Status | Used for |
+|---------|---------|-------------|--------|----------|
+| `dbfread` | 2.0.7 | 2016-11-25 | Stable, no longer actively developed (40 open issues on GitHub, last push 2024) | **Reading** DBF (streaming, FPT memo, codepage detection) |
+| `dbf` | 0.99.11 | 2025-09-02 | Actively maintained by Ethan Furman (supports Python 3.10-3.13) | **Writing** DBF (round-trip import, test fixtures) |
+
+`dbfread` is stable and battle-tested but hasn't had a release since 2016. It remains the best choice for streaming DBF reads (low memory, large FPT files). `dbfbridge` extends it with:
+- Automatic Polish encoding fallback (Mazovia/cp852) via a custom `FieldParser`
+- Memo field policies (skip/inline/null)
+- Atomic, streaming output with SHA-256 validation
+
+If `dbfread` becomes unmaintained or incompatible with future Python versions, the reader layer (`dbf_bridge/exporter/reader.py`) can be replaced with an alternative (e.g., `dbf` or a custom parser) without changing the public API.
 
 ## Quick start
 
