@@ -34,7 +34,7 @@ Tabela jest częściowa — poniżej znajduje się pełna definicja generująca
 mapowanie, z której korzysta codec.
 
 Rejestracja:
-    from exporter.polish_codecs import register_polish_codecs
+    from dbf_bridge.exporter.polish_codecs import register_polish_codecs
     register_polish_codecs()
     'ala ma kota'.encode('mazovia')  # bytes
     b'ala ma kota'.decode('mazovia')  # str
