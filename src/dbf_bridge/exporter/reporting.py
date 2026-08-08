@@ -13,6 +13,7 @@ REPORT_FIELDS = [
     "output",
     "status",
     "encoding",
+    "format",
     "active_records",
     "deleted_records",
     "memo_fields",
@@ -36,6 +37,7 @@ def write_jsonl_report(path: Path, results: list[TableResult]) -> None:
     summary = {
         "type": "summary",
         "tables": len(results),
+        "formats": sorted({result.format for result in results}),
         "ok": sum(1 for result in results if result.status == "OK"),
         "warning": sum(1 for result in results if result.status == "WARNING"),
         "failed": sum(1 for result in results if result.status == "FAILED"),

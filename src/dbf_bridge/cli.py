@@ -35,12 +35,11 @@ from dbf_bridge.exporter.models import TableResult
 from dbf_bridge.exporter.reporting import exit_code, write_reports
 from dbf_bridge.exporter.writer import export_table
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULTS = {
-    "source": PROJECT_DIR / "tests" / "fixtures" / "input",
-    "output": PROJECT_DIR / "tests" / "fixtures" / "output",
+    "source": Path("."),
+    "output": Path("."),
     "formats": "csv,json,jsonl",
     "memo": None,
     "strip_spaces": False,
@@ -50,6 +49,7 @@ DEFAULTS = {
     "missing_memo": "fail",
     "overwrite": True,
     "validate": True,
+    "progress": True,
 }
 
 DEFAULT_MEMO_POLICY: dict[str, str] = {
@@ -70,54 +70,75 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--source", type=Path, default=DEFAULTS["source"],
-        help=f"Katalog źródłowy DBF (domyślnie: {DEFAULTS['source']}).",
+        "--source",
+        type=Path,
+        required=True,
+        help="Katalog źródłowy DBF (wymagany).",
     )
     parser.add_argument(
-        "--output", type=Path, default=DEFAULTS["output"],
-        help=f"Katalog wyjściowy (domyślnie: {DEFAULTS['output']}).",
+        "--output",
+        type=Path,
+        required=True,
+        help="Katalog wyjściowy (wymagany).",
     )
     parser.add_argument(
-        "--formats", default=DEFAULTS["formats"],
+        "--formats",
+        default=DEFAULTS["formats"],
         help=f"Lista formatów rozdzielona przecinkami (domyślnie: {DEFAULTS['formats']}).",
     )
     parser.add_argument(
-        "--memo", choices=["skip", "inline", "null"], default=DEFAULTS["memo"],
+        "--memo",
+        choices=["skip", "inline", "null"],
+        default=DEFAULTS["memo"],
         help="Polityka pól memo. Domyślnie: skip dla CSV, inline dla JSON/JSONL.",
     )
     parser.add_argument(
-        "--strip-spaces", action=argparse.BooleanOptionalAction,
+        "--strip-spaces",
+        action=argparse.BooleanOptionalAction,
         default=DEFAULTS["strip_spaces"],
         help="Usuń końcowe spacje z pól Character (C).",
     )
     parser.add_argument(
-        "--encoding", default=DEFAULTS["encoding"],
+        "--encoding",
+        default=DEFAULTS["encoding"],
         help="Strona kodowa DBF lub 'auto' (wykrywanie z nagłówka).",
     )
     parser.add_argument(
-        "--decode-errors", choices=["strict", "ignore", "replace"],
+        "--decode-errors",
+        choices=["strict", "ignore", "replace"],
         default=DEFAULTS["decode_errors"],
         help="Polityka błędów dekodowania znaków.",
     )
     parser.add_argument(
-        "--deleted", choices=["skip", "separate", "include"],
+        "--deleted",
+        choices=["skip", "separate", "include"],
         default=DEFAULTS["deleted"],
         help="Polityka usuniętych rekordów DBF.",
     )
     parser.add_argument(
-        "--missing-memo", choices=["fail", "null-with-warning"],
+        "--missing-memo",
+        choices=["fail", "null-with-warning"],
         default=DEFAULTS["missing_memo"],
         help="Polityka dla tabel DBF bez pliku memo FPT.",
     )
     parser.add_argument(
-        "--overwrite", action=argparse.BooleanOptionalAction,
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
         default=DEFAULTS["overwrite"],
         help="Nadpisz istniejące pliki wyjściowe (domyślnie: włączone).",
     )
     parser.add_argument(
-        "--no-validate", dest="validate", action="store_false",
+        "--no-validate",
+        dest="validate",
+        action="store_false",
         default=DEFAULTS["validate"],
         help="Pomiń walidację SHA-256 i round-trip wyjścia.",
+    )
+    parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["progress"],
+        help="Pokazuj postęp konwersji per tabela (domyślnie: włączone).",
     )
     return parser
 
@@ -144,19 +165,62 @@ def _resolve_memo_policy(fmt: str, memo_arg: str | None) -> str:
     return DEFAULT_MEMO_POLICY.get(fmt, "inline")
 
 
+def _format_count(n: int) -> str:
+    return f"{n:,}".replace(",", "\u202f")
+
+
+def _print_progress(
+    label: str,
+    index: int,
+    total: int,
+    *,
+    elapsed_s: float,
+    rate: float | None = None,
+    width: int = 40,
+) -> None:
+    """Rysuje jednowierszowy pasek postępu w konsoli (karrubka, bez tqdm)."""
+    import sys as _sys
+
+    fraction = index / total if total else 1.0
+    filled = int(width * fraction)
+    bar = "#" * filled + "-" * (width - filled)
+    pct = fraction * 100.0
+    line = f"\r{label} [{bar}] {index}/{total} ({pct:5.1f}%) {elapsed_s:6.1f}s"
+    if rate is not None and rate > 0:
+        line += f" {rate:5.1f} tbl/s"
+    line += "   "
+    _sys.stderr.write(line)
+    _sys.stderr.flush()
+
+
 def _export_one(
-    source: Path, output: Path, fmt: str, memo: str, *,
-    strip_spaces: bool, encoding: str, decode_errors: str,
-    deleted: str, missing_memo: str, validate: bool, overwrite: bool,
+    source: Path,
+    output: Path,
+    fmt: str,
+    memo: str,
+    *,
+    strip_spaces: bool,
+    encoding: str,
+    decode_errors: str,
+    deleted: str,
+    missing_memo: str,
+    validate: bool,
+    overwrite: bool,
+    progress: bool,
 ) -> tuple[int, list[TableResult]]:
     try:
         config = make_config(
-            source=source, output=output, export_format=fmt,  # type: ignore[arg-type]
-            encoding=encoding, decode_errors=decode_errors,  # type: ignore[arg-type]
+            source=source,
+            output=output,
+            export_format=fmt,  # type: ignore[arg-type]
+            encoding=encoding,
+            decode_errors=decode_errors,  # type: ignore[arg-type]
             deleted=deleted,  # type: ignore[arg-type]
             missing_memo=missing_memo,  # type: ignore[arg-type]
             memo=memo,  # type: ignore[arg-type]
-            strip_spaces=strip_spaces, validate=validate, overwrite=overwrite,
+            strip_spaces=strip_spaces,
+            validate=validate,
+            overwrite=overwrite,
         )
     except ConfigError as exc:
         print(f"[dbf-bridge] Błąd konfiguracji: {exc}", file=sys.stderr)
@@ -168,10 +232,38 @@ def _export_one(
         print(f"[dbf-bridge] Nie znaleziono plików DBF w: {config.source}")
         return 0, []
 
-    print(f"[dbf-bridge] Znaleziono {len(tables)} plik(ów) DBF.")
-    results = [export_table(table, config) for table in tables]
-    write_reports(config.output, results)
-    return exit_code(results), results
+    total = len(tables)
+    print(f"[dbf-bridge] Znaleziono {_format_count(total)} plik(ów) DBF.")
+
+    if not progress:
+        return 0, [export_table(table, config) for table in tables]
+
+    import time
+
+    label = f"[dbf-bridge] {fmt.upper():5}"
+    start = time.monotonic()
+    results: list[TableResult] = []
+    for i, table in enumerate(tables, start=1):
+        rel = table.relative_path.as_posix()
+        try:
+            results.append(export_table(table, config))
+        except Exception as exc:
+            results.append(
+                TableResult(
+                    table=rel,
+                    output=None,
+                    status="FAILED",
+                    encoding=config.encoding,
+                    format=config.format,
+                    errors=[f"{rel}: nieoczekiwany błąd: {exc}"],
+                )
+            )
+        elapsed = time.monotonic() - start
+        rate = i / elapsed if elapsed > 0 else None
+        _print_progress(label, i, total, elapsed_s=elapsed, rate=rate)
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+    return 0, results
 
 
 def _print_summary(results: list[TableResult]) -> None:
@@ -209,17 +301,31 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     overall_errors = 0
+    all_results: list[TableResult] = []
     for fmt in formats:
         memo = _resolve_memo_policy(fmt, args.memo)
         code, results = _export_one(
-            source=args.source, output=args.output, fmt=fmt, memo=memo,
-            strip_spaces=args.strip_spaces, encoding=args.encoding,
-            decode_errors=args.decode_errors, deleted=args.deleted,
-            missing_memo=args.missing_memo, validate=args.validate,
+            source=args.source,
+            output=args.output,
+            fmt=fmt,
+            memo=memo,
+            strip_spaces=args.strip_spaces,
+            encoding=args.encoding,
+            decode_errors=args.decode_errors,
+            deleted=args.deleted,
+            missing_memo=args.missing_memo,
+            validate=args.validate,
             overwrite=args.overwrite,
+            progress=args.progress,
         )
-        overall_errors = max(overall_errors, code)
+        if code != 0:
+            overall_errors = max(overall_errors, code)
+        all_results.extend(results)
         _print_summary(results)
+
+    if all_results:
+        write_reports(args.output, all_results)
+        overall_errors = max(overall_errors, exit_code(all_results))
 
     print(f"\n[dbf-bridge] Zakończono. Kod wyjścia: {overall_errors}")
     return overall_errors

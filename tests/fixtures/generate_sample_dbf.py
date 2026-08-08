@@ -157,7 +157,7 @@ def generate_archiwum(base_dir: Path) -> None:
                     "Długi opis archiwalny z wieloma wierszami:\n"
                     "- pierwszy punkt,\n"
                     "- drugi punkt;\n"
-                    "zawiera przecinki i \"cudzysłowy\"."
+                    'zawiera przecinki i "cudzysłowy".'
                     if i % 2 == 0
                     else None
                 ),

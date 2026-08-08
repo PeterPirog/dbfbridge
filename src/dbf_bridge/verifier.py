@@ -31,7 +31,6 @@ from dbfread.codepages import guess_encoding
 from dbf_bridge.exporter.discovery import discover_tables
 from dbf_bridge.exporter.models import DiscoveredTable
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULTS = {
@@ -143,10 +142,14 @@ def read_dbf_stats(dbf_path: Path) -> tuple[int, int, list[dict[str, Any]], str 
     table = DBF(dbf_path, load=False, ignore_missing_memofile=True)
     fields: list[dict[str, Any]] = []
     for f in table.fields:
-        fields.append({
-            "name": f.name, "dbf_type": f.type,
-            "length": f.length, "decimal_count": f.decimal_count,
-        })
+        fields.append(
+            {
+                "name": f.name,
+                "dbf_type": f.type,
+                "length": f.length,
+                "decimal_count": f.decimal_count,
+            }
+        )
     active = len(table)
     deleted = len(table.deleted) if hasattr(table, "deleted") else 0
     try:
@@ -182,11 +185,17 @@ def load_schema(schema_path: Path) -> dict[str, Any] | None:
             return None
 
 
-def load_migration_report(output_dir: Path) -> dict[str, Any] | None:
+def load_migration_report(output_dir: Path) -> dict[tuple[str, str], dict[str, Any]] | None:
+    """Wczytuje migration_report.jsonl i indeksuje po (table, format).
+
+    Zwraca słownik {(relative_dbf, format): entry} lub None gdy plik nie istnieje.
+    Każdy wpis raportu (type=="table") zawiera klucz ``format`` dodany w 0.1.0,
+    dzięki czemu jeden plik raportu może opisywać wiele formatów bez nadpisywania.
+    """
     report_path = output_dir / "migration_report.jsonl"
     if not report_path.is_file():
         return None
-    tables: dict[str, Any] = {}
+    tables: dict[tuple[str, str], dict[str, Any]] = {}
     with report_path.open("r", encoding="utf-8") as infile:
         for line in infile:
             line = line.strip()
@@ -196,16 +205,22 @@ def load_migration_report(output_dir: Path) -> dict[str, Any] | None:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if entry.get("type") == "table":
-                rel = entry.get("table")
-                if rel:
-                    tables[rel] = entry
+            if entry.get("type") != "table":
+                continue
+            rel = entry.get("table")
+            fmt = entry.get("format")
+            if rel and fmt:
+                tables[(rel, fmt)] = entry
     return tables
 
 
 def verify_table(
-    discovered: DiscoveredTable, source_root: Path, output_root: Path,
-    formats: list[str], migration_report: dict[str, Any] | None, verbose: bool,
+    discovered: DiscoveredTable,
+    source_root: Path,
+    output_root: Path,
+    formats: list[str],
+    migration_report: dict[tuple[str, str], dict[str, Any]] | None,
+    verbose: bool,
 ) -> TableCheck:
     rel = discovered.relative_path.as_posix()
     base_rel = discovered.relative_path.with_suffix("")
@@ -244,7 +259,7 @@ def verify_table(
                 schema_check.errors.append(
                     f"schema field count {len(schema_fields)} != DBF {len(fields)}"
                 )
-            for sf, df in zip(schema_fields, fields):
+            for sf, df in zip(schema_fields, fields, strict=False):
                 if sf.get("name") != df["name"]:
                     schema_check.errors.append(
                         f"schema field name {sf.get('name')!r} != DBF {df['name']!r}"
@@ -288,18 +303,16 @@ def verify_table(
             fc.errors.append(f"record count {fc.record_count} != DBF active {expected}")
 
         if migration_report is not None:
-            report_entry = migration_report.get(rel)
+            report_entry = migration_report.get((rel, fmt))
             if report_entry is None:
-                fc.warnings.append("no migration_report entry for this table")
+                fc.warnings.append(f"no migration_report entry for ({rel}, {fmt})")
             else:
-                report_output = report_entry.get("output", "") or ""
                 expected_sha = report_entry.get("sha256")
-                if report_output.endswith(f".{fmt}"):
-                    if expected_sha and fc.sha256 and expected_sha != fc.sha256:
-                        fc.errors.append(
-                            f"SHA-256 mismatch with migration_report "
-                            f"(report={expected_sha[:12]}…, file={fc.sha256[:12]}…)"
-                        )
+                if expected_sha and fc.sha256 and expected_sha != fc.sha256:
+                    fc.errors.append(
+                        f"SHA-256 mismatch with migration_report "
+                        f"(report={expected_sha[:12]}…, file={fc.sha256[:12]}…)"
+                    )
 
         check.formats[fmt] = fc
         if verbose:
@@ -320,7 +333,10 @@ def verify_table(
 
 
 def verify_all(
-    source_dir: Path, output_dir: Path, formats: list[str], verbose: bool,
+    source_dir: Path,
+    output_dir: Path,
+    formats: list[str],
+    verbose: bool,
 ) -> tuple[list[TableCheck], list[str]]:
     tables = discover_tables(source_dir)
     global_errors: list[str] = []
@@ -340,9 +356,7 @@ def verify_all(
     for discovered in tables:
         if verbose:
             print(f"\n[verify] Weryfikacja: {discovered.relative_path.as_posix()}")
-        check = verify_table(
-            discovered, source_dir, output_dir, formats, migration_report, verbose
-        )
+        check = verify_table(discovered, source_dir, output_dir, formats, migration_report, verbose)
         checks.append(check)
         if check.status == "FAILED":
             global_errors.append(f"{check.dbf_relative}: FAILED")
@@ -359,25 +373,37 @@ def summarize(checks: list[TableCheck], global_errors: list[str]) -> dict[str, A
         for fmt in ALL_FORMATS
     }
     return {
-        "tables": len(checks), "ok": ok, "warning": warning, "failed": failed,
-        "total_records_dbf": total_records_dbf, "total_records_out": total_records_out,
+        "tables": len(checks),
+        "ok": ok,
+        "warning": warning,
+        "failed": failed,
+        "total_records_dbf": total_records_dbf,
+        "total_records_out": total_records_out,
         "global_errors": global_errors,
         "checks": [
             {
-                "dbf": c.dbf_relative, "status": c.status,
-                "dbf_records": c.dbf_record_count, "dbf_deleted": c.dbf_deleted_count,
-                "has_fpt": c.has_fpt, "has_cdx": c.has_cdx,
-                "codepage": c.dbf_codepage, "version": c.dbf_version,
+                "dbf": c.dbf_relative,
+                "status": c.status,
+                "dbf_records": c.dbf_record_count,
+                "dbf_deleted": c.dbf_deleted_count,
+                "has_fpt": c.has_fpt,
+                "has_cdx": c.has_cdx,
+                "codepage": c.dbf_codepage,
+                "version": c.dbf_version,
                 "formats": {
                     fmt: {
-                        "exists": fc.exists, "records": fc.record_count,
-                        "size_bytes": fc.size_bytes, "sha256": fc.sha256,
-                        "errors": fc.errors, "warnings": fc.warnings,
+                        "exists": fc.exists,
+                        "records": fc.record_count,
+                        "size_bytes": fc.size_bytes,
+                        "sha256": fc.sha256,
+                        "errors": fc.errors,
+                        "warnings": fc.warnings,
                     }
                     for fmt, fc in c.formats.items()
                 },
                 "schema_errors": c.schema.errors if c.schema else [],
-                "errors": c.errors, "warnings": c.warnings,
+                "errors": c.errors,
+                "warnings": c.warnings,
             }
             for c in checks
         ],
@@ -390,27 +416,39 @@ def build_parser() -> argparse.ArgumentParser:
         description="Weryfikuje poprawność konwersji DBF -> CSV/JSON/JSONL.",
     )
     parser.add_argument(
-        "--source", type=Path, default=DEFAULTS["source"],
+        "--source",
+        type=Path,
+        default=DEFAULTS["source"],
         help=f"Katalog źródłowy DBF (domyślnie: {DEFAULTS['source']}).",
     )
     parser.add_argument(
-        "--output", type=Path, default=DEFAULTS["output"],
+        "--output",
+        type=Path,
+        default=DEFAULTS["output"],
         help=f"Katalog wyjściowy (domyślnie: {DEFAULTS['output']}).",
     )
     parser.add_argument(
-        "--formats", default=DEFAULTS["formats"],
+        "--formats",
+        default=DEFAULTS["formats"],
         help=f"Lista formatów do weryfikacji (domyślnie: {DEFAULTS['formats']}).",
     )
     parser.add_argument(
-        "--verbose", action=argparse.BooleanOptionalAction, default=DEFAULTS["verbose"],
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["verbose"],
         help="Wypisuj szczegóły per plik (domyślnie: włączone).",
     )
     parser.add_argument(
-        "--no-strict", dest="strict", action="store_false", default=DEFAULTS["strict"],
+        "--no-strict",
+        dest="strict",
+        action="store_false",
+        default=DEFAULTS["strict"],
         help="Ostrzeżenia nie powodują kodu wyjścia 1.",
     )
     parser.add_argument(
-        "--report", type=Path, default=None,
+        "--report",
+        type=Path,
+        default=None,
         help="Ścieżka do raportu JSON (domyślnie: <output>/verification_report.json).",
     )
     return parser

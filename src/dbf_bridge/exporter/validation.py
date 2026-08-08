@@ -26,8 +26,8 @@ class StatsCollector:
         self.field_names = [field.name for field in fields]
         self.memo_fields = [field.name for field in fields if field.is_memo]
         self.stats = StreamStats(
-            null_counts={name: 0 for name in self.field_names},
-            empty_string_counts={name: 0 for name in self.field_names},
+            null_counts=dict.fromkeys(self.field_names, 0),
+            empty_string_counts=dict.fromkeys(self.field_names, 0),
             memo_hashes={name: hashlib.sha256().hexdigest() for name in self.memo_fields},
         )
         self._memo_hashers = {name: hashlib.sha256() for name in self.memo_fields}
@@ -51,7 +51,7 @@ class StatsCollector:
         return self.stats
 
 
-def update_value_hash(hasher: "hashlib._Hash", value: Any) -> None:
+def update_value_hash(hasher: hashlib._Hash, value: Any) -> None:
     if value is None:
         payload = b""
         marker = b"N"
@@ -155,7 +155,9 @@ def _parse_csv(path: Path, fields: list[FieldMetadata]) -> ValidationResult:
                 try:
                     record[name] = json.loads(row[name])
                 except (KeyError, json.JSONDecodeError) as exc:
-                    result.errors.append(f"Invalid CSV JSON cell at row {row_number}, field {name}.")
+                    result.errors.append(
+                        f"Invalid CSV JSON cell at row {row_number}, field {name}."
+                    )
                     if isinstance(exc, KeyError):
                         record[name] = None
             collector.add(record)

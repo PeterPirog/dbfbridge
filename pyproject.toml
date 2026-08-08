@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbfbridge"
-version = "0.1.0.dev0"
-description = "Bidirectional DBF (Visual FoxPro) <-> CSV/JSON/JSONL/XLSX converter with Polish encoding fallback (Mazovia/cp852/cp1250)."
+version = "0.1.0"
+description = "DBF (Visual FoxPro) -> CSV/JSON/JSONL exporter with Polish encoding fallback (Mazovia/cp852/cp1250)."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -27,14 +27,15 @@ classifiers = [
     "Topic :: Database",
     "Topic :: File Formats",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 dependencies = [
     "dbfread>=2.0.7",
 ]
 
 [project.optional-dependencies]
-# dbf (Ethan Furman) — required for round-trip import (CSV/JSON/JSONL -> DBF)
-# and for generating synthetic test DBF files. Not needed for export-only usage.
+# dbf (Ethan Furman) — required for generating synthetic test DBF fixtures.
+# Not needed for export-only usage.
 # Note: dbf 0.99.11 (2025-09-02) actively maintained, supports Python 3.10-3.13.
 import = ["dbf>=0.99.11"]
 xlsx = ["openpyxl>=3.1.5"]
@@ -44,6 +45,7 @@ dev = [
     "pytest-cov>=5.0",
     "build>=1.2",
     "twine>=5.1",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -61,3 +63,31 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 dbf_bridge = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # function calls in argument defaults (argparse patterns)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+"examples/**" = ["E402"]
+
+[tool.ruff.format]
+docstring-code-format = true
