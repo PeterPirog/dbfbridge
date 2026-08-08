@@ -8,7 +8,11 @@ from .models import DiscoveredTable
 def discover_tables(source: Path) -> list[DiscoveredTable]:
     source_root = source.resolve()
     dbf_paths = sorted(
-        (path for path in source_root.rglob("*") if path.is_file() and path.suffix.lower() == ".dbf"),
+        (
+            path
+            for path in source_root.rglob("*")
+            if path.is_file() and path.suffix.lower() == ".dbf"
+        ),
         key=lambda path: path.relative_to(source_root).as_posix().lower(),
     )
     return [
@@ -25,9 +29,12 @@ def discover_tables(source: Path) -> list[DiscoveredTable]:
 def find_related_file(dbf_path: Path, extension: str) -> Path | None:
     wanted = extension.lower()
     for candidate in dbf_path.parent.iterdir():
-        if candidate.is_file() and candidate.stem.lower() == dbf_path.stem.lower():
-            if candidate.suffix.lower() == wanted:
-                return candidate
+        if (
+            candidate.is_file()
+            and candidate.stem.lower() == dbf_path.stem.lower()
+            and candidate.suffix.lower() == wanted
+        ):
+            return candidate
     return None
 
 

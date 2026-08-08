@@ -27,12 +27,14 @@ if str(_SRC_DIR) not in sys.path:
 
 from dbf_bridge.verifier import main
 
-
 if __name__ == "__main__":
     default_args = [
-        "--source", r"K:\dbf_source",
-        "--output", r"K:\dbf_output",
-        "--formats", "csv,json,jsonl",
+        "--source",
+        r"K:\dbf_source",
+        "--output",
+        r"K:\dbf_output",
+        "--formats",
+        "csv,json,jsonl",
     ]
     cli_args = sys.argv[1:] if len(sys.argv) > 1 else default_args
     sys.exit(main(cli_args))

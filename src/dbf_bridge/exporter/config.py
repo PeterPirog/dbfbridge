@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import DecodeErrors, DeletedPolicy, ExportConfig, ExportFormat, MemoPolicy, MissingMemoPolicy
+from .models import (
+    DecodeErrors,
+    DeletedPolicy,
+    ExportConfig,
+    ExportFormat,
+    MemoPolicy,
+    MissingMemoPolicy,
+)
 
 
 class ConfigError(ValueError):

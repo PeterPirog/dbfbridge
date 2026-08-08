@@ -121,9 +121,12 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         warnings.append(
             f"Character decode errors policy is {config.decode_errors!r}; decoding issues are not fatal."
         )
-    if config.missing_memo == "null-with-warning" and table.memofilename is None:
-        if any(field.is_memo for field in fields):
-            warnings.append("Memo file is missing; memo values will be exported as null.")
+    if (
+        config.missing_memo == "null-with-warning"
+        and table.memofilename is None
+        and any(field.is_memo for field in fields)
+    ):
+        warnings.append("Memo file is missing; memo values will be exported as null.")
 
     language_driver_name = codepages.get(table.header.language_driver, (None, None))[1]
     return TableMetadata(
@@ -174,7 +177,9 @@ def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
             descriptor_data = marker + infile.read(FIELD_DESCRIPTOR.size - 1)
             if len(descriptor_data) != FIELD_DESCRIPTOR.size:
                 raise ValueError(f"Field descriptor is truncated in {dbf_path.name}.")
-            fields.append(_parse_field_descriptor(descriptor_data, encoding, config, dbversion_byte))
+            fields.append(
+                _parse_field_descriptor(descriptor_data, encoding, config, dbversion_byte)
+            )
 
     return RawHeader(
         dbversion_byte=dbversion_byte,
@@ -228,7 +233,9 @@ def _guess_encoding(language_driver: int) -> str:
         return "ascii"
 
 
-def metadata_from_failed_header(dbf_path: Path, relative_path: Path, config: ExportConfig) -> TableMetadata:
+def metadata_from_failed_header(
+    dbf_path: Path, relative_path: Path, config: ExportConfig
+) -> TableMetadata:
     raw = read_raw_header(dbf_path, config)
     encoding = config.encoding or _guess_encoding(raw.language_driver)
     return TableMetadata(

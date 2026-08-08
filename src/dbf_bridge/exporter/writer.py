@@ -26,7 +26,7 @@ class AtomicTextWriter:
         self.overwrite = overwrite
         self.handle: TextIO | None = None
 
-    def __enter__(self) -> "AtomicTextWriter":
+    def __enter__(self) -> AtomicTextWriter:
         ensure_can_write_final(self.final_path, overwrite=self.overwrite)
         self.final_path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = self.partial_path.open("w", encoding="utf-8", newline="\n")
@@ -81,6 +81,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             output=intended_output,
             status="UNSUPPORTED",
             encoding=config.encoding,
+            format=config.format,
             warnings=warnings,
             errors=[f"Unsupported table {table_report_path}: {exc}"],
         )
@@ -90,6 +91,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             output=intended_output,
             status="FAILED",
             encoding=config.encoding,
+            format=config.format,
             errors=[f"Table {table_report_path}: {exc}"],
         )
     except Exception as exc:
@@ -98,6 +100,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             output=intended_output,
             status="FAILED",
             encoding=config.encoding,
+            format=config.format,
             errors=[f"Table {table_report_path}: preflight failed: {exc}"],
         )
 
@@ -146,7 +149,9 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
         stats = data_collector.stats
         with AtomicTextWriter(data_path, overwrite=config.overwrite) as data_writer:
             if config.format == "csv":
-                _write_csv_header(data_writer, metadata.fields, include_deleted=config.deleted == "include")
+                _write_csv_header(
+                    data_writer, metadata.fields, include_deleted=config.deleted == "include"
+                )
             elif config.format == "json":
                 data_writer.write("[\n")
             json_first = True
@@ -215,7 +220,10 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                             strip_spaces=config.strip_spaces,
                         )
                         deleted_json_first = not _write_record(
-                            deleted_writer, serialized, metadata.fields, config,
+                            deleted_writer,
+                            serialized,
+                            metadata.fields,
+                            config,
                             json_first=deleted_json_first,
                         )
                         deleted_collector.add(serialized)
@@ -235,7 +243,9 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
 
         validation_errors: list[str] = []
         if config.validate:
-            validation = validate_output(partial_path(data_path), config.format, metadata.fields, stats)
+            validation = validate_output(
+                partial_path(data_path), config.format, metadata.fields, stats
+            )
             validation_errors.extend(validation.errors)
         else:
             validation = _file_result_without_reparse(partial_path(data_path), stats)
@@ -278,6 +288,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             schema=schema_path.relative_to(config.output).as_posix(),
             status=status,
             encoding=metadata.encoding,
+            format=config.format,
             active_records=stats.record_count
             if config.deleted != "include"
             else stats.record_count - deleted_stats.record_count,

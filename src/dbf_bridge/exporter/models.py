@@ -117,6 +117,7 @@ class TableResult:
     output: str | None
     status: TableStatus
     encoding: str | None
+    format: ExportFormat = "jsonl"
     active_records: int = 0
     deleted_records: int = 0
     memo_fields: list[str] = field(default_factory=list)
@@ -135,6 +136,7 @@ class TableResult:
             "output": self.output,
             "status": self.status,
             "encoding": self.encoding,
+            "format": self.format,
             "active_records": self.active_records,
             "deleted_records": self.deleted_records,
             "memo_fields": self.memo_fields,
