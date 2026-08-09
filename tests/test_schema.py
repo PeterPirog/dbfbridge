@@ -5,7 +5,11 @@ import json
 from pathlib import Path
 
 import dbf
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 from dbf_bridge.exporter.config import make_config
 from dbf_bridge.exporter.discovery import discover_tables
