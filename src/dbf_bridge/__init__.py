@@ -1,4 +1,4 @@
-"""dbfbridge — DBF (Visual FoxPro) → CSV/JSON/JSONL exporter.
+"""Visual FoxPro DBF migration, reconstruction, and verification toolkit.
 
 Public API:
     from dbf_bridge.exporter.config import make_config
@@ -7,11 +7,13 @@ Public API:
     from dbf_bridge.exporter.reporting import write_reports
 
 CLI entry points (installed via pip):
-    dbf-bridge        — export DBF tree to CSV/JSON/JSONL
-    dbf-bridge-verify — verify conversion integrity
+    dbf-bridge         — export DBF trees to CSV/JSON/JSONL/XLSX
+    dbf-bridge-verify  — verify export integrity
+    dbf-bridge-import  — reconstruct DBF/FPT trees from one exported format
+    dbf-bridge-quality — run a retained diagnostic round trip
 
-A higher-level ``convert`` / ``verify`` facade is planned for a later release
-(see the Roadmap section in README.md).
+The command-line interfaces are the stable interface in 0.1.0. A higher-level
+``convert`` / ``verify`` facade is planned for a later release.
 """
 
 from __future__ import annotations

@@ -6,12 +6,6 @@ import pytest
 from dbf_bridge.cli import ALL_FORMATS, _resolve_formats, _resolve_memo_policy, main
 
 
-@pytest.fixture(scope="module")
-def sample_input_dir() -> Path:
-    """Path to the generated synthetic DBF fixtures used by the test suite."""
-    return Path(__file__).parent / "fixtures" / "input"
-
-
 def test_resolve_formats_valid():
     # Normal comma‑separated list
     assert _resolve_formats("csv,json") == ["csv", "json"]
@@ -39,21 +33,9 @@ def test_resolve_memo_policy():
         assert _resolve_memo_policy(fmt, None) == expected
 
 
-def test_export_example(sample_input_dir: Path):
-    """Integration test that runs the CLI against the synthetic fixtures.
-
-    Uses a temporary directory inside the repository to avoid permission issues
-    with pytest's default tmp_path fixture.
-    """
-    # Prepare a clean output directory within the repo
-    output_dir = Path(__file__).parent / "tmp_output"
-    if output_dir.exists():
-        for p in sorted(output_dir.rglob("*"), key=lambda x: -len(str(x))):
-            if p.is_file():
-                p.unlink()
-            else:
-                p.rmdir()
-    output_dir.mkdir(parents=True, exist_ok=True)
+def test_export_example(sample_input_dir: Path, tmp_path: Path):
+    """Run the CLI against automatically generated synthetic fixtures."""
+    output_dir = tmp_path / "output"
 
     args = [
         "--source",

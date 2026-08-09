@@ -25,25 +25,21 @@ def _run(source: Path, output: Path, *, incremental: bool = False) -> list[dict[
     assert main(args) == 0
     return [
         json.loads(line)
-        for line in (output / "migration_report.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
+        for line in (output / "migration_report.jsonl").read_text(encoding="utf-8").splitlines()
     ]
 
 
 def _statuses(report: list[dict[str, object]]) -> dict[str, object]:
-    return {
-        str(item["table"]): item["status"]
-        for item in report
-        if item.get("type") == "table"
-    }
+    return {str(item["table"]): item["status"] for item in report if item.get("type") == "table"}
 
 
-def test_incremental_export_reuses_only_complete_unchanged_tables(tmp_path: Path) -> None:
-    fixtures = Path(__file__).parent / "fixtures" / "input"
+def test_incremental_export_reuses_only_complete_unchanged_tables(
+    tmp_path: Path,
+    sample_input_dir: Path,
+) -> None:
     source = tmp_path / "source"
     output = tmp_path / "output"
-    shutil.copytree(fixtures, source)
+    shutil.copytree(sample_input_dir, source)
 
     first = _run(source, output)
     manifest_path = output / CHECKSUM_MANIFEST_NAME
@@ -109,11 +105,13 @@ def test_incremental_export_reuses_only_complete_unchanged_tables(tmp_path: Path
     assert discover_inputs(output, "json") == []
 
 
-def test_incremental_export_rebuilds_after_configuration_change(tmp_path: Path) -> None:
-    fixtures = Path(__file__).parent / "fixtures" / "input"
+def test_incremental_export_rebuilds_after_configuration_change(
+    tmp_path: Path,
+    sample_input_dir: Path,
+) -> None:
     source = tmp_path / "source"
     output = tmp_path / "output"
-    shutil.copytree(fixtures, source)
+    shutil.copytree(sample_input_dir, source)
     _run(source, output)
 
     assert (
@@ -141,11 +139,13 @@ def test_incremental_export_rebuilds_after_configuration_change(tmp_path: Path) 
     assert report[0]["skipped"] == 0
 
 
-def test_incremental_export_caches_internal_jsonl_for_other_formats(tmp_path: Path) -> None:
-    fixtures = Path(__file__).parent / "fixtures" / "input"
+def test_incremental_export_caches_internal_jsonl_for_other_formats(
+    tmp_path: Path,
+    sample_input_dir: Path,
+) -> None:
     source = tmp_path / "source"
     output = tmp_path / "output"
-    shutil.copytree(fixtures, source)
+    shutil.copytree(sample_input_dir, source)
     args = [
         "--source",
         str(source),

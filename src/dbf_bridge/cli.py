@@ -3,24 +3,13 @@ dbf_bridge.cli
 ==============
 
 Fasada CLI dla pakietu dbf_bridge — rekurencyjnie eksportuje pliki DBF
-(wraz z powiązanymi FPT/CDX) do CSV, JSON i JSONL, zachowując strukturę
+(wraz z powiązanymi FPT/CDX) do CSV, JSON, JSONL i XLSX, zachowując strukturę
 katalogów. Wykorzystuje streamingowy, atomowy eksporter z walidacją
 SHA-256 i automatycznym fallback polskich stron kodowych (cp1250/cp852/Mazovia).
 
-Punkty wejścia (instalowane przez pip):
-    dbf-bridge        — eksport DBF -> CSV/JSON/JSONL
-    dbf-bridge-verify — weryfikacja konwersji (dbf_bridge.verifier)
-
-Uruchamianie z PyCharm:
-    Skrypt ma domyślne wartości argumentów (DEFAULTS), więc można go uruchomić
-    klikając „Run" bez konfigurowania parametrów.
-
-Domyślnie:
-    source   = tests/fixtures/synthetic_data/input
-    output   = tests/fixtures/synthetic_data/output
-    formats  = csv,json,jsonl
-    memo     = skip dla csv, inline dla json/jsonl
-    overwrite = True
+Punkt wejścia instalowany przez pip: ``dbf-bridge``. Parametry ``--source`` i
+``--output`` są wymagane. Domyślny format to JSONL; CSV domyślnie pomija memo,
+a JSON/JSONL/XLSX zapisują memo inline.
 """
 
 from __future__ import annotations
@@ -54,12 +43,8 @@ from dbf_bridge.exporter.reporting import exit_code, write_reports
 from dbf_bridge.exporter.validation import sha256_file
 from dbf_bridge.exporter.writer import export_table
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-
 DEFAULTS = {
-    "source": Path("."),
-    "output": Path("."),
-    "formats": "jsonl",  # domyślnie tylko jsonl
+    "formats": "jsonl",
     "memo": None,
     "strip_spaces": False,
     "encoding": "auto",
@@ -112,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--memo",
         choices=["skip", "inline", "null"],
         default=DEFAULTS["memo"],
-        help="Polityka pól memo. Domyślnie: skip dla CSV, inline dla JSON/JSONL.",
+        help="Polityka pól memo. Domyślnie: skip dla CSV, inline dla JSON/JSONL/XLSX.",
     )
     parser.add_argument(
         "--strip-spaces",
@@ -315,9 +300,7 @@ def _print_summary(results: list[TableResult]) -> None:
     warning = sum(1 for r in results if r.status == "WARNING")
     skipped = sum(1 for r in results if r.status == "SKIPPED")
     failed = sum(1 for r in results if r.status in {"FAILED", "UNSUPPORTED"})
-    print(
-        f"  -> OK: {ok}  Ostrzeżenia: {warning}  Pominięte: {skipped}  Błędy: {failed}"
-    )
+    print(f"  -> OK: {ok}  Ostrzeżenia: {warning}  Pominięte: {skipped}  Błędy: {failed}")
     for r in results:
         if r.status in {"FAILED", "UNSUPPORTED"} or r.errors:
             print(f"      - {r.table}: {r.status} | {'; '.join(r.errors) if r.errors else ''}")
@@ -369,9 +352,7 @@ def _convert_jsonl_outputs(
 
     for result in results:
         for fmt in target_formats:
-            intended_output = (
-                str(Path(result.table).with_suffix(f".{fmt}")).replace("\\", "/")
-            )
+            intended_output = str(Path(result.table).with_suffix(f".{fmt}")).replace("\\", "/")
             if result.status in {"FAILED", "UNSUPPORTED"} or result.output is None:
                 conversion_results.append(
                     TableResult(
@@ -405,8 +386,7 @@ def _convert_jsonl_outputs(
                     primary_source,
                     columns,
                     schema_types,
-                    result.active_records
-                    + (result.deleted_records if deleted == "include" else 0),
+                    result.active_records + (result.deleted_records if deleted == "include" else 0),
                 )
             ]
             if deleted == "separate":
@@ -442,9 +422,7 @@ def _convert_jsonl_outputs(
                     )
                     output_hash = sha256_file(destination_path)
                     converted[variant] = (destination_path, stats, output_hash)
-                    sheet_info = (
-                        f", {stats.sheet_count} arkusz(e)" if stats.sheet_count else ""
-                    )
+                    sheet_info = f", {stats.sheet_count} arkusz(e)" if stats.sheet_count else ""
                     if stats.overflow_value_count:
                         sheet_info += (
                             f", długie wartości: {stats.overflow_value_count} "
@@ -518,9 +496,7 @@ def _convert_jsonl_file(
     xlsx_long_text: str = "overflow",
 ) -> ConversionStats:
     if fmt == "csv":
-        null_columns = (
-            memo_fields if _resolve_memo_policy("csv", memo_arg) != "inline" else []
-        )
+        null_columns = memo_fields if _resolve_memo_policy("csv", memo_arg) != "inline" else []
         return jsonl_to_csv(
             source_path,
             destination_path,
@@ -596,8 +572,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.source.is_dir() and not (args.source.is_file() and args.source.suffix.lower() == ".dbf"):
-        print(f"[dbf-bridge] Błąd: katalog lub plik DBF nie istnieje: {args.source}", file=sys.stderr)
+    if not args.source.is_dir() and not (
+        args.source.is_file() and args.source.suffix.lower() == ".dbf"
+    ):
+        print(
+            f"[dbf-bridge] Błąd: katalog lub plik DBF nie istnieje: {args.source}", file=sys.stderr
+        )
         return 1
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -718,7 +698,9 @@ def main(argv: list[str] | None = None) -> int:
                 "exit_code": overall_errors,
             },
         )
-        jsonl_results = {result.table: result for result in report_results if result.format == "jsonl"}
+        jsonl_results = {
+            result.table: result for result in report_results if result.format == "jsonl"
+        }
         for table in discovered_tables:
             table_name = table.relative_path.as_posix()
             if table_name in fingerprints:

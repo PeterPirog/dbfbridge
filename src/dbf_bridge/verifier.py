@@ -489,7 +489,7 @@ def summarize(checks: list[TableCheck], global_errors: list[str]) -> dict[str, A
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dbf-bridge-verify",
-        description="Weryfikuje poprawność konwersji DBF -> CSV/JSON/JSONL.",
+        description="Weryfikuje poprawność konwersji DBF -> CSV/JSON/JSONL/XLSX.",
     )
     parser.add_argument(
         "--source",
@@ -519,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="strict",
         action="store_false",
         default=DEFAULTS["strict"],
-        help="Ostrzeżenia nie powodują kodu wyjścia 1.",
+        help="Ostrzeżenia nie powodują kodu wyjścia 2.",
     )
     parser.add_argument(
         "--report",

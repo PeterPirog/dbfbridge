@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproducible reconstruction
 - Atomic `conversion_checksums.json` manifests and `--incremental` export that skips
   unchanged tables only after source, configuration, schema, and output verification
+- Reproducible test fixtures generated automatically in pytest temporary storage
+- Consistent user/developer documentation for all four CLIs, default dependencies,
+  reports, reconstruction guarantees, and PowerShell examples
+- Source-distribution manifest containing tests, fixture generator, examples, and benchmarks
 
 ### Fixed
 - Closed the generated FPT read handle before raw-layout replacement, preventing
@@ -61,6 +65,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Pending (planned for 0.2.0+)
 - Python API: `from dbf_bridge import convert, verify`
-- Comprehensive test suite (pytest)
 - GitHub Actions CI (Python 3.10/3.11/3.12)
 - PyPI publication

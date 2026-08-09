@@ -5,18 +5,11 @@ examples/export_dbf.py
 Przykład uruchomienia konwertera dbf_bridge na rzeczywistych danych
 (Visual FoxPro 9.0 SP2, pliki DBF/FPT/CDX z polskimi znakami).
 
-Domyślne ścieżki (do edycji w razie potrzeby):
-    source = K:\\dbf_source   — katalog z plikami DBF
-    output = K:\\dbf_output   — katalog wyjściowy (CSV/JSON/JSONL)
-
 Uruchamianie z PyCharm:
-    Otwórz ten plik w PyCharm i kliknij „Run" — skrypt użyje domyślnych
-    ścieżek. Aby zmienić parametry, edytuj konfigurację „Run/Debug"
-    i dodaj argumenty w polu „Parameters", np.:
+    Dodaj wymagane argumenty w konfiguracji „Run/Debug", np.:
         --source "D:\\InneDane" --output "D:\\Wynik"
 
 Uruchamianie z linii poleceń:
-    python examples/export_dbf.py
     python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --formats jsonl
     python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --formats jsonl --incremental
 
@@ -45,20 +38,4 @@ if str(_SRC_DIR) not in sys.path:
 from dbf_bridge.cli import main
 
 if __name__ == "__main__":
-    # Domyślne argumenty – podaj własne ścieżki lub skorzystaj z argumentów wiersza poleceń.
-    # Przykład uruchomienia:
-    #   python examples/export_dbf.py --source ./my_data --output ./out_dir --formats csv,jsonl
-    default_args = [
-        "--source",
-        "./data",  # zmień na katalog z plikami DBF lub pojedynczy plik DBF
-        "--output",
-        "./out",   # katalog, w którym zostaną zapisane wyniki
-        "--formats",
-        "csv,json,jsonl,xlsx",
-        "--overwrite",
-    ]
-
-    # Jeśli podano argumenty w linii poleceń, użyj ich; w przeciwnym razie
-    # użyj domyślnych ścieżek.
-    cli_args = sys.argv[1:] if len(sys.argv) > 1 else default_args
-    sys.exit(main(cli_args))
+    sys.exit(main())

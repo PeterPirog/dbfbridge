@@ -1,212 +1,151 @@
 # AGENTS.md — dbfbridge project context
 
-> Ten plik zawiera pełny kontekst prac dla nowej sesji w PyCharm.
-> Przeczytaj go w całości przed kontynuowaniem prac.
+Read this file before changing the repository. User-facing behavior is documented in
+`README.md`; this file records the implementation map and maintenance rules.
 
-## Projekt
+## Project
 
-**dbfbridge** — dwukierunkowy konwerter plików DBF (Visual FoxPro) ↔ CSV/JSON/JSONL/XLSX z automatycznym fallbackiem polskich stron kodowych (cp1250/cp852/Mazovia).
+`dbfbridge` is a Python 3.10+ toolkit for Visual FoxPro DBF/FPT migration:
 
-- **Repozytorium**: https://github.com/PeterPirog/dbfbridge
-- **Autor**: Peter Pirog <pirog.peter@gmail.com>
-- **Licencja**: MIT
-- **Status**: 0.1.0 (alpha — eksport DBF → CSV/JSON/JSONL/XLSX)
-- **Cel publikacji**: PyPI
+- DBF → CSV/JSON/JSONL/XLSX export;
+- checksum-based incremental re-export;
+- schema-driven CSV/JSON/JSONL/XLSX → DBF/FPT reconstruction;
+- export verification and diagnostic DBF → JSONL → DBF round trips;
+- cp1250/cp852/Mazovia decoding for legacy Polish data.
 
-## Historia powstania
+Repository: <https://github.com/PeterPirog/dbfbridge>
 
-Projekt wywodzi się z wewnętrznego zestawu skryptów do migracji danych z systemu opartego na Visual FoxPro 9.0 SP2 (pliki DBF/FPT/CDX z polskimi znakami) do nowoczesnych formatów, a docelowo do bazy Neo4j. Skrypty te zostały uogólnione i wydzielone do samodzielnego pakietu `dbfbridge`.
+License: MIT
 
-### Co zostało zrobione w pierwotnym projekcie:
+Current package version/status: 0.1.0, alpha.
 
-1. **`exporter/`** — streamingowy, atomowy pakiet eksportu DBF → JSONL/CSV
-   - `models.py` — dataclassy: `ExportConfig`, `FieldMetadata`, `TableMetadata`, `TableResult`, `StreamStats`
-   - `config.py` — `make_config()` walidacja konfiguracji
-   - `discovery.py` — `discover_tables()` rekurencyjne znajdowanie DBF + FPT
-   - `reader.py` — `LosslessFieldParser` z automatycznym fallback kodowania (cp1250 → cp852 → Mazovia)
-   - `serialization.py` — `serialize_record()` z polityką memo (skip/inline/null) i strip_spaces
-   - `writer.py` — `export_table()` streamingowy zapis z atomowym rename, walidacją SHA-256
-   - `validation.py` — `validate_output()` round-trip parse + statystyki
-   - `reporting.py` — `write_reports()` migration_report.jsonl + .csv
-   - `polish_codecs.py` — rejestracja Mazovia/PIAST w `codecs` Pythona
+## Architecture
 
-2. **`05_dbf_tree_to_csv.py`** — fasada CLI wywołująca `exporter/`, z domyślnymi argumentami dla PyCharm
-   - Formaty: csv, json, jsonl (parametr `--formats`)
-   - Polityka memo per-format: csv=skip, json/jsonl=inline
-   - Domyślne: source/output = synthetic_data/, overwrite=True
-
-3. **`06_verify_conversion.py`** — weryfikacja konwersji
-   - Sprawdza: kompletność plików, liczbę rekordów, SHA-256, schema, składnię, FPT/CDX
-   - Zapisuje `verification_report.json`
-
-4. **`synthetic_data/generate_sample_dbf.py`** — generator syntetycznych DBF (3 tabele: klienci, zamowienia, archiwum) z polskimi znakami w cp1250
-
-5. **Testy na danych rzeczywistych**: 93 pliki DBF z `K:\dbf_source` — wszystkie 93 OK po dodaniu fallback Mazovia (wcześniej 6 failed na `UnicodeDecodeError` z cp1250)
-
-### Kluczowe decyzje architektoniczne:
-
-- **`dbfread` (nie `dbf`)** do odczytu — streaming, brak ładowania całej tabeli do RAM
-- **`dbf` (Ethan Furman)** do zapisu DBF (do użycia w round-trip)
-- **CSV bez memo** — pola memo zawierają `\n`, `,`, `"`, `;` które zaburzają proste parsery CSV
-- **JSONL z memo inline** — 1 linia = 1 rekord, newline w memo escapowany jako `\n` w JSON
-- **Atomowy zapis** — `AtomicTextWriter` pisze do `.partial`, potem `os.replace()` — bezpieczne dla dużych plików
-- **Fallback kodowania per-rekord** — `LosslessFieldParser.decode_text()` przechwytuje `UnicodeDecodeError` i próbuje cp1250 → cp852 → mazovia
-- **Konwersja dużych JSONL** — binarny streaming JSON, Polars lazy/sink CSV i XlsxWriter `constant_memory` dla XLSX
-
-## Struktura repozytorium dbfbridge
-
-```
-dbfbridge/
-├── pyproject.toml              # metadane pakietu, zależności, punkty wejścia
-├── README.md                   # dokumentacja użytkowa
-├── CHANGELOG.md                 # historia zmian
-├── AGENTS.md                    # TEN PLIK — kontekst dla nowej sesji
-├── LICENSE                      # MIT
-├── .gitignore                   # ignoruje *.dbf/*.fpt/*.cdx/*.csv/*.json/*.jsonl
-├── src/
-│   └── dbf_bridge/
-│       ├── __init__.py          # wersja 0.1.0.dev0
-│       ├── cli.py               # dbf-bridge (eksport) — z 05_dbf_tree_to_csv.py
-│       ├── verifier.py          # dbf-bridge-verify — z 06_verify_conversion.py
-│       └── exporter/           # eksporter DBF
-│           ├── __init__.py
-│           ├── config.py        # make_config()
-│           ├── discovery.py     # discover_tables()
-│           ├── models.py        # ExportConfig, FieldMetadata, TableMetadata, TableResult
-│           ├── polish_codecs.py # Mazovia/PIAST codec registration
-│           ├── reader.py        # LosslessFieldParser z fallback kodowania
-│           ├── reporting.py     # write_reports()
-│           ├── serialization.py # serialize_record() z memo_policy
-│           ├── validation.py    # validate_output()
-│           └── writer.py        # export_table() streaming atomowy
-├── examples/
-│   ├── README.md                # instrukcje uruchamiania przykładów
-│   ├── export_dbf.py            # eksport K:\dbf_source -> K:\dbf_output (domyślne)
-│   └── verify_dbf.py            # weryfikacja konwersji
-├── tests/
-│   └── fixtures/
-│       ├── generate_sample_dbf.py  # generator syntetycznych DBF (3 tabele)
-│       ├── input/                  # (generowane lokalnie, gitignored)
-│       └── output/                 # (generowane lokalnie, gitignored)
-└── docs/                        # (do utworzenia w przyszłości)
+```text
+src/dbf_bridge/
+├── cli.py                 export CLI and multi-format orchestration
+├── converters.py          streaming JSONL → JSON/CSV/XLSX converters
+├── verifier.py            exported-file verifier
+├── import_cli.py          reconstruction CLI
+├── quality.py             retained round-trip diagnostics
+├── exporter/
+│   ├── config.py          export validation
+│   ├── discovery.py       recursive DBF/FPT/CDX discovery
+│   ├── incremental.py     conversion_checksums.json cache
+│   ├── models.py          export dataclasses and type aliases
+│   ├── polish_codecs.py   Mazovia/PIAST codec
+│   ├── reader.py          dbfread parser and encoding fallback
+│   ├── serialization.py   JSON-safe DBF value serialization
+│   ├── validation.py      output parsing and SHA-256
+│   ├── writer.py          atomic DBF → JSONL/schema export
+│   └── reporting.py       migration_report.jsonl/.csv
+└── importer/
+    ├── checksum.py        schema-aware canonical checksums
+    ├── models.py          reconstruction configuration/results
+    ├── readers.py         JSONL/JSON/CSV/XLSX input streams
+    ├── reconstruct.py     directory-tree orchestration
+    ├── writer.py          DBF/FPT creation and raw-layout restoration
+    └── reporting.py       reconstruction_report.jsonl
 ```
 
-## Co trzeba zrobić (kolejne kroki)
+Other important paths:
 
-### Krok 1 — Oczyszczenie i dostosowanie importów (najpilniejsze) — UKOŃCZONE
-- [x] Usunąć `src/dbf_bridge/exporter/cli.py` (dubluje `dbf_bridge.cli`)
-- [x] Poprawić import w `polish_codecs.py` (`from exporter.` → `from dbf_bridge.exporter.`)
-- [x] Utworzyć `.venv` w `dbfbridge/` i zainstalować `pip install -e ".[dev]"`
-- [x] Przetestować: `python -m dbf_bridge.cli --help` i `dbf-bridge --help`
-- [x] Poprawić domyślne ścieżki w cli.py i verifier.py (`synthetic_data/` → `tests/fixtures/`)
-- [x] Przetestować pełny round-trip: generate_sample_dbf → cli → verifier — 3/3 OK
+- `examples/` — thin executable wrappers and PowerShell examples;
+- `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
+- `tests/conftest.py` — generates fixtures in pytest temporary storage;
+- `benchmarks/` — synthetic JSONL conversion benchmark;
+- `pyproject.toml` — package metadata, runtime/dev dependencies, console scripts.
 
-### Krok 2 — Testy na danych syntetycznych — UKOŃCZONE
-- [x] Uruchomić `tests/fixtures/generate_sample_dbf.py` (wymaga `pip install dbf`)
-- [x] Uruchomić `dbf-bridge --source tests/fixtures/input --output tests/fixtures/output`
-- [x] Uruchomić `dbf-bridge-verify` na wyniku — 3/3 OK, 80 rekordów, 0 błędów
+## Command-line interfaces
 
-### Krok 3 — Implementacja round-trip X → DBF — UKOŃCZONE
-- [x] `src/dbf_bridge/importer/` — rekonstrukcja z JSONL/JSON/CSV/XLSX
-- [x] Odtwarzanie DBF/FPT, typów, kodowania, deskryptorów i drzewa katalogów
-- [x] CLI `dbf-bridge-import` i przykład `export_from_file_to_dbf.py`
-- [x] Kanoniczne i surowe sumy SHA-256 w raporcie rekonstrukcji
-- [x] `dbf-bridge-quality` — diagnostyczny DBF → JSONL → DBF
-
-### Krok 4 — Dodanie XLSX — UKOŃCZONE
-- [x] Nowy format `xlsx` przez XlsxWriter w trybie `constant_memory`
-- [x] Automatyczny podział arkuszy przy limicie Excela
-- [x] Memo inline jako tekst i ochrona tekstu przed interpretacją jako formuła
-
-### Krok 5 — Testy pytest
-- [ ] `tests/test_export.py` — DBF → CSV/JSON/JSONL
-- [ ] `tests/test_polish_codecs.py` — Mazovia/cp852/cp1250
-- [ ] `tests/test_roundtrip.py` — DBF → X → DBF
-- [ ] `tests/test_cli.py` — CLI przez subprocess
-- [ ] GitHub Actions CI (Python 3.10/3.11/3.12)
-
-### Krok 6 — Publikacja na PyPI
-- [ ] `python -m build`
-- **`0.1.0`** — Stabilna wersja: eksport DBF → CSV/JSON/JSONL/XLSX (wymagany optional extra `xlsx`).
-- **`0.2.0`** — Round‑trip import (CSV/JSON/JSONL → DBF) oraz wsparcie memo przy zapisie.
-- **`0.3.0`** — Dodatkowe formaty i usprawnienia (np. lepsza walidacja, CI).
-
-## Zależności
-
-### Podstawowe (zawsze):
-- `dbfread>=2.0.7` — odczyt DBF (streaming, natywna obsługa codepage)
-  - **Uwaga**: ostatni release 2016-11-25, biblioteka stabilna ale nieaktywnie rozwijana
-    (40 otwartych issues na GitHub, ostatni push 2024). Pozostaje najlepszym wyborem
-    do streamingowego odczytu DBF (niskie zużycie pamięci, obsługa FPT, codepage).
-    Warstwa `dbf_bridge/exporter/reader.py` izoluje tę zależność — w razie potrzeby
-    można ją zastąpić alternatywą (np. `dbf` lub własny parser) bez zmiany API.
-
-### Podstawowe dla rekonstrukcji:
-- `dbf>=0.99.11` — zapis DBF/FPT
-- `openpyxl>=3.1.5` — streamingowy odczyt XLSX
-- `xlsxwriter>=3.2` — zapis XLSX
-
-### Dev:
-- `pytest>=8.0`, `pytest-cov>=5.0`, `build>=1.2`, `twine>=5.1`
-- `pip install -e ".[dev]"` instaluje wszystkie powyższe + `dbf`
-
-### Wersja Pythona:
-- Minimum: 3.10 (używa `X | None` syntax, `argparse.BooleanOptionalAction`)
-- Testowane: 3.10, 3.11, 3.12, 3.13
-- `pyproject.toml`: `requires-python = ">=3.10"`, classifiers do 3.13
-
-## Konwencje kodowe
-
-- Python 3.10+ (używa `from __future__ import annotations` i `X | None`)
-- Type hints wszędzie
-- Docstringi w polski (komentarze) / angielski (docstringi modułów)
-- Brak komentarzy w kodzie (zgodnie z preferencjami autora)
-- `from __future__ import annotations` na początku każdego modułu
-- Testy przez pytest
-
-## Uruchamianie
+All real-data commands require explicit source/output paths except the verifier, whose
+defaults point at generated test fixtures.
 
 ```powershell
-# Setup
-cd D:\PycharmProjects\dbfbridge
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"  # instaluje dbfread + dbf + pytest + build + twine
-
-# Generuj dane syntetyczne (3 tabele: klienci, zamowienia, archiwum)
-python tests/fixtures/generate_sample_dbf.py
-# -> tests/fixtures/input/*.dbf + *.fpt
-
-# Eksport (domyślnie: tests/fixtures/input -> tests/fixtures/output, 3 formaty)
-dbf-bridge
-# lub z własnymi ścieżkami:
-dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output"
-
-# Weryfikacja
-dbf-bridge-verify
-# lub:
-dbf-bridge-verify --source "K:\dbf_source" --output "K:\dbf_output"
-
-# Przykłady (z domyślnymi ścieżkami)
-python examples/export_dbf.py
-python examples/verify_dbf.py
-
-# Testy
-pytest
+dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output" --formats csv,json,jsonl,xlsx
+dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output" --formats csv,json,jsonl,xlsx --incremental
+dbf-bridge-verify --source "K:\dbf_source" --output "K:\dbf_output" --formats csv,json,jsonl,xlsx
+dbf-bridge-import --source "K:\dbf_output" --output "K:\dbf_rebuilt" --formats jsonl --memo inline --overwrite
+dbf-bridge-quality --source "K:\dbf_source" --output "K:\dbf_quality" --overwrite
 ```
 
-## Weryfikacja projektu (stan na ostatni commit)
+Console entry points in `pyproject.toml` must stay synchronized with README and examples:
 
-- `pip install -e ".[dev]"` — instalacja pakietu w trybie edytowalnym ✓
-- `python -m dbf_bridge.cli --help` — CLI działa ✓
-- `dbf-bridge` — eksport 3/3 tabel OK, 0 błędów ✓
-- `dbf-bridge-verify` — weryfikacja 3/3 OK, 80 rekordów round-trip ✓
-- `pytest` — 12 testów konwersji i integracji ✓
-- `ruff check src tests benchmarks` — bez błędów ✓
-- `mazovia` codec — `bytes([0x81,0x83,0x88]).decode('mazovia')` = `ąęź` ✓
-- `.gitignore` — `*.dbf`, `*.fpt`, `*.cdx`, `*.csv`, `*.json`, `*.jsonl` ignorowane ✓
+- `dbf-bridge` → `dbf_bridge.cli:main`;
+- `dbf-bridge-verify` → `dbf_bridge.verifier:main`;
+- `dbf-bridge-import` → `dbf_bridge.import_cli:main`;
+- `dbf-bridge-quality` → `dbf_bridge.quality:main`.
 
-## Kontakt / issues
+## Data and reconstruction rules
 
-- GitHub Issues: https://github.com/PeterPirog/dbfbridge/issues
-- Autor: Peter Pirog
+- DBF is read with `dbfread` in streaming mode and written with `dbf`.
+- The exporter always creates an internal JSONL representation; requested JSON, CSV,
+  and XLSX outputs are streamed from it.
+- JSONL is the preferred reconstruction format. CSV omits memo by default and spreadsheet
+  formats are not intended to preserve every raw DBF byte.
+- `<table>_schema.json` is the authority for field descriptors, header/codepage details,
+  memo layout, and original checksums.
+- JSON/JSONL carries reserved raw-record metadata used for exact layout restoration.
+- `--deleted include` is required when deleted record order matters for raw identity.
+- CDX tag expressions are not stored in DBF field metadata and cannot be reconstructed.
+- `raw_*_match` proves byte identity; canonical checksums prove schema-aware value
+  equivalence. Canonical equality does not imply byte equality.
+- Atomic writes use a sibling `.partial` file, flush/fsync, and `os.replace`.
+- `conversion_checksums.json` skips a table only after source, settings, schema, and every
+  requested output are revalidated. It never deletes stale output files automatically.
+
+## Dependencies
+
+Runtime dependencies are installed by default:
+
+- `dbfread` — DBF/FPT reading;
+- `dbf` — DBF/FPT reconstruction and fixture generation;
+- `orjson` — JSONL parsing/validation;
+- `polars` — streaming CSV conversion;
+- `xlsxwriter` — constant-memory XLSX writing;
+- `openpyxl` — read-only XLSX reconstruction.
+
+The empty `import` and `xlsx` extras are compatibility aliases. Development setup is:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install -e ".[dev]"
+```
+
+## Validation before publishing
+
+Run from a clean checkout; tests generate their own fixture files:
+
+```powershell
+pytest
+ruff check src tests benchmarks examples
+python -m build
+twine check dist/*
+python -m dbf_bridge.cli --help
+python -m dbf_bridge.import_cli --help
+python -m dbf_bridge.verifier --help
+python -m dbf_bridge.quality --help
+```
+
+Also inspect `git diff --check` and do not commit generated DBF/FPT/CDX, conversion
+outputs, reports, `build/`, `dist/`, virtual environments, or user data.
+
+## Code conventions
+
+- Use `from __future__ import annotations` and complete type hints.
+- Keep large-data paths streaming and bounded-memory.
+- Preserve relative paths and filename casing.
+- Never silently weaken checksum, atomic-write, encoding, or reconstruction guarantees.
+- Add a regression test for every fixed defect.
+- Keep README, examples, `--help`, changelog, and `pyproject.toml` consistent whenever
+  behavior, options, defaults, entry points, or dependencies change.
+- User-facing reports must include enough context to diagnose a failed table without the
+  original Python traceback.
+
+## Known follow-up work
+
+- High-level public `convert` / `verify` Python facade;
+- CI test matrix for supported Python versions;
+- PyPI publication workflow;
+- index-aware CDX reconstruction, if a reliable source of tag definitions is added.
