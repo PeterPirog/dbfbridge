@@ -43,15 +43,16 @@ if str(_SRC_DIR) not in sys.path:
 from dbf_bridge.cli import main
 
 if __name__ == "__main__":
-    # Domyślne argumenty — używane gdy skrypt uruchomiony bez parametrów
-    # (np. kliknięcie „Run" w PyCharm). Z linii poleceń można nadpisać.
+    # Domyślne argumenty – podaj własne ścieżki lub skorzystaj z argumentów wiersza poleceń.
+    # Przykład uruchomienia:
+    #   python examples/export_dbf.py --source ./my_data --output ./out_dir --formats csv,jsonl
     default_args = [
         "--source",
-        r"K:\dbf_source",
+        "./data",  # zmień na katalog z plikami DBF lub pojedynczy plik DBF
         "--output",
-        r"K:\dbf_output",
+        "./out",   # katalog, w którym zostaną zapisane wyniki
         "--formats",
-        "csv,json,jsonl",
+        "csv,json,jsonl,xlsx",
         "--overwrite",
     ]
 

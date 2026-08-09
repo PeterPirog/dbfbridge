@@ -56,9 +56,10 @@ DEFAULT_MEMO_POLICY: dict[str, str] = {
     "csv": "skip",
     "json": "inline",
     "jsonl": "inline",
+    "xlsx": "inline",
 }
 
-ALL_FORMATS: tuple[str, ...] = ("csv", "json", "jsonl")
+ALL_FORMATS: tuple[str, ...] = ("csv", "json", "jsonl", "xlsx")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--formats",
+        choices=ALL_FORMATS,
         default=DEFAULTS["formats"],
         help=f"Lista formatów rozdzielona przecinkami (domyślnie: {DEFAULTS['formats']}).",
     )
@@ -282,8 +284,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.source.is_dir():
-        print(f"[dbf-bridge] Błąd: katalog źródłowy nie istnieje: {args.source}", file=sys.stderr)
+    if not args.source.is_dir() and not (args.source.is_file() and args.source.suffix.lower() == ".dbf"):
+        print(f"[dbf-bridge] Błąd: katalog lub plik DBF nie istnieje: {args.source}", file=sys.stderr)
         return 1
 
     args.output.mkdir(parents=True, exist_ok=True)
