@@ -3,8 +3,7 @@ generate_sample_dbf.py
 ======================
 
 Tworzy syntetyczną strukturę katalogów z przykładowymi plikami DBF
-(wraz z plikami memo FPT) umożliwiającą uruchomienie
-05_dbf_tree_to_csv.py.
+(wraz z plikami memo FPT) do testów i przykładów dbfbridge.
 
 Wygenerowane dane obejmują różne typy pól DBF:
 - C (Character)     – tekst
@@ -15,7 +14,7 @@ Wygenerowane dane obejmują różne typy pól DBF:
 - M (Memo)          – teksty długie zapisywane w pliku FPT
 
 Struktura katalogów:
-    synthetic_data/input/
+    tests/fixtures/input/
     ├── klienci.dbf + klienci.fpt
     ├── zamowienia/
     │   └── zamowienia.dbf
@@ -23,11 +22,13 @@ Struktura katalogów:
         └── stare_dane.dbf + stare_dane.fpt
 
 Użycie:
-    python generate_sample_dbf.py
+    python tests/fixtures/generate_sample_dbf.py
+    python tests/fixtures/generate_sample_dbf.py --output C:\\temp\\dbf-fixtures
 """
 
 from __future__ import annotations
 
+import argparse
 import random
 import string
 from datetime import date, datetime, timedelta
@@ -167,10 +168,9 @@ def generate_archiwum(base_dir: Path) -> None:
     print(f"Utworzono: {base_dir / 'archiwum' / 'stare_dane.dbf'}")
 
 
-def main() -> None:
+def generate(base_dir: Path) -> None:
+    """Generate a deterministic DBF fixture tree in *base_dir*."""
     random.seed(42)
-    base_dir = Path(__file__).resolve().parent / "input"
-
     if base_dir.exists():
         for item in base_dir.rglob("*"):
             if item.is_file():
@@ -189,6 +189,18 @@ def main() -> None:
         depth = len(path.relative_to(base_dir).parts)
         prefix = "  " * depth
         print(f"{prefix}{'[dir] ' if path.is_dir() else '[file] '}{path.name}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Generate deterministic DBF/FPT test fixtures.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(__file__).resolve().parent / "input",
+        help="Output directory (default: tests/fixtures/input).",
+    )
+    args = parser.parse_args(argv)
+    generate(args.output)
 
 
 if __name__ == "__main__":
