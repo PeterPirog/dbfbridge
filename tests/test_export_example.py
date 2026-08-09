@@ -97,7 +97,7 @@ def test_export_example(sample_input_dir: Path):
     ]
     summary = report_lines[0]
     entries = report_lines[1:]
-    assert summary["report_version"] == 2
+    assert summary["report_version"] == 3
     assert summary["tables"] == 3
     assert summary["outputs"] == 12
     assert summary["formats"] == ["csv", "json", "jsonl", "xlsx"]

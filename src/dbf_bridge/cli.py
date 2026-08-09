@@ -61,6 +61,7 @@ DEFAULTS = {
     "overwrite": True,
     "validate": True,
     "progress": True,
+    "xlsx_long_text": "overflow",
 }
 
 DEFAULT_MEMO_POLICY: dict[str, str] = {
@@ -151,6 +152,16 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=DEFAULTS["progress"],
         help="Pokazuj postęp konwersji per tabela (domyślnie: włączone).",
+    )
+    parser.add_argument(
+        "--xlsx-long-text",
+        choices=["overflow", "error"],
+        default=DEFAULTS["xlsx_long_text"],
+        help=(
+            "Obsługa tekstu dłuższego niż limit komórki Excela: "
+            "'overflow' zapisuje go bezstratnie w arkuszach Dlugie_teksty_* "
+            "(domyślnie), 'error' przerywa konwersję tabeli."
+        ),
     )
     return parser
 
@@ -327,6 +338,7 @@ def _convert_jsonl_outputs(
     memo_arg: str | None,
     deleted: str,
     overwrite: bool,
+    xlsx_long_text: str = "overflow",
 ) -> list[TableResult]:
     conversion_results: list[TableResult] = []
     target_formats = [fmt for fmt in formats if fmt != "jsonl"]
@@ -404,12 +416,19 @@ def _convert_jsonl_outputs(
                         memo_fields=memo_fields,
                         memo_arg=memo_arg,
                         overwrite=overwrite,
+                        xlsx_long_text=xlsx_long_text,
                     )
                     output_hash = sha256_file(destination_path)
                     converted[variant] = (destination_path, stats, output_hash)
                     sheet_info = (
                         f", {stats.sheet_count} arkusz(e)" if stats.sheet_count else ""
                     )
+                    if stats.overflow_value_count:
+                        sheet_info += (
+                            f", długie wartości: {stats.overflow_value_count} "
+                            f"({stats.overflow_chunk_count} części, "
+                            f"{stats.overflow_sheet_count} arkusz(e) przepełnień)"
+                        )
                     print(
                         f"  -> {source_path.name} -> {fmt.upper()}: "
                         f"{_format_count(stats.record_count)} rekordów, "
@@ -447,6 +466,15 @@ def _convert_jsonl_outputs(
                     deleted_sha256=deleted_result[2] if deleted_result is not None else None,
                     engine=primary[1].engine if primary is not None else None,
                     sheet_count=primary[1].sheet_count if primary is not None else 0,
+                    overflow_value_count=(
+                        primary[1].overflow_value_count if primary is not None else 0
+                    ),
+                    overflow_chunk_count=(
+                        primary[1].overflow_chunk_count if primary is not None else 0
+                    ),
+                    overflow_sheet_count=(
+                        primary[1].overflow_sheet_count if primary is not None else 0
+                    ),
                     elapsed_seconds=primary[1].elapsed_seconds if primary is not None else None,
                     errors=errors,
                 )
@@ -465,6 +493,7 @@ def _convert_jsonl_file(
     memo_fields: list[str],
     memo_arg: str | None,
     overwrite: bool,
+    xlsx_long_text: str = "overflow",
 ) -> ConversionStats:
     if fmt == "csv":
         null_columns = (
@@ -487,6 +516,7 @@ def _convert_jsonl_file(
         destination_path,
         columns=columns,
         overwrite=overwrite,
+        long_text_policy=xlsx_long_text,
     )
 
 
@@ -551,6 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         memo_arg=args.memo,
         deleted=args.deleted,
         overwrite=args.overwrite,
+        xlsx_long_text=args.xlsx_long_text,
     )
     report_results = [*all_results, *conversion_results]
     _print_format_summary(report_results)
@@ -579,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
                 "missing_memo_policy": args.missing_memo,
                 "overwrite": args.overwrite,
                 "validation_enabled": args.validate,
+                "xlsx_long_text_policy": args.xlsx_long_text,
                 "exit_code": overall_errors,
             },
         )
