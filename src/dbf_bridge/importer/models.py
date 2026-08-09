@@ -38,6 +38,7 @@ class ReconstructionResult:
     fpt_sha256: str | None = None
     expected_source_fpt_sha256: str | None = None
     raw_fpt_match: bool | None = None
+    raw_layout_restored: bool = False
     differences: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -64,6 +65,7 @@ class ReconstructionResult:
             "fpt_sha256": self.fpt_sha256,
             "expected_source_fpt_sha256": self.expected_source_fpt_sha256,
             "raw_fpt_match": self.raw_fpt_match,
+            "raw_layout_restored": self.raw_layout_restored,
             "differences": self.differences,
             "warnings": self.warnings,
             "errors": self.errors,

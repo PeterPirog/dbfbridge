@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
 import struct
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
@@ -10,7 +11,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from dbf_bridge.exporter.serialization import BINARY_MEMO_FIELDS_KEY, RAW_TEXT_FIELDS_KEY
+from dbf_bridge.exporter.serialization import (
+    BINARY_MEMO_FIELDS_KEY,
+    RAW_RECORD_KEY,
+    RAW_TEXT_FIELDS_KEY,
+)
 from dbf_bridge.exporter.validation import sha256_file
 
 from .checksum import CanonicalChecksum, nullable_null_fields
@@ -166,6 +171,150 @@ def write_dbf(
 def output_hashes(destination: Path, schema: Mapping[str, Any]) -> tuple[str, str | None]:
     fpt = memo_output_path(destination, schema)
     return sha256_file(destination), sha256_file(fpt) if fpt.is_file() else None
+
+
+def restore_raw_layout(
+    destination: Path,
+    records: Iterable[Mapping[str, Any]],
+    schema: Mapping[str, Any],
+) -> bool:
+    """Restore exact DBF records and relocate generated memo blocks to original pointers.
+
+    Current JSONL exports carry the source record image.  Logical values still
+    drive validation and FPT generation; the raw image is applied only after
+    every record can be matched safely.
+    """
+
+    with destination.open("rb") as source_dbf:
+        header = source_dbf.read(DBF_HEADER_SIZE)
+    record_count = struct.unpack_from("<I", header, 4)[0]
+    header_length, record_length = struct.unpack_from("<HH", header, 8)
+    expected_count = schema.get("dbf", {}).get("record_count_from_header")
+    if expected_count is not None and int(expected_count) != record_count:
+        return False
+
+    dbf_partial = destination.with_name(f".{destination.name}.raw-layout.partial")
+    dbf_partial.unlink(missing_ok=True)
+    shutil.copyfile(destination, dbf_partial)
+
+    memo_fields = [field for field in schema.get("fields", []) if field.get("is_memo")]
+    fpt = memo_output_path(destination, schema)
+    fpt_partial = fpt.with_name(f".{fpt.name}.raw-layout.partial")
+    generated_fpt = fpt.open("rb") if memo_fields and fpt.is_file() else None
+    relocated_fpt = None
+    try:
+        if generated_fpt is not None:
+            fpt_partial.unlink(missing_ok=True)
+            relocated_fpt = fpt_partial.open("w+b")
+            source_size = int(schema.get("memo", {}).get("size_bytes") or 0)
+            if source_size:
+                relocated_fpt.truncate(source_size)
+            raw_header = schema.get("memo", {}).get("header_base64")
+            if raw_header:
+                memo_header = base64.b64decode(str(raw_header), validate=True)
+            else:
+                memo_header = generated_fpt.read(512)
+            relocated_fpt.seek(0)
+            relocated_fpt.write(memo_header[:512])
+
+        block_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
+        seen_records = 0
+        with dbf_partial.open("r+b") as rebuilt_dbf:
+            for record_index, record in enumerate(records):
+                encoded = record.get(RAW_RECORD_KEY)
+                if not isinstance(encoded, str):
+                    return False
+                try:
+                    raw_record = base64.b64decode(encoded, validate=True)
+                except ValueError as exc:
+                    raise ReconstructionError(
+                        f"Record {record_index + 1} has invalid raw DBF metadata."
+                    ) from exc
+                if len(raw_record) != record_length:
+                    raise ReconstructionError(
+                        f"Record {record_index + 1} raw length {len(raw_record)} does not match "
+                        f"DBF record length {record_length}."
+                    )
+                offset = header_length + record_index * record_length
+                rebuilt_dbf.seek(offset)
+                generated_record = rebuilt_dbf.read(record_length)
+                if len(generated_record) != record_length:
+                    raise ReconstructionError(
+                        f"Reconstructed DBF record {record_index + 1} is truncated."
+                    )
+                if generated_fpt is not None and relocated_fpt is not None:
+                    for field in memo_fields:
+                        address = int(field["address"])
+                        original_pointer = struct.unpack_from("<I", raw_record, address)[0]
+                        generated_pointer = struct.unpack_from("<I", generated_record, address)[0]
+                        _relocate_memo_block(
+                            generated_fpt,
+                            relocated_fpt,
+                            generated_pointer,
+                            original_pointer,
+                            block_size,
+                            record_index + 1,
+                            str(field["name"]),
+                        )
+                rebuilt_dbf.seek(offset)
+                rebuilt_dbf.write(raw_record)
+                seen_records += 1
+            if seen_records != record_count:
+                raise ReconstructionError(
+                    f"Raw record metadata count {seen_records} does not match DBF record count "
+                    f"{record_count}."
+                )
+            rebuilt_dbf.flush()
+            os.fsync(rebuilt_dbf.fileno())
+
+        if relocated_fpt is not None:
+            relocated_fpt.flush()
+            os.fsync(relocated_fpt.fileno())
+            relocated_fpt.close()
+            relocated_fpt = None
+            os.replace(fpt_partial, fpt)
+        os.replace(dbf_partial, destination)
+        return True
+    finally:
+        if generated_fpt is not None:
+            generated_fpt.close()
+        if relocated_fpt is not None:
+            relocated_fpt.close()
+        dbf_partial.unlink(missing_ok=True)
+        fpt_partial.unlink(missing_ok=True)
+
+
+def _relocate_memo_block(
+    source: Any,
+    destination: Any,
+    generated_pointer: int,
+    original_pointer: int,
+    block_size: int,
+    record_number: int,
+    field_name: str,
+) -> None:
+    if generated_pointer == 0 and original_pointer == 0:
+        return
+    if generated_pointer == 0 or original_pointer == 0:
+        raise ReconstructionError(
+            f"Memo pointer presence differs at record {record_number}, field {field_name!r}."
+        )
+    source.seek(generated_pointer * block_size)
+    header = source.read(8)
+    if len(header) != 8:
+        raise ReconstructionError(
+            f"Generated memo block is truncated at record {record_number}, field {field_name!r}."
+        )
+    payload_length = struct.unpack_from(">I", header, 4)[0]
+    source.seek(generated_pointer * block_size)
+    block = source.read(8 + payload_length)
+    if len(block) != 8 + payload_length:
+        raise ReconstructionError(
+            f"Generated memo payload is truncated at record {record_number}, "
+            f"field {field_name!r}."
+        )
+    destination.seek(original_pointer * block_size)
+    destination.write(block)
 
 
 def memo_output_path(destination: Path, schema: Mapping[str, Any]) -> Path:
@@ -466,6 +615,14 @@ def _update_numeric(value: Any, fielddef: Any, *_ignore: Any) -> bytes:
         rendered = rendered[1:]
     elif len(rendered) > length and rendered.startswith("-0."):
         rendered = "-." + rendered[3:]
+    if len(rendered) > length:
+        # FoxPro accepts scientific notation in narrow N/F fields.  Real VFP
+        # tables use this for values such as 9,000,000,000 in F(6,1).
+        for precision in range(decimals, -1, -1):
+            scientific = format(number, f".{precision}E")
+            if len(scientific) <= length:
+                rendered = scientific
+                break
     if len(rendered) > length:
         raise ReconstructionError(f"Numeric value {value!r} does not fit N/F({length},{decimals}).")
     return rendered.rjust(length).encode("ascii")

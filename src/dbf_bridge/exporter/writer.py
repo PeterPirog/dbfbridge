@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import csv
 import json
 import os
@@ -11,7 +12,7 @@ from dbfread import MissingMemoFile
 from .discovery import output_data_path, output_schema_path
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, StreamStats, TableResult
 from .reader import UnsupportedTableError, iter_physical_records, open_table, read_table_metadata
-from .serialization import SerializationError, serialize_record
+from .serialization import RAW_RECORD_KEY, SerializationError, serialize_record
 from .validation import StatsCollector, ValidationResult, sha256_file, validate_output
 
 
@@ -158,7 +159,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             deleted_collector = StatsCollector(metadata.fields)
             deleted_stats = deleted_collector.stats
             if config.deleted == "include":
-                for index, (record, is_deleted) in enumerate(
+                for index, (record, is_deleted, raw_record) in enumerate(
                     iter_physical_records(table), start=1
                 ):
                     serialized = _serialize_context_record(
@@ -171,6 +172,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         memo_policy=config.memo,
                         strip_spaces=config.strip_spaces,
                     )
+                    serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
                     json_first = not _write_record(
                         data_writer, serialized, metadata.fields, config, json_first=json_first
                     )
@@ -178,20 +180,21 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                     if is_deleted:
                         deleted_collector.add(serialized)
             else:
-                for index, record in _iter_records_with_context(
-                    table.records,
-                    table_report_path,
-                    deleted=False,
-                ):
+                active_index = 0
+                for record, is_deleted, raw_record in iter_physical_records(table):
+                    if is_deleted:
+                        continue
+                    active_index += 1
                     serialized = _serialize_context_record(
                         record,
                         metadata.fields,
                         table_report_path,
-                        index,
+                        active_index,
                         deleted_marker=None,
                         memo_policy=config.memo,
                         strip_spaces=config.strip_spaces,
                     )
+                    serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
                     json_first = not _write_record(
                         data_writer, serialized, metadata.fields, config, json_first=json_first
                     )
