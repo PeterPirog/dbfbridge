@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -21,6 +22,7 @@ register_polish_codecs()
 
 DBF_HEADER = struct.Struct("<BBBBLHHHBBLLLBBH")
 FIELD_DESCRIPTOR = struct.Struct("<11scLBBHBBBB7sB")
+FPT_HEADER_PREFIX = struct.Struct(">LHH")
 
 
 class UnsupportedTableError(ValueError):
@@ -90,8 +92,15 @@ class LosslessFieldParser(FieldParser):
 class RawHeader:
     dbversion_byte: int
     language_driver: int
+    year: int
+    month: int
+    day: int
+    record_count: int
     header_length: int
     record_length: int
+    incomplete_transaction: int
+    encryption_flag: int
+    structural_index_flag: int
     fields: list[FieldMetadata]
 
 
@@ -113,8 +122,11 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
             decimal_count=field.decimal_count,
             dbversion_byte=table.header.dbversion,
             flags=field.set_fields_flag,
+            ordinal=ordinal,
+            address=field.address,
+            index_field_flag=field.index_field_flag,
         )
-        for field in table.fields
+        for ordinal, field in enumerate(table.fields, start=1)
     ]
     warnings: list[str] = []
     if config.decode_errors in {"ignore", "replace"}:
@@ -129,6 +141,11 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         warnings.append("Memo file is missing; memo values will be exported as null.")
 
     language_driver_name = codepages.get(table.header.language_driver, (None, None))[1]
+    memo_path = Path(table.memofilename) if table.memofilename else discovered.memo_path
+    memo_size, memo_next_block, memo_block_size = _memo_file_details(memo_path)
+    fallbacks = []
+    if config.decode_errors == "strict":
+        fallbacks = list(dict.fromkeys([table.encoding, *POLISH_FALLBACK_ENCODINGS]))
     return TableMetadata(
         table_name=discovered.source_path.stem,
         relative_path=discovered.relative_path,
@@ -138,10 +155,25 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         language_driver=table.header.language_driver,
         language_driver_name=language_driver_name,
         encoding=table.encoding,
-        memo_path=Path(table.memofilename) if table.memofilename else discovered.memo_path,
-        memo_present=table.memofilename is not None,
+        memo_path=memo_path,
+        memo_present=memo_path is not None and memo_path.is_file(),
         fields=fields,
         warnings=warnings,
+        source_size_bytes=discovered.source_path.stat().st_size,
+        record_count=table.header.numrecords,
+        header_length=table.header.headerlen,
+        record_length=table.header.recordlen,
+        last_update=_header_date(table.header.year, table.header.month, table.header.day),
+        incomplete_transaction=table.header.incomplete_transaction,
+        encryption_flag=table.header.encryption_flag,
+        structural_index_flag=table.header.mdx_flag,
+        encoding_override=config.encoding,
+        decode_errors=config.decode_errors,
+        encoding_fallbacks=fallbacks,
+        memo_size_bytes=memo_size,
+        memo_next_free_block=memo_next_block,
+        memo_block_size=memo_block_size,
+        memo_export_policy=config.memo,
     )
 
 
@@ -170,6 +202,7 @@ def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
         encoding = config.encoding or _guess_encoding(language_driver)
 
         fields: list[FieldMetadata] = []
+        ordinal = 1
         while True:
             marker = infile.read(1)
             if marker in {b"\r", b"\n", b""}:
@@ -178,14 +211,28 @@ def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
             if len(descriptor_data) != FIELD_DESCRIPTOR.size:
                 raise ValueError(f"Field descriptor is truncated in {dbf_path.name}.")
             fields.append(
-                _parse_field_descriptor(descriptor_data, encoding, config, dbversion_byte)
+                _parse_field_descriptor(
+                    descriptor_data,
+                    encoding,
+                    config,
+                    dbversion_byte,
+                    ordinal,
+                )
             )
+            ordinal += 1
 
     return RawHeader(
         dbversion_byte=dbversion_byte,
         language_driver=language_driver,
+        year=unpacked[1],
+        month=unpacked[2],
+        day=unpacked[3],
+        record_count=unpacked[4],
         header_length=header_length,
         record_length=record_length,
+        incomplete_transaction=unpacked[8],
+        encryption_flag=unpacked[9],
+        structural_index_flag=unpacked[13],
         fields=fields,
     )
 
@@ -195,11 +242,12 @@ def _parse_field_descriptor(
     encoding: str,
     config: ExportConfig,
     dbversion_byte: int,
+    ordinal: int,
 ) -> FieldMetadata:
     (
         raw_name,
         raw_type,
-        _address,
+        address,
         length,
         decimal_count,
         _reserved1,
@@ -208,7 +256,7 @@ def _parse_field_descriptor(
         _reserved3,
         set_fields_flag,
         _reserved4,
-        _index_field_flag,
+        index_field_flag,
     ) = FIELD_DESCRIPTOR.unpack(descriptor_data)
     dbf_type = raw_type.decode("ascii")
     name = raw_name.split(b"\0", 1)[0].decode(encoding, errors=config.decode_errors)
@@ -223,6 +271,9 @@ def _parse_field_descriptor(
         decimal_count=decimal_count,
         dbversion_byte=dbversion_byte,
         flags=set_fields_flag,
+        ordinal=ordinal,
+        address=address,
+        index_field_flag=index_field_flag,
     )
 
 
@@ -250,7 +301,41 @@ def metadata_from_failed_header(
         memo_path=None,
         memo_present=False,
         fields=raw.fields,
+        source_size_bytes=dbf_path.stat().st_size,
+        record_count=raw.record_count,
+        header_length=raw.header_length,
+        record_length=raw.record_length,
+        last_update=_header_date(raw.year, raw.month, raw.day),
+        incomplete_transaction=raw.incomplete_transaction,
+        encryption_flag=raw.encryption_flag,
+        structural_index_flag=raw.structural_index_flag,
+        encoding_override=config.encoding,
+        decode_errors=config.decode_errors,
+        encoding_fallbacks=list(dict.fromkeys([encoding, *POLISH_FALLBACK_ENCODINGS])),
+        memo_export_policy=config.memo,
     )
+
+
+def _header_date(year: int, month: int, day: int) -> str | None:
+    try:
+        full_year = 2000 + year if year < 80 else 1900 + year
+        return date(full_year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _memo_file_details(memo_path: Path | None) -> tuple[int | None, int | None, int | None]:
+    if memo_path is None or not memo_path.is_file():
+        return None, None, None
+    size = memo_path.stat().st_size
+    if memo_path.suffix.lower() != ".fpt":
+        return size, None, None
+    with memo_path.open("rb") as infile:
+        header = infile.read(FPT_HEADER_PREFIX.size)
+    if len(header) != FPT_HEADER_PREFIX.size:
+        return size, None, None
+    next_free_block, _reserved, block_size = FPT_HEADER_PREFIX.unpack(header)
+    return size, next_free_block, block_size
 
 
 __all__ = [

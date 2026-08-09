@@ -108,7 +108,7 @@ dbfbridge/
 
 ### Krok 3 — Implementacja round-trip X → DBF (nowa funkcjonalność)
 - [ ] Utworzyć `src/dbf_bridge/importer/` subpackage
-- [ ] `dbf_writer.py` — tworzenie DBF (VFP) z CSV/JSON/JSONL + `.schema.jsonl`
+- [ ] `dbf_writer.py` — tworzenie DBF (VFP) z CSV/JSON/JSONL + `<table>_schema.json`
 - [ ] Użycie biblioteki `dbf` (Ethan Furman) do zapisu — `dbf.Table(path, field_specs, dbf_type="vfp", codepage=0xC8)`
 - [ ] Obsługa FPT memo (tworzenie pliku memo)
 - [ ] CLI: `dbf-bridge-import` (nowy punkt wejścia)
@@ -146,7 +146,7 @@ dbfbridge/
 - `dbf>=0.99.11` — zapis DBF (round-trip import, generowanie fixture)
   - Aktywnie rozwijana przez Ethan Furman (release 2025-09-02, Python 3.10-3.13)
   - `pip install "dbfbridge[import]"` lub `pip install "dbfbridge[dev]"`
-- `xlsxwriter>=3.2` — zapis XLSX (`pip install "dbfbridge[xlsx]"`)
+- `xlsxwriter>=3.2` — zapis XLSX (instalowany domyślnie)
 - `openpyxl>=3.1.5` — wyłącznie testowy odczyt i weryfikacja XLSX
 
 ### Dev:

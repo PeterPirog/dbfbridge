@@ -26,6 +26,9 @@ def field_metadata(
     decimal_count: int,
     dbversion_byte: int,
     flags: int,
+    ordinal: int | None = None,
+    address: int | None = None,
+    index_field_flag: int = 0,
 ) -> FieldMetadata:
     is_binary_flag = bool(flags & BINARY_FIELD_FLAG)
     representation = "unsupported"
@@ -86,6 +89,9 @@ def field_metadata(
         supported=supported,
         unsupported_reason=reason,
         flags=flags,
+        ordinal=ordinal,
+        address=address,
+        index_field_flag=index_field_flag,
     )
 
 

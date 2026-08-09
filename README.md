@@ -14,7 +14,7 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 - **Excel-safe XLSX**: automatic `Dane_1`, `Dane_2`, ... sheet splitting, formula-safe text, and explicit row/column/cell limits
 - **Polish encoding auto-fallback**: detects cp1250 from DBF header, falls back to cp852 → Mazovia when data doesn't match the declared codepage (common in legacy Polish FoxPro/Clipper data)
 - **Memo-safe CSV**: memo fields (M) are omitted in CSV (null) to avoid separator/newline issues; full memo content preserved in JSON/JSONL
-- **Schema files**: `.schema.jsonl` alongside each output preserves DBF field types, lengths, codepage, version
+- **Schema files**: `<table>_schema.json` preserves exact DBF field descriptors, header/codepage details, and FPT memo reconstruction parameters
 - **Migration reports**: `migration_report.jsonl` + `.csv` with SHA-256, record counts, null stats, memo hashes
 - **Verification tool**: `dbf-bridge-verify` checks completeness, record counts, SHA-256, schema, and syntax
 
@@ -22,8 +22,7 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 
 ```bash
 pip install dbfbridge
-# with XLSX output:
-pip install "dbfbridge[xlsx]"
+# XLSX output is included by default (the legacy [xlsx] extra remains accepted)
 # with test fixtures generator (synthetic DBF for tests/examples):
 pip install "dbfbridge[import]"
 # full (all optional features + dev tools):
@@ -43,7 +42,7 @@ pip install "dbfbridge[import,dev]"
 | `dbfread` | 2.0.7 | 2016-11-25 | Stable, no longer actively developed (40 open issues on GitHub, last push 2024) | **Reading** DBF (streaming, FPT memo, codepage detection) |
 | `orjson` | 3.10+ | active | Maintained | Per-record JSONL validation and parsing |
 | `polars` | 1.0+ | active | Maintained | Lazy/streaming JSONL → CSV |
-| `xlsxwriter` | 3.2+ | active | Maintained | Constant-memory JSONL → XLSX (`[xlsx]`) |
+| `xlsxwriter` | 3.2+ | active | Maintained | Constant-memory JSONL → XLSX (installed by default) |
 | `dbf` | 0.99.11 | 2025-09-02 | Actively maintained by Ethan Furman (supports Python 3.10-3.13) | **Generating** synthetic DBF fixtures (`[import]` extra) |
 
 `dbfread` is stable and battle-tested but hasn't had a release since 2016. It remains the best choice for streaming DBF reads (low memory, large FPT files). `dbfbridge` extends it with:
@@ -128,7 +127,10 @@ Exit codes: `0` = OK, `1` = errors, `2` = warnings (with `--strict`).
 | **JSONL** | inline | 1 line = 1 JSON object | Streaming, round-trip, Neo4j import |
 | **XLSX** | inline | Constant-memory sheets, 1 row = 1 record | Excel |
 
-Each output file has a companion `.schema.jsonl` with DBF metadata (field types, lengths, codepage, version).
+Each source table has a companion `<table>_schema.json`. It records DBF field order,
+type, length, decimal count, address and flags; DBF/VFP header and codepage details;
+and FPT block size, pointer layout, memo types, encoding, and export policy. These are
+the structural details needed to recreate fields and memo storage in Visual FoxPro 9 SP2.
 
 ## Polish encoding fallback
 

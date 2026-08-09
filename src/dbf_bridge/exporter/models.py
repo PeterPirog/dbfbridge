@@ -11,6 +11,28 @@ MissingMemoPolicy = Literal["fail", "null-with-warning"]
 MemoPolicy = Literal["skip", "inline", "null"]
 TableStatus = Literal["OK", "WARNING", "FAILED", "UNSUPPORTED"]
 
+DBF_FIELD_TYPE_NAMES = {
+    "0": "Null flags",
+    "+": "Autoincrement",
+    "@": "Timestamp",
+    "B": "Double or binary memo",
+    "C": "Character",
+    "D": "Date",
+    "F": "Float",
+    "G": "General/OLE memo",
+    "I": "Integer",
+    "L": "Logical",
+    "M": "Memo",
+    "N": "Numeric",
+    "O": "Double",
+    "P": "Picture memo",
+    "Q": "Varbinary",
+    "T": "DateTime",
+    "V": "Varchar",
+    "W": "Blob",
+    "Y": "Currency",
+}
+
 
 @dataclass(frozen=True)
 class ExportConfig:
@@ -47,17 +69,39 @@ class FieldMetadata:
     supported: bool = True
     unsupported_reason: str | None = None
     flags: int = 0
+    ordinal: int | None = None
+    address: int | None = None
+    index_field_flag: int = 0
 
     def to_schema(self) -> dict[str, Any]:
+        memo_storage = None
+        if self.is_memo:
+            memo_storage = {
+                "file_format": "FPT",
+                "pointer_length_bytes": self.length,
+                "pointer_byte_order": "little-endian" if self.length == 4 else "ASCII index",
+                "content_kind": "binary" if self.is_binary else "text-or-binary",
+            }
         return {
+            "ordinal": self.ordinal,
             "name": self.name,
             "dbf_type": self.dbf_type,
+            "dbf_type_name": DBF_FIELD_TYPE_NAMES.get(self.dbf_type, "Unknown"),
             "length": self.length,
+            "address": self.address,
             "decimal_count": self.decimal_count,
             "target_representation": self.target_representation,
             "is_memo": self.is_memo,
             "is_binary": self.is_binary,
             "flags": self.flags,
+            "field_flags": {
+                "raw": f"0x{self.flags:02x}",
+                "system": bool(self.flags & 0x01),
+                "nullable": bool(self.flags & 0x02),
+                "binary": bool(self.flags & 0x04),
+            },
+            "index_field_flag": self.index_field_flag,
+            "memo_storage": memo_storage,
             "unsupported_reason": self.unsupported_reason,
             "supported": self.supported,
         }
@@ -77,6 +121,21 @@ class TableMetadata:
     memo_present: bool
     fields: list[FieldMetadata]
     warnings: list[str] = field(default_factory=list)
+    source_size_bytes: int | None = None
+    record_count: int | None = None
+    header_length: int | None = None
+    record_length: int | None = None
+    last_update: str | None = None
+    incomplete_transaction: int = 0
+    encryption_flag: int = 0
+    structural_index_flag: int = 0
+    encoding_override: str | None = None
+    decode_errors: str = "strict"
+    encoding_fallbacks: list[str] = field(default_factory=list)
+    memo_size_bytes: int | None = None
+    memo_next_free_block: int | None = None
+    memo_block_size: int | None = None
+    memo_export_policy: str = "inline"
 
     @property
     def memo_fields(self) -> list[str]:
@@ -87,19 +146,66 @@ class TableMetadata:
         return [field.name for field in self.fields]
 
     def to_schema(self) -> dict[str, Any]:
+        is_vfp = self.dbversion_byte in {0x30, 0x31, 0x32}
+        is_fpt = self.memo_path is not None and self.memo_path.suffix.lower() == ".fpt"
         return {
+            "schema_format": "dbfbridge-vfp-table-schema",
+            "schema_version": 1,
             "table": self.table_name,
             "relative_path": self.relative_path.as_posix(),
+            "source": {
+                "filename": self.dbf_path.name,
+                "relative_path": self.relative_path.as_posix(),
+                "size_bytes": self.source_size_bytes,
+            },
             "dbf": {
+                "format_family": "Microsoft Visual FoxPro" if is_vfp else self.dbversion,
+                "recreation_target": "Microsoft Visual FoxPro 9.0 SP2" if is_vfp else None,
                 "version": self.dbversion,
                 "version_byte": f"0x{self.dbversion_byte:02x}",
+                "last_update": self.last_update,
+                "record_count_from_header": self.record_count,
+                "header_length_bytes": self.header_length,
+                "record_length_bytes": self.record_length,
+                "incomplete_transaction": bool(self.incomplete_transaction),
+                "encrypted": bool(self.encryption_flag),
+                "structural_index_flag": self.structural_index_flag,
                 "language_driver": f"0x{self.language_driver:02x}",
                 "language_driver_name": self.language_driver_name,
                 "encoding": self.encoding,
             },
+            "text_encoding": {
+                "language_driver_byte": f"0x{self.language_driver:02x}",
+                "language_driver_name": self.language_driver_name,
+                "declared_or_detected_encoding": self.encoding,
+                "user_override": self.encoding_override,
+                "decode_errors": self.decode_errors,
+                "fallback_order": self.encoding_fallbacks,
+                "applies_to": ["Character", "Varchar", "text Memo"],
+            },
             "memo": {
                 "path": self.memo_path.name if self.memo_path else None,
                 "present": self.memo_present,
+                "required": bool(self.memo_fields),
+                "format": "FPT" if is_fpt else None,
+                "size_bytes": self.memo_size_bytes,
+                "file_header_bytes": 512 if self.memo_present and is_fpt else None,
+                "block_size_bytes": self.memo_block_size,
+                "next_free_block": self.memo_next_free_block,
+                "block_header_bytes": 8 if self.memo_present and is_fpt else None,
+                "block_header_byte_order": "big-endian"
+                if self.memo_present and is_fpt
+                else None,
+                "block_types": {"0": "picture", "1": "text", "2": "object"}
+                if self.memo_present and is_fpt
+                else None,
+                "dbf_pointer_byte_order": "little-endian"
+                if self.memo_fields and is_fpt
+                else None,
+                "text_encoding": self.encoding if self.memo_fields else None,
+                "field_names": self.memo_fields,
+                "export_policy": self.memo_export_policy,
+                "values_in_data_output": self.memo_export_policy == "inline",
             },
             "fields": [field.to_schema() for field in self.fields],
         }

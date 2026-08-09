@@ -138,7 +138,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                     metadata.to_schema(),
                     ensure_ascii=False,
                     allow_nan=False,
-                    separators=(",", ":"),
+                    indent=2,
                 )
             )
             schema_writer.write("\n")

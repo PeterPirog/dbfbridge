@@ -33,6 +33,7 @@ dependencies = [
     "dbfread>=2.0.7",
     "orjson>=3.10",
     "polars>=1.0",
+    "xlsxwriter>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +41,8 @@ dependencies = [
 # Not needed for export-only usage.
 # Note: dbf 0.99.11 (2025-09-02) actively maintained, supports Python 3.10-3.13.
 import = ["dbf>=0.99.11"]
-xlsx = ["xlsxwriter>=3.2"]
+# Kept as a backwards-compatible no-op; XLSX support is installed by default.
+xlsx = []
 dev = [
     "dbf>=0.99.11",
     "openpyxl>=3.1.5",
@@ -49,7 +51,6 @@ dev = [
     "build>=1.2",
     "twine>=5.1",
     "ruff>=0.6",
-    "xlsxwriter>=3.2",
 ]
 
 [project.scripts]

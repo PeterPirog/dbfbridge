@@ -733,7 +733,9 @@ def _flush_and_fsync(handle: BinaryIO | TextIO) -> None:
 
 
 def _commit_partial(partial: Path, destination: Path) -> None:
-    with partial.open("rb") as infile:
+    # Windows requires a writable file descriptor for fsync().  Opening the
+    # completed partial file read-only causes OSError(9, "Bad file descriptor").
+    with partial.open("rb+") as infile:
         os.fsync(infile.fileno())
     os.replace(partial, destination)
 
