@@ -1,0 +1,2 @@
+# Example full command for exporting DBF files (PowerShell)
+python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --overwrite --progress --memo inline --formats csv,json,jsonl,xlsx

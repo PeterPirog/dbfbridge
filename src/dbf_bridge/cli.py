@@ -40,7 +40,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULTS = {
     "source": Path("."),
     "output": Path("."),
-    "formats": "csv,json,jsonl",
+    "formats": "jsonl",  # domyślnie tylko jsonl
     "memo": None,
     "strip_spaces": False,
     "encoding": "auto",
@@ -84,9 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--formats",
-        choices=ALL_FORMATS,
         default=DEFAULTS["formats"],
-        help=f"Lista formatów rozdzielona przecinkami (domyślnie: {DEFAULTS['formats']}).",
+        help=f"Lista formatów rozdzielona przecinkami (domyślnie: {DEFAULTS['formats']}). Dostępne: {', '.join(ALL_FORMATS)}",
     )
     parser.add_argument(
         "--memo",
@@ -304,26 +303,62 @@ def main(argv: list[str] | None = None) -> int:
 
     overall_errors = 0
     all_results: list[TableResult] = []
+
+    # Ensure JSONL is always processed first – it serves jako pośredni format.
+    if "jsonl" not in formats:
+        formats.insert(0, "jsonl")
+
     for fmt in formats:
         memo = _resolve_memo_policy(fmt, args.memo)
-        code, results = _export_one(
-            source=args.source,
-            output=args.output,
-            fmt=fmt,
-            memo=memo,
-            strip_spaces=args.strip_spaces,
-            encoding=args.encoding,
-            decode_errors=args.decode_errors,
-            deleted=args.deleted,
-            missing_memo=args.missing_memo,
-            validate=args.validate,
-            overwrite=args.overwrite,
-            progress=args.progress,
-        )
-        if code != 0:
-            overall_errors = max(overall_errors, code)
-        all_results.extend(results)
-        _print_summary(results)
+        if fmt == "jsonl":
+            # Eksport DBF → JSONL (pełny eksport z walidacją itp.)
+            code, results = _export_one(
+                source=args.source,
+                output=args.output,
+                fmt=fmt,
+                memo=memo,
+                strip_spaces=args.strip_spaces,
+                encoding=args.encoding,
+                decode_errors=args.decode_errors,
+                deleted=args.deleted,
+                missing_memo=args.missing_memo,
+                validate=args.validate,
+                overwrite=args.overwrite,
+                progress=args.progress,
+            )
+            if code != 0:
+                overall_errors = max(overall_errors, code)
+            all_results.extend(results)
+            _print_summary(results)
+        else:
+            # Konwersja z istniejących plików JSONL.
+            if jsonl_to_csv is None:
+                print(
+                    "[dbf-bridge] Konwersja wymaga opcjonalnych zależności (openpyxl, pandas itp.).",
+                    file=sys.stderr,
+                )
+                overall_errors = max(overall_errors, 1)
+                continue
+
+            jsonl_files = list(Path(args.output).rglob("*.jsonl"))
+            for src_path in jsonl_files:
+                dest_path = src_path.with_suffix(f".{fmt}")
+                try:
+                    if fmt == "csv":
+                        jsonl_to_csv(src_path, dest_path)
+                    elif fmt == "json":
+                        jsonl_to_json(src_path, dest_path)
+                    elif fmt == "xlsx":
+                        jsonl_to_xlsx(src_path, dest_path)
+                except Exception as exc:  # pragma: no cover – unlikely but guard against failures
+                    print(
+                        f"[dbf-bridge] Błąd konwersji {src_path} → {fmt}: {exc}",
+                        file=sys.stderr,
+                    )
+                    overall_errors = max(overall_errors, 1)
+            # Brak obiektów TableResult dla tych formatów; podsumowanie nie jest potrzebne.
+
+*** End of File ***
 
     if all_results:
         write_reports(args.output, all_results)
