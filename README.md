@@ -90,9 +90,9 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--source` | required | Source directory with DBF files |
+| `--source` | required | Source directory **or single DBF file** |
 | `--output` | required | Output directory |
-| `--formats` | `csv,json,jsonl` | Comma-separated list of formats |
+| `--formats` | `csv,json,jsonl,xlsx` | Comma‑separated list of formats (XLSX now supported) |
 | `--memo` | per-format | `skip` (null), `inline` (full text), `null` |
 | `--encoding` | `auto` | DBF codepage or `auto` (detect from header) |
 | `--decode-errors` | `strict` | `strict`, `ignore`, `replace` |

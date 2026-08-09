@@ -6,7 +6,24 @@ from .models import DiscoveredTable
 
 
 def discover_tables(source: Path) -> list[DiscoveredTable]:
+    """Return a list of DiscoveredTable objects for *source*.
+
+    *source* may be either:
+    - a directory – all ``.dbf`` files inside it (recursively) are discovered;
+    - a single DBF file – a list containing one ``DiscoveredTable`` is returned.
+    """
     source_root = source.resolve()
+    if source_root.is_file() and source_root.suffix.lower() == ".dbf":
+        # Single DBF file supplied – construct DiscoveredTable directly
+        return [
+            DiscoveredTable(
+                source_path=source_root,
+                relative_path=Path(source_root.name),
+                memo_path=find_related_file(source_root, ".fpt"),
+                memo_present=find_related_file(source_root, ".fpt") is not None,
+            )
+        ]
+    # Otherwise treat as a directory and walk recursively
     dbf_paths = sorted(
         (
             path
@@ -24,6 +41,7 @@ def discover_tables(source: Path) -> list[DiscoveredTable]:
         )
         for path in dbf_paths
     ]
+
 
 
 def find_related_file(dbf_path: Path, extension: str) -> Path | None:

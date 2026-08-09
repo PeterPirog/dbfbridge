@@ -10,7 +10,7 @@
 - **Repozytorium**: https://github.com/PeterPirog/dbfbridge
 - **Autor**: Peter Pirog <pirog.peter@gmail.com>
 - **Licencja**: MIT
-- **Status**: 0.1.0.dev0 (alpha — tylko eksport DBF → X, brak round-trip i XLSX)
+- **Status**: 0.1.0 (alpha — eksport DBF → CSV/JSON/JSONL/XLSX)
 - **Cel publikacji**: PyPI
 
 ## Historia powstania
@@ -127,9 +127,9 @@ dbfbridge/
 
 ### Krok 6 — Publikacja na PyPI
 - [ ] `python -m build`
-- [ ] `twine upload --repository testpypi dist/*` (walidacja)
-- [ ] `twine upload dist/*` (produkcyjne PyPI)
-- [ ] Wersja `0.1.0` (alpha — tylko eksport), `0.2.0` (round-trip), `0.3.0` (XLSX)
+- **`0.1.0`** — Stabilna wersja: eksport DBF → CSV/JSON/JSONL/XLSX (wymagany optional extra `xlsx`).
+- **`0.2.0`** — Round‑trip import (CSV/JSON/JSONL → DBF) oraz wsparcie memo przy zapisie.
+- **`0.3.0`** — Dodatkowe formaty i usprawnienia (np. lepsza walidacja, CI).
 
 ## Zależności
 

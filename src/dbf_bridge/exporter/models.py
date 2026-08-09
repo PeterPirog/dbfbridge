@@ -58,6 +58,8 @@ class FieldMetadata:
             "is_memo": self.is_memo,
             "is_binary": self.is_binary,
             "flags": self.flags,
+            "unsupported_reason": self.unsupported_reason,
+            "supported": self.supported,
         }
 
 

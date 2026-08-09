@@ -28,7 +28,7 @@ def make_config(
     memo: MemoPolicy = "inline",
     strip_spaces: bool = False,
     validate: bool = True,
-    overwrite: bool = False,
+    overwrite: bool = True,
 ) -> ExportConfig:
     encoding_override = None if encoding == "auto" else encoding
     config = ExportConfig(
