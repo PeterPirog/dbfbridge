@@ -51,6 +51,7 @@ Projekt wywodzi się z wewnętrznego zestawu skryptów do migracji danych z syst
 - **JSONL z memo inline** — 1 linia = 1 rekord, newline w memo escapowany jako `\n` w JSON
 - **Atomowy zapis** — `AtomicTextWriter` pisze do `.partial`, potem `os.replace()` — bezpieczne dla dużych plików
 - **Fallback kodowania per-rekord** — `LosslessFieldParser.decode_text()` przechwytuje `UnicodeDecodeError` i próbuje cp1250 → cp852 → mazovia
+- **Konwersja dużych JSONL** — binarny streaming JSON, Polars lazy/sink CSV i XlsxWriter `constant_memory` dla XLSX
 
 ## Struktura repozytorium dbfbridge
 
@@ -113,10 +114,10 @@ dbfbridge/
 - [ ] CLI: `dbf-bridge-import` (nowy punkt wejścia)
 - [ ] Walidacja round-trip: DBF → X → DBF' — porównanie rekordów
 
-### Krok 4 — Dodanie XLSX
-- [ ] Nowy format `xlsx` w `exporter/writer.py` przez `openpyxl`
-- [ ] Streaming: zapis arkusz-po-arkuszu
-- [ ] Memo inline (jako tekst w komórce)
+### Krok 4 — Dodanie XLSX — UKOŃCZONE
+- [x] Nowy format `xlsx` przez XlsxWriter w trybie `constant_memory`
+- [x] Automatyczny podział arkuszy przy limicie Excela
+- [x] Memo inline jako tekst i ochrona tekstu przed interpretacją jako formuła
 
 ### Krok 5 — Testy pytest
 - [ ] `tests/test_export.py` — DBF → CSV/JSON/JSONL
@@ -145,7 +146,8 @@ dbfbridge/
 - `dbf>=0.99.11` — zapis DBF (round-trip import, generowanie fixture)
   - Aktywnie rozwijana przez Ethan Furman (release 2025-09-02, Python 3.10-3.13)
   - `pip install "dbfbridge[import]"` lub `pip install "dbfbridge[dev]"`
-- `openpyxl>=3.1.5` — XLSX (`pip install "dbfbridge[xlsx]"`)
+- `xlsxwriter>=3.2` — zapis XLSX (`pip install "dbfbridge[xlsx]"`)
+- `openpyxl>=3.1.5` — wyłącznie testowy odczyt i weryfikacja XLSX
 
 ### Dev:
 - `pytest>=8.0`, `pytest-cov>=5.0`, `build>=1.2`, `twine>=5.1`
@@ -202,6 +204,8 @@ pytest
 - `python -m dbf_bridge.cli --help` — CLI działa ✓
 - `dbf-bridge` — eksport 3/3 tabel OK, 0 błędów ✓
 - `dbf-bridge-verify` — weryfikacja 3/3 OK, 80 rekordów round-trip ✓
+- `pytest` — 12 testów konwersji i integracji ✓
+- `ruff check src tests benchmarks` — bez błędów ✓
 - `mazovia` codec — `bytes([0x81,0x83,0x88]).decode('mazovia')` = `ąęź` ✓
 - `.gitignore` — `*.dbf`, `*.fpt`, `*.cdx`, `*.csv`, `*.json`, `*.jsonl` ignorowane ✓
 

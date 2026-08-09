@@ -50,13 +50,13 @@ def make_config(
 
 def validate_config(config: ExportConfig) -> None:
     source = config.source.resolve(strict=True)
-    if not source.is_dir():
-        raise ConfigError(f"Source path is not a directory: {config.source}")
+    if not source.is_dir() and not (source.is_file() and source.suffix.lower() == ".dbf"):
+        raise ConfigError(f"Source path is not a directory or DBF file: {config.source}")
 
     output = config.output.resolve(strict=False)
     if output == source:
         raise ConfigError("Output directory must not be the same as source directory.")
-    if _is_relative_to(output, source):
+    if source.is_dir() and _is_relative_to(output, source):
         raise ConfigError("Output directory must not be inside the source directory.")
 
 

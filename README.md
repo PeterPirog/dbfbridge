@@ -1,15 +1,17 @@
 # dbfbridge
 
-**DBF (Visual FoxPro) → CSV / JSON / JSONL** exporter with automatic Polish encoding fallback (cp1250 → cp852 → Mazovia).
+**DBF (Visual FoxPro) → CSV / JSON / JSONL / XLSX** exporter with automatic Polish encoding fallback (cp1250 → cp852 → Mazovia).
 
 Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index files) to modern interchange formats. Designed for migrating legacy FoxPro/Clipper databases to modern systems (Neo4j, PostgreSQL, data warehouses).
 
-> **Status: 0.1.0 (alpha) — export only.** Round-trip import (CSV/JSON/JSONL → DBF) and XLSX output are planned for later releases (see [Roadmap](#roadmap)).
+> **Status: 0.1.0 (alpha) — export only.** Round-trip import (CSV/JSON/JSONL → DBF) is planned for a later release (see [Roadmap](#roadmap)).
 
 ## Features
 
 - **Lossless**: SHA-256 verification, schema preservation, Decimal precision for numbers
 - **Streaming & atomic**: handles multi-GB FPT memo files without loading everything into RAM; writes via `.partial` + rename
+- **Large-file conversion**: binary JSON streaming, Polars lazy CSV sinks, and constant-memory XLSX writing
+- **Excel-safe XLSX**: automatic `Dane_1`, `Dane_2`, ... sheet splitting, formula-safe text, and explicit row/column/cell limits
 - **Polish encoding auto-fallback**: detects cp1250 from DBF header, falls back to cp852 → Mazovia when data doesn't match the declared codepage (common in legacy Polish FoxPro/Clipper data)
 - **Memo-safe CSV**: memo fields (M) are omitted in CSV (null) to avoid separator/newline issues; full memo content preserved in JSON/JSONL
 - **Schema files**: `.schema.jsonl` alongside each output preserves DBF field types, lengths, codepage, version
@@ -20,6 +22,8 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 
 ```bash
 pip install dbfbridge
+# with XLSX output:
+pip install "dbfbridge[xlsx]"
 # with test fixtures generator (synthetic DBF for tests/examples):
 pip install "dbfbridge[import]"
 # full (all optional features + dev tools):
@@ -37,6 +41,9 @@ pip install "dbfbridge[import,dev]"
 | Package | Version | Last release | Status | Used for |
 |---------|---------|-------------|--------|----------|
 | `dbfread` | 2.0.7 | 2016-11-25 | Stable, no longer actively developed (40 open issues on GitHub, last push 2024) | **Reading** DBF (streaming, FPT memo, codepage detection) |
+| `orjson` | 3.10+ | active | Maintained | Per-record JSONL validation and parsing |
+| `polars` | 1.0+ | active | Maintained | Lazy/streaming JSONL → CSV |
+| `xlsxwriter` | 3.2+ | active | Maintained | Constant-memory JSONL → XLSX (`[xlsx]`) |
 | `dbf` | 0.99.11 | 2025-09-02 | Actively maintained by Ethan Furman (supports Python 3.10-3.13) | **Generating** synthetic DBF fixtures (`[import]` extra) |
 
 `dbfread` is stable and battle-tested but hasn't had a release since 2016. It remains the best choice for streaming DBF reads (low memory, large FPT files). `dbfbridge` extends it with:
@@ -92,7 +99,7 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 |--------|---------|-------------|
 | `--source` | required | Source directory **or single DBF file** |
 | `--output` | required | Output directory |
-| `--formats` | `csv,json,jsonl,xlsx` | Comma‑separated list of formats (XLSX now supported) |
+| `--formats` | `jsonl` | Comma-separated list of `csv,json,jsonl,xlsx` |
 | `--memo` | per-format | `skip` (null), `inline` (full text), `null` |
 | `--encoding` | `auto` | DBF codepage or `auto` (detect from header) |
 | `--decode-errors` | `strict` | `strict`, `ignore`, `replace` |
@@ -116,9 +123,10 @@ Exit codes: `0` = OK, `1` = errors, `2` = warnings (with `--strict`).
 
 | Format | Memo | Structure | Use case |
 |--------|------|-----------|----------|
-| **CSV** | null (skip) | 1 row = 1 record, JSON-quoted cells | Excel, Power Query, BI tools |
+| **CSV** | null (skip) | RFC-compatible quoting, configurable converter separator | Excel, Power Query, BI tools |
 | **JSON** | inline | Single JSON array | Archival, small tables |
 | **JSONL** | inline | 1 line = 1 JSON object | Streaming, round-trip, Neo4j import |
+| **XLSX** | inline | Constant-memory sheets, 1 row = 1 record | Excel |
 
 Each output file has a companion `.schema.jsonl` with DBF metadata (field types, lengths, codepage, version).
 
@@ -137,7 +145,6 @@ This is transparent — no user configuration needed. See `dbf_bridge/exporter/p
 The following features are planned for future releases (not yet implemented):
 
 - **`0.2.0`** — Round-trip import: CSV/JSON/JSONL → DBF (with FPT memo creation), via the `dbf` library (Ethan Furman). Extras `[import]` will be required.
-- **`0.3.0`** — XLSX output format (via `openpyxl`). Extras `[xlsx]`.
 - **`0.x`** — Higher-level Python API (`from dbf_bridge import convert, verify`).
 
 ## License
