@@ -289,7 +289,7 @@ def _schema_details(
         return [], [], {}
     schema_path = output / result.schema
     with schema_path.open("r", encoding="utf-8") as infile:
-        schema = json.loads(infile.readline())
+        schema = json.load(infile)
     fields = schema.get("fields", [])
     columns = [field["name"] for field in fields]
     memo_fields = [field["name"] for field in fields if field.get("is_memo")]

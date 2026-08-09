@@ -61,4 +61,4 @@ def output_data_path(output_root: Path, relative_dbf: Path, export_format: str) 
 
 
 def output_schema_path(output_root: Path, relative_dbf: Path) -> Path:
-    return output_root / relative_dbf.with_suffix(".schema.jsonl")
+    return output_root / relative_dbf.with_name(f"{relative_dbf.stem}_schema.json")

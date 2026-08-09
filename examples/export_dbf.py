@@ -24,7 +24,7 @@ Wymagania:
 
 Wynik:
     W katalogu output powstają pliki CSV, JSON, JSONL (zależnie od --formats)
-    z zachowaniem struktury katalogów źródłowych, pliki .schema.jsonl
+    z zachowaniem struktury katalogów źródłowych, pliki <nazwa>_schema.json
     z metadanymi DBF oraz migration_report.jsonl/.csv z raportem migracji
     (SHA-256, liczniki rekordów, statystyki null/memo).
 """

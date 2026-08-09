@@ -12,6 +12,7 @@ from dbf_bridge.converters import (
     EXCEL_MAX_STRING_LENGTH,
     ConversionCancelled,
     JsonlConversionError,
+    _commit_partial,
     jsonl_to_csv,
     jsonl_to_json,
     jsonl_to_xlsx,
@@ -204,3 +205,25 @@ def test_cancellation_removes_partial_output(tmp_path: Path) -> None:
 
     assert not destination.exists()
     assert not (tmp_path / "output.json.partial").exists()
+
+
+def test_atomic_commit_opens_partial_read_write_for_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    partial = tmp_path / "output.json.partial"
+    destination = tmp_path / "output.json"
+    partial.write_text("[]", encoding="utf-8")
+    real_open = Path.open
+    opened_modes: list[str] = []
+
+    def tracked_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path == partial:
+            opened_modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    _commit_partial(partial, destination)
+
+    assert opened_modes == ["rb+"]
+    assert destination.read_text(encoding="utf-8") == "[]"

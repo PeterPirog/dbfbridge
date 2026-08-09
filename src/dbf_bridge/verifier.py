@@ -196,11 +196,8 @@ def load_schema(schema_path: Path) -> dict[str, Any] | None:
     if not schema_path.is_file():
         return None
     with schema_path.open("r", encoding="utf-8") as infile:
-        line = infile.readline().strip()
-        if not line:
-            return None
         try:
-            return json.loads(line)
+            return json.load(infile)
         except json.JSONDecodeError:
             return None
 
@@ -264,7 +261,7 @@ def verify_table(
     if check.has_cdx:
         check.warnings.append("CDX index file present (not converted — informational)")
 
-    schema_path = output_root / base_rel.with_suffix(".schema.jsonl")
+    schema_path = output_root / base_rel.with_name(f"{base_rel.name}_schema.json")
     schema_check = FileCheck(relative_path=schema_path.relative_to(output_root).as_posix())
     if schema_path.is_file():
         schema_check.exists = True
@@ -272,7 +269,7 @@ def verify_table(
         schema_check.sha256 = sha256_file(schema_path)
         schema = load_schema(schema_path)
         if schema is None:
-            schema_check.errors.append("schema not valid JSONL")
+            schema_check.errors.append("schema is not valid JSON")
         else:
             schema_fields = schema.get("fields", [])
             if len(schema_fields) != len(fields):
