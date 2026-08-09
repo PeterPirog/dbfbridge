@@ -6,10 +6,11 @@ import struct
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from dbf_bridge.exporter.serialization import BINARY_MEMO_FIELDS_KEY, RAW_TEXT_FIELDS_KEY
 from dbf_bridge.exporter.validation import sha256_file
 
 from .checksum import CanonicalChecksum, nullable_null_fields
@@ -83,13 +84,16 @@ def write_dbf(
     if structural_index:
         warnings.append(
             "Source DBF references a structural CDX index, but index definitions are not present "
-            "in the schema; reconstructed DBF has its structural-index flag cleared."
+            "in the schema. The DBF structural-index flag is preserved for binary identity, but "
+            "the companion CDX file is not reconstructed."
         )
 
     specs = "; ".join(_field_spec(field) for field in fields)
     codepage = _hex_byte(schema.get("dbf", {}).get("language_driver"), default=0x03)
     memo_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
+    text_encodings = _text_encodings(schema)
     checksum = CanonicalChecksum(schema)
+    memo_block_overrides: list[tuple[int, str, int]] = []
     table = None
     try:
         table = dbf.Table(
@@ -100,16 +104,26 @@ def write_dbf(
             codepage=codepage,
         )
         table.open(mode=dbf.READ_WRITE)
+        _install_lossless_numeric_writer(table)
         for index, source_record in enumerate(records, start=1):
             checksum.update(source_record)
             null_names = nullable_null_fields(source_record, list(schema["fields"]))
+            binary_memo_names = _binary_memo_fields(source_record)
+            raw_text_fields = _raw_text_fields(source_record)
             values = {
                 field["name"]: dbf.Null
                 if field["name"] in null_names
-                else _coerce_value(source_record.get(field["name"]), field)
+                else _coerce_value(
+                    source_record.get(field["name"]),
+                    field,
+                    text_encodings=text_encodings,
+                    binary_memo=field["name"] in binary_memo_names,
+                    raw_text=raw_text_fields.get(str(field["name"])),
+                )
                 for field in fields
             }
             table.append(values)
+            memo_block_overrides.extend((index - 1, name, 0) for name in binary_memo_names)
             if source_record.get("__deleted__"):
                 dbf.delete(table[-1])
             if progress_callback is not None and (index == 1 or index % 10_000 == 0):
@@ -118,7 +132,13 @@ def write_dbf(
         table = None
 
         if partial_fpt.exists():
-            _patch_fpt_block_types(partial, partial_fpt, schema, fields)
+            _patch_fpt_block_types(
+                partial,
+                partial_fpt,
+                schema,
+                fields,
+                memo_block_overrides,
+            )
         _patch_dbf_metadata(partial, schema, list(schema["fields"]))
         if partial_fpt.exists():
             _patch_fpt_metadata(partial_fpt, schema)
@@ -170,19 +190,29 @@ def _field_spec(field: Mapping[str, Any]) -> str:
         raise ReconstructionError(f"Cannot build field {name!r} of type {original_type!r}.")
     if flags & 0x02:
         spec += " NULL"
-    if flags & 0x04 and dbf_type in {"C", "M"}:
+    # Build every M field as binary internally.  VFP permits text and binary
+    # memo blocks in the same field; after writing, the original descriptor
+    # flags and the per-block content types are restored.
+    if (flags & 0x04 and dbf_type in {"C", "M"}) or dbf_type in {"C", "M"}:
         spec += " BINARY"
     return spec
 
 
-def _coerce_value(value: Any, field: Mapping[str, Any]) -> Any:
+def _coerce_value(
+    value: Any,
+    field: Mapping[str, Any],
+    *,
+    text_encodings: list[str],
+    binary_memo: bool,
+    raw_text: bytes | None,
+) -> Any:
     if value is None:
         return None
     name = str(field["name"])
     dbf_type = str(field["dbf_type"])
     try:
         if dbf_type in {"C", "V"}:
-            return str(value)
+            return raw_text if raw_text is not None else _encode_text(str(value), text_encodings)
         if dbf_type in {"N", "F", "Y"}:
             return Decimal(str(value))
         if dbf_type in {"I", "+"}:
@@ -208,12 +238,12 @@ def _coerce_value(value: Any, field: Mapping[str, Any]) -> Any:
             )
         if dbf_type in {"T", "@"}:
             return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-        if field.get("is_binary") or dbf_type in {"G", "P"}:
+        if field.get("is_binary") or dbf_type in {"G", "P"} or binary_memo:
             return (
                 value if isinstance(value, bytes) else base64.b64decode(str(value), validate=True)
             )
         if dbf_type == "M":
-            return str(value)
+            return raw_text if raw_text is not None else _encode_text(str(value), text_encodings)
     except (ValueError, TypeError) as exc:
         raise ReconstructionError(
             f"Cannot convert field {name!r} ({dbf_type}) value {value!r}: {exc}"
@@ -237,7 +267,21 @@ def _patch_dbf_metadata(
         raw_header = dbf_info.get("header_base64")
         if raw_header:
             original = base64.b64decode(str(raw_header), validate=True)
-            if len(original) == DBF_HEADER_SIZE:
+            generated_record_count = bytes(header[4:8])
+            generated_layout = bytes(header[8:12])
+            # New schemas contain the complete header region.  If the input
+            # record count and layout are unchanged, restore it verbatim,
+            # including VFP reserved bytes/backlink and the CDX flag.
+            if (
+                len(original) > DBF_HEADER_SIZE
+                and len(original) == struct.unpack_from("<H", header, 8)[0]
+                and original[4:8] == generated_record_count
+                and original[8:12] == generated_layout
+            ):
+                outfile.seek(0)
+                outfile.write(original)
+                header[:] = original[:DBF_HEADER_SIZE]
+            elif len(original) >= DBF_HEADER_SIZE:
                 header[0:4] = original[0:4]
                 header[12:32] = original[12:32]
         else:
@@ -246,9 +290,6 @@ def _patch_dbf_metadata(
                 parsed = date.fromisoformat(str(last_update))
                 header[1] = parsed.year - 1900
                 header[2:4] = bytes((parsed.month, parsed.day))
-        header[14] = 0
-        header[15] = 0
-        header[28] = 0
         header[29] = language_driver
         outfile.seek(0)
         outfile.write(header)
@@ -299,14 +340,21 @@ def _patch_fpt_block_types(
     fpt_path: Path,
     schema: Mapping[str, Any],
     fields: list[Mapping[str, Any]],
+    block_overrides: list[tuple[int, str, int]],
 ) -> None:
     binary_memos = [
         field
         for field in fields
         if field.get("is_memo") and (field.get("is_binary") or field.get("dbf_type") in {"G", "P"})
     ]
-    if not binary_memos:
+    if not binary_memos and not block_overrides:
         return
+    fields_by_name = {str(field["name"]): field for field in fields}
+    overrides_by_record: dict[int, list[tuple[Mapping[str, Any], int]]] = {}
+    for record_index, field_name, block_type in block_overrides:
+        field = fields_by_name.get(field_name)
+        if field is not None:
+            overrides_by_record.setdefault(record_index, []).append((field, block_type))
     block_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
     with dbf_path.open("rb") as dbf_file, fpt_path.open("r+b") as fpt_file:
         header = dbf_file.read(DBF_HEADER_SIZE)
@@ -314,7 +362,9 @@ def _patch_fpt_block_types(
         header_length, record_length = struct.unpack_from("<HH", header, 8)
         for record_index in range(record_count):
             record_offset = header_length + record_index * record_length
-            for field in binary_memos:
+            patches = [(field, 2 if field.get("dbf_type") == "G" else 0) for field in binary_memos]
+            patches.extend(overrides_by_record.get(record_index, []))
+            for field, block_type in patches:
                 dbf_file.seek(record_offset + int(field["address"]))
                 pointer_data = dbf_file.read(4)
                 if len(pointer_data) != 4:
@@ -322,8 +372,6 @@ def _patch_fpt_block_types(
                 block = struct.unpack("<I", pointer_data)[0]
                 if block == 0:
                     continue
-                dbf_type = str(field.get("dbf_type"))
-                block_type = 2 if dbf_type == "G" else 0
                 fpt_file.seek(block * block_size)
                 fpt_file.write(struct.pack(">I", block_type))
         fpt_file.flush()
@@ -350,6 +398,77 @@ def _hex_byte(value: Any, *, default: int) -> int:
     if value is None:
         return default
     return int(str(value), 16) if isinstance(value, str) else int(value)
+
+
+def _binary_memo_fields(record: Mapping[str, Any]) -> set[str]:
+    value = record.get(BINARY_MEMO_FIELDS_KEY)
+    if not isinstance(value, list):
+        return set()
+    return {str(name) for name in value}
+
+
+def _raw_text_fields(record: Mapping[str, Any]) -> dict[str, bytes]:
+    value = record.get(RAW_TEXT_FIELDS_KEY)
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, bytes] = {}
+    for name, encoded in value.items():
+        try:
+            result[str(name)] = base64.b64decode(str(encoded), validate=True)
+        except ValueError as exc:
+            raise ReconstructionError(f"Invalid raw text metadata for field {name!r}.") from exc
+    return result
+
+
+def _text_encodings(schema: Mapping[str, Any]) -> list[str]:
+    text = schema.get("text_encoding", {})
+    candidates = [
+        text.get("declared_or_detected_encoding"),
+        *(text.get("fallback_order") or []),
+    ]
+    return list(dict.fromkeys(str(item) for item in candidates if item)) or ["cp1250"]
+
+
+def _encode_text(value: str, encodings: list[str]) -> bytes:
+    errors: list[str] = []
+    for encoding in encodings:
+        try:
+            return value.encode(encoding, errors="strict")
+        except (UnicodeEncodeError, LookupError) as exc:
+            errors.append(f"{encoding}: {exc}")
+    raise ReconstructionError(
+        "Text memo cannot be encoded with any encoding declared by the schema: " + "; ".join(errors)
+    )
+
+
+def _install_lossless_numeric_writer(table: Any) -> None:
+    """Accept FoxPro numeric forms such as ``-.25`` in narrow N/F fields."""
+
+    for field_type, definition in table._meta.fieldtypes.items():
+        raw_type = getattr(field_type, "value", field_type)
+        if raw_type not in {ord("N"), ord("F"), b"N", b"F"}:
+            continue
+        definition["Update"] = _update_numeric
+
+
+def _update_numeric(value: Any, fielddef: Any, *_ignore: Any) -> bytes:
+    length = int(fielddef[2])
+    decimals = int(fielddef[4])
+    if value is None:
+        return b" " * length
+    try:
+        number = Decimal(str(value))
+        quantum = Decimal(1).scaleb(-decimals)
+        rendered = format(number.quantize(quantum), f".{decimals}f")
+    except (InvalidOperation, ValueError) as exc:
+        raise ReconstructionError(f"Invalid numeric value {value!r}: {exc}") from exc
+    if len(rendered) > length and rendered.startswith("0."):
+        rendered = rendered[1:]
+    elif len(rendered) > length and rendered.startswith("-0."):
+        rendered = "-." + rendered[3:]
+    if len(rendered) > length:
+        raise ReconstructionError(f"Numeric value {value!r} does not fit N/F({length},{decimals}).")
+    return rendered.rjust(length).encode("ascii")
 
 
 def _fsync_file(path: Path) -> None:

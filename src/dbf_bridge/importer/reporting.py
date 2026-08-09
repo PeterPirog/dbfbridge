@@ -11,7 +11,7 @@ from .models import ReconstructionResult
 def write_reconstruction_report(path: Path, results: list[ReconstructionResult]) -> None:
     summary = {
         "type": "summary",
-        "report_version": 1,
+        "report_version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "tables": len(results),
         "ok": sum(result.status == "OK" for result in results),
@@ -21,8 +21,12 @@ def write_reconstruction_report(path: Path, results: list[ReconstructionResult])
         "canonical_mismatches": sum(result.canonical_match is False for result in results),
         "raw_dbf_matches": sum(result.raw_dbf_match is True for result in results),
         "raw_dbf_mismatches": sum(result.raw_dbf_match is False for result in results),
+        "raw_dbf_unverifiable": sum(result.raw_dbf_match is None for result in results),
         "raw_fpt_matches": sum(result.raw_fpt_match is True for result in results),
         "raw_fpt_mismatches": sum(result.raw_fpt_match is False for result in results),
+        "raw_fpt_unverifiable": sum(
+            result.fpt_output is not None and result.raw_fpt_match is None for result in results
+        ),
     }
     lines = [summary, *({"type": "table", **result.to_dict()} for result in results)]
     text = "".join(

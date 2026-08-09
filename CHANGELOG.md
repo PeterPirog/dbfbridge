@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproducible reconstruction
 
 ### Fixed
+- Preserved complete VFP DBF header regions, structural-index flags, fallback-codepage
+  bytes, and per-record binary/text memo types during JSON/JSONL reconstruction
+- Accepted FoxPro's compact negative fractional representation in narrow numeric fields
+- Added field-level diagnostics and explicit unverifiable counts to reconstruction reports
 - Preserved memo values longer than Excel's 32,767-character cell limit in
   reconstructable `Dlugie_teksty_*` overflow sheets and reported their counts
 - Recorded CSV, JSON, JSONL, and XLSX successes and failures in migration reports,
@@ -47,7 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved separately exported deleted records in CSV, JSON, and XLSX conversions
 
 ### Pending (planned for 0.2.0+)
-- Round-trip import: CSV/JSON/JSONL → DBF (with FPT memo creation)
 - Python API: `from dbf_bridge import convert, verify`
 - Comprehensive test suite (pytest)
 - GitHub Actions CI (Python 3.10/3.11/3.12)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import struct
 from datetime import date, datetime
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import dbf
 import pytest
 
 from dbf_bridge.cli import main as export_main
+from dbf_bridge.exporter.serialization import BINARY_MEMO_FIELDS_KEY, RAW_TEXT_FIELDS_KEY
 from dbf_bridge.import_cli import main as import_main
 from dbf_bridge.quality import _compare_jsonl, _different_offsets, run_quality_check
 
@@ -188,3 +191,189 @@ def test_quality_diagnostics_identify_record_field_and_binary_area(tmp_path: Pat
             "area": "header.structural_index_flag",
         }
     ]
+
+
+def test_jsonl_roundtrip_preserves_narrow_negative_numeric_and_complete_header(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    rebuilt = tmp_path / "rebuilt"
+    source.mkdir()
+    dbf_path = source / "narrow.dbf"
+    table = dbf.Table(str(dbf_path), "VALUE N(4,2)", dbf_type="vfp", codepage=0xC8)
+    table.open(dbf.READ_WRITE)
+    table.append({"VALUE": 0.25})
+    table.close()
+
+    with dbf_path.open("r+b") as handle:
+        header = bytearray(handle.read(32))
+        header_length = struct.unpack_from("<H", header, 8)[0]
+        header[28] = 3
+        handle.seek(0)
+        handle.write(header)
+        handle.seek(header_length - 1)
+        handle.write(b"Z")
+        handle.seek(header_length + 1)
+        handle.write(b"-.25")
+
+    assert (
+        export_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(exported),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    assert (
+        import_main(
+            [
+                "--source",
+                str(exported),
+                "--output",
+                str(rebuilt),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 2
+    )
+
+    assert _sha256(dbf_path) == _sha256(rebuilt / "narrow.dbf")
+    report = [
+        json.loads(line)
+        for line in (rebuilt / "reconstruction_report.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert report[1]["raw_dbf_match"] is True
+    assert report[1]["canonical_match"] is True
+
+
+def test_jsonl_roundtrip_distinguishes_binary_content_in_text_memo(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    rebuilt = tmp_path / "rebuilt"
+    source.mkdir()
+    dbf_path = source / "mixed.dbf"
+    table = dbf.Table(
+        str(dbf_path), "ID N(3,0); NOTES M", memo_size=64, dbf_type="vfp", codepage=0xC8
+    )
+    table.open(dbf.READ_WRITE)
+    table.append({"ID": 1, "NOTES": "binarny blok"})
+    table.close()
+
+    raw = dbf_path.read_bytes()
+    header_length = struct.unpack_from("<H", raw, 8)[0]
+    memo_address = struct.unpack_from("<I", raw, 32 + 32 + 12)[0]
+    memo_pointer = struct.unpack_from("<I", raw, header_length + memo_address)[0]
+    fpt_path = dbf_path.with_suffix(".fpt")
+    with fpt_path.open("r+b") as handle:
+        prefix = handle.read(8)
+        block_size = struct.unpack_from(">H", prefix, 6)[0]
+        handle.seek(memo_pointer * block_size)
+        handle.write(struct.pack(">I", 0))
+
+    assert (
+        export_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(exported),
+                "--formats",
+                "jsonl",
+                "--memo",
+                "inline",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    exported_record = json.loads((exported / "mixed.jsonl").read_text(encoding="utf-8"))
+    assert exported_record[BINARY_MEMO_FIELDS_KEY] == ["NOTES"]
+
+    assert (
+        import_main(
+            [
+                "--source",
+                str(exported),
+                "--output",
+                str(rebuilt),
+                "--formats",
+                "jsonl",
+                "--memo",
+                "inline",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    assert _sha256(dbf_path) == _sha256(rebuilt / "mixed.dbf")
+    assert _sha256(fpt_path) == _sha256(rebuilt / "mixed.fpt")
+
+
+def test_jsonl_roundtrip_retains_raw_text_bytes_selected_by_encoding_fallback(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    rebuilt = tmp_path / "rebuilt"
+    source.mkdir()
+    dbf_path = source / "fallback.dbf"
+    table = dbf.Table(str(dbf_path), "TEXT C(4)", dbf_type="vfp", codepage=0xC8)
+    table.open(dbf.READ_WRITE)
+    table.append({"TEXT": "x"})
+    table.close()
+    raw = dbf_path.read_bytes()
+    header_length = struct.unpack_from("<H", raw, 8)[0]
+    with dbf_path.open("r+b") as handle:
+        handle.seek(header_length + 1)
+        handle.write(b"\x81   ")  # undefined in cp1250, valid in cp852
+
+    assert (
+        export_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(exported),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    exported_record = json.loads((exported / "fallback.jsonl").read_text(encoding="utf-8"))
+    assert exported_record["TEXT"] == "ü"
+    assert exported_record[RAW_TEXT_FIELDS_KEY]["TEXT"] == "gQ=="
+
+    assert (
+        import_main(
+            [
+                "--source",
+                str(exported),
+                "--output",
+                str(rebuilt),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    assert _sha256(dbf_path) == _sha256(rebuilt / "fallback.dbf")

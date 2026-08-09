@@ -10,6 +10,8 @@ from typing import Any
 from .models import FieldMetadata
 
 BINARY_FIELD_FLAG = 0x04
+BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
+RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
 UNSUPPORTED_FIELD_TYPES = {"Q", "W"}
 VFP_DOUBLE_VERSIONS = {0x30, 0x31, 0x32}
 
@@ -106,6 +108,8 @@ def serialize_record(
     strip_spaces: bool = False,
 ) -> dict[str, Any]:
     serialized: dict[str, Any] = {}
+    binary_memo_fields: list[str] = []
+    raw_text_fields: dict[str, str] = {}
     for field in fields:
         try:
             value = record[field.name]
@@ -121,11 +125,24 @@ def serialize_record(
             continue
 
         serialized_value = serialize_value(value, field_name=field.name)
+        if field.dbf_type == "M" and isinstance(value, (bytes, bytearray)):
+            # A Visual FoxPro M field may contain text or a binary memo on a
+            # per-record basis.  A bare base64 string is ambiguous, so retain
+            # a compact discriminator next to the otherwise portable value.
+            binary_memo_fields.append(field.name)
+        raw_bytes = getattr(value, "raw_bytes", None)
+        if isinstance(raw_bytes, bytes):
+            raw_text_fields[field.name] = base64.b64encode(raw_bytes).decode("ascii")
 
         if strip_spaces and isinstance(serialized_value, str) and field.dbf_type == "C":
             serialized_value = serialized_value.rstrip()
 
         serialized[field.name] = serialized_value
+
+    if binary_memo_fields:
+        serialized[BINARY_MEMO_FIELDS_KEY] = binary_memo_fields
+    if raw_text_fields:
+        serialized[RAW_TEXT_FIELDS_KEY] = raw_text_fields
 
     if deleted_marker is not None:
         serialized["__deleted__"] = deleted_marker

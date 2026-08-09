@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -48,6 +49,10 @@ def test_vfp_schema_contains_reconstruction_metadata(tmp_path: Path) -> None:
     assert schema["dbf"]["header_length_bytes"] > 0
     assert schema["dbf"]["record_length_bytes"] > 0
     assert len(schema["dbf"]["header_base64"]) > 0
+    assert (
+        len(base64.b64decode(schema["dbf"]["header_base64"]))
+        == schema["dbf"]["header_length_bytes"]
+    )
     assert len(schema["source"]["sha256"]) == 64
     assert schema["text_encoding"]["language_driver_byte"] == "0xc8"
     assert schema["text_encoding"]["declared_or_detected_encoding"] == "cp1250"

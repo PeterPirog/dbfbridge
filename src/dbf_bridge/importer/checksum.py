@@ -34,15 +34,7 @@ class CanonicalChecksum:
 
     def update(self, record: Mapping[str, Any]) -> None:
         deleted = bool(record.get("__deleted__", False))
-        null_names = nullable_null_fields(record, self.fields)
-        values = [
-            _canonical_value(
-                None if field["name"] in null_names else record.get(field["name"]),
-                field,
-            )
-            for field in self.fields
-            if field.get("dbf_type") != "0"
-        ]
+        values = list(canonical_record(record, self.fields).values())
         encoded = (
             json.dumps(values, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
@@ -98,9 +90,23 @@ def nullable_null_fields(record: Mapping[str, Any], fields: list[Mapping[str, An
     return null_names
 
 
-def _canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
+def canonical_record(record: Mapping[str, Any], fields: list[Mapping[str, Any]]) -> dict[str, Any]:
+    null_names = nullable_null_fields(record, fields)
+    return {
+        str(field["name"]): canonical_value(
+            None if field["name"] in null_names else record.get(field["name"]),
+            field,
+        )
+        for field in fields
+        if field.get("dbf_type") != "0"
+    }
+
+
+def canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
     if value is None:
         return None
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
     dbf_type = str(field.get("dbf_type"))
     decimals = int(field.get("decimal_count") or 0)
     if dbf_type in {"N", "F", "I", "+", "Y"}:
@@ -127,8 +133,6 @@ def _canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
     if dbf_type in {"T", "@"}:
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
         return parsed.isoformat(timespec="milliseconds")
-    if field.get("is_binary") and isinstance(value, (bytes, bytearray)):
-        return base64.b64encode(bytes(value)).decode("ascii")
     if dbf_type == "L":
         if isinstance(value, str):
             lowered = value.strip().lower()
