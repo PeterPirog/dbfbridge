@@ -32,7 +32,7 @@ class ConversionCancelled(RuntimeError):
 
 
 class MissingConversionDependency(RuntimeError):
-    """Raised when an optional output dependency is unavailable."""
+    """Raised when an output dependency is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -311,7 +311,8 @@ def jsonl_to_xlsx(
         import xlsxwriter
     except ImportError as exc:
         raise MissingConversionDependency(
-            'XLSX conversion requires the optional dependency: pip install "dbfbridge[xlsx]"'
+            "XLSX conversion requires XlsxWriter. Reinstall dbfbridge or run: "
+            'pip install "xlsxwriter>=3.2"'
         ) from exc
 
     source_path, destination_path, partial = _prepare_paths(source, destination, overwrite)
@@ -349,6 +350,7 @@ def jsonl_to_xlsx(
                 "strings_to_urls": False,
             },
         )
+        blank_row_format = workbook.add_format()
         worksheet = _new_worksheet(workbook, sheet_count, selected_columns)
         row_index = 1
         with source_path.open("rb", buffering=IO_BUFFER_SIZE) as infile:
@@ -370,6 +372,7 @@ def jsonl_to_xlsx(
                     line_number,
                     normalized,
                     selected_columns,
+                    blank_row_format,
                 )
                 row_index += 1
         workbook.close()
@@ -701,16 +704,20 @@ def _write_xlsx_row(
     line_number: int,
     record: Mapping[str, Any],
     columns: Sequence[str],
+    blank_row_format: Any,
 ) -> None:
+    wrote_value = False
     for column_index, name in enumerate(columns):
         value = record.get(name)
         if value is None:
             continue
         if isinstance(value, bool):
             worksheet.write_boolean(row_index, column_index, value)
+            wrote_value = True
             continue
         if isinstance(value, (int, float)):
             worksheet.write_number(row_index, column_index, value)
+            wrote_value = True
             continue
         text = value if isinstance(value, str) else _dumps_text(value)
         if len(text) > EXCEL_MAX_STRING_LENGTH:
@@ -719,6 +726,9 @@ def _write_xlsx_row(
                 f"Excel's {EXCEL_MAX_STRING_LENGTH}-character cell limit."
             )
         worksheet.write_string(row_index, column_index, text)
+        wrote_value = True
+    if not wrote_value and columns:
+        worksheet.write_blank(row_index, 0, None, blank_row_format)
 
 
 def _dumps_text(value: Any) -> str:

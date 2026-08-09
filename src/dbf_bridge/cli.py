@@ -28,13 +28,22 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from dbf_bridge.converters import jsonl_to_csv, jsonl_to_json, jsonl_to_xlsx
+from dbf_bridge import __version__
+from dbf_bridge.converters import (
+    ConversionStats,
+    jsonl_to_csv,
+    jsonl_to_json,
+    jsonl_to_xlsx,
+)
 from dbf_bridge.exporter.config import ConfigError, make_config
 from dbf_bridge.exporter.discovery import discover_tables
 from dbf_bridge.exporter.models import TableResult
 from dbf_bridge.exporter.reporting import exit_code, write_reports
+from dbf_bridge.exporter.validation import sha256_file
 from dbf_bridge.exporter.writer import export_table
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -318,86 +327,184 @@ def _convert_jsonl_outputs(
     memo_arg: str | None,
     deleted: str,
     overwrite: bool,
-) -> int:
-    errors = 0
+) -> list[TableResult]:
+    conversion_results: list[TableResult] = []
     target_formats = [fmt for fmt in formats if fmt != "jsonl"]
     if not target_formats:
-        return errors
+        return conversion_results
 
     for result in results:
-        if result.status in {"FAILED", "UNSUPPORTED"} or result.output is None:
-            continue
-        primary_source = output / result.output
-        columns, memo_fields, schema_types = _schema_details(output, result)
-        if deleted == "include":
-            columns.append("__deleted__")
-            schema_types["__deleted__"] = "boolean"
-        sources = [
-            (
-                primary_source,
-                columns,
-                schema_types,
-                result.active_records + (result.deleted_records if deleted == "include" else 0),
+        for fmt in target_formats:
+            intended_output = (
+                str(Path(result.table).with_suffix(f".{fmt}")).replace("\\", "/")
             )
-        ]
-        if deleted == "separate":
-            deleted_source = primary_source.with_name(
-                f"{primary_source.stem}.deleted{primary_source.suffix}"
-            )
-            deleted_columns = [*columns, "__deleted__"]
-            deleted_schema_types = {**schema_types, "__deleted__": "boolean"}
-            sources.append(
-                (deleted_source, deleted_columns, deleted_schema_types, result.deleted_records)
-            )
+            if result.status in {"FAILED", "UNSUPPORTED"} or result.output is None:
+                conversion_results.append(
+                    TableResult(
+                        table=result.table,
+                        output=intended_output,
+                        status="FAILED",
+                        encoding=result.encoding,
+                        format=fmt,  # type: ignore[arg-type]
+                        active_records=result.active_records,
+                        deleted_records=result.deleted_records,
+                        memo_fields=result.memo_fields,
+                        schema=result.schema,
+                        schema_sha256=result.schema_sha256,
+                        errors=[
+                            f"Conversion to {fmt.upper()} was not attempted because the JSONL "
+                            f"export status is {result.status}."
+                        ],
+                    )
+                )
+                continue
 
-        for source_path, source_columns, source_schema, record_count in sources:
-            for fmt in target_formats:
+            primary_source = output / result.output
+            columns, memo_fields, schema_types = _schema_details(output, result)
+            if deleted == "include":
+                columns.append("__deleted__")
+                schema_types["__deleted__"] = "boolean"
+
+            sources: list[tuple[str, Path, list[str], dict[str, str], int]] = [
+                (
+                    "primary",
+                    primary_source,
+                    columns,
+                    schema_types,
+                    result.active_records
+                    + (result.deleted_records if deleted == "include" else 0),
+                )
+            ]
+            if deleted == "separate":
+                deleted_source = primary_source.with_name(
+                    f"{primary_source.stem}.deleted{primary_source.suffix}"
+                )
+                sources.append(
+                    (
+                        "deleted",
+                        deleted_source,
+                        [*columns, "__deleted__"],
+                        {**schema_types, "__deleted__": "boolean"},
+                        result.deleted_records,
+                    )
+                )
+
+            errors: list[str] = []
+            converted: dict[str, tuple[Path, ConversionStats, str]] = {}
+            for variant, source_path, source_columns, source_schema, record_count in sources:
                 destination_path = source_path.with_suffix(f".{fmt}")
                 try:
-                    if fmt == "csv":
-                        null_columns = (
-                            memo_fields
-                            if _resolve_memo_policy("csv", memo_arg) != "inline"
-                            else []
-                        )
-                        stats = jsonl_to_csv(
-                            source_path,
-                            destination_path,
-                            columns=source_columns,
-                            schema_types=source_schema,
-                            expected_record_count=record_count,
-                            source_is_validated=True,
-                            null_columns=null_columns,
-                            overwrite=overwrite,
-                        )
-                    elif fmt == "json":
-                        stats = jsonl_to_json(
-                            source_path,
-                            destination_path,
-                            overwrite=overwrite,
-                        )
-                    else:
-                        stats = jsonl_to_xlsx(
-                            source_path,
-                            destination_path,
-                            columns=source_columns,
-                            overwrite=overwrite,
-                        )
+                    stats = _convert_jsonl_file(
+                        fmt,
+                        source_path,
+                        destination_path,
+                        columns=source_columns,
+                        schema_types=source_schema,
+                        expected_record_count=record_count,
+                        memo_fields=memo_fields,
+                        memo_arg=memo_arg,
+                        overwrite=overwrite,
+                    )
+                    output_hash = sha256_file(destination_path)
+                    converted[variant] = (destination_path, stats, output_hash)
+                    sheet_info = (
+                        f", {stats.sheet_count} arkusz(e)" if stats.sheet_count else ""
+                    )
                     print(
                         f"  -> {source_path.name} -> {fmt.upper()}: "
                         f"{_format_count(stats.record_count)} rekordów, "
-                        f"{stats.megabytes_per_second:.1f} MB/s, {stats.engine}"
+                        f"{stats.megabytes_per_second:.1f} MB/s, {stats.engine}{sheet_info}"
                     )
                 except Exception as exc:
+                    message = f"{variant}: {exc}"
+                    errors.append(message)
                     print(
                         f"[dbf-bridge] Błąd konwersji {source_path} -> {fmt}: {exc}",
                         file=sys.stderr,
                     )
-                    errors = 1
-    return errors
+
+            primary = converted.get("primary")
+            deleted_result = converted.get("deleted")
+            conversion_results.append(
+                TableResult(
+                    table=result.table,
+                    output=intended_output,
+                    status="FAILED" if errors else "OK",
+                    encoding=result.encoding,
+                    format=fmt,  # type: ignore[arg-type]
+                    active_records=result.active_records,
+                    deleted_records=result.deleted_records,
+                    memo_fields=result.memo_fields,
+                    sha256=primary[2] if primary is not None else None,
+                    size_bytes=primary[1].output_size if primary is not None else None,
+                    schema=result.schema,
+                    schema_sha256=result.schema_sha256,
+                    deleted_output=(
+                        deleted_result[0].relative_to(output).as_posix()
+                        if deleted_result is not None
+                        else None
+                    ),
+                    deleted_sha256=deleted_result[2] if deleted_result is not None else None,
+                    engine=primary[1].engine if primary is not None else None,
+                    sheet_count=primary[1].sheet_count if primary is not None else 0,
+                    elapsed_seconds=primary[1].elapsed_seconds if primary is not None else None,
+                    errors=errors,
+                )
+            )
+    return conversion_results
+
+
+def _convert_jsonl_file(
+    fmt: str,
+    source_path: Path,
+    destination_path: Path,
+    *,
+    columns: list[str],
+    schema_types: dict[str, str],
+    expected_record_count: int,
+    memo_fields: list[str],
+    memo_arg: str | None,
+    overwrite: bool,
+) -> ConversionStats:
+    if fmt == "csv":
+        null_columns = (
+            memo_fields if _resolve_memo_policy("csv", memo_arg) != "inline" else []
+        )
+        return jsonl_to_csv(
+            source_path,
+            destination_path,
+            columns=columns,
+            schema_types=schema_types,
+            expected_record_count=expected_record_count,
+            source_is_validated=True,
+            null_columns=null_columns,
+            overwrite=overwrite,
+        )
+    if fmt == "json":
+        return jsonl_to_json(source_path, destination_path, overwrite=overwrite)
+    return jsonl_to_xlsx(
+        source_path,
+        destination_path,
+        columns=columns,
+        overwrite=overwrite,
+    )
+
+
+def _print_format_summary(results: list[TableResult]) -> None:
+    print("\n[dbf-bridge] Podsumowanie formatów:")
+    for fmt in sorted({result.format for result in results}):
+        format_results = [result for result in results if result.format == fmt]
+        ok = sum(result.status == "OK" for result in format_results)
+        warnings = sum(result.status == "WARNING" for result in format_results)
+        failed = sum(result.status in {"FAILED", "UNSUPPORTED"} for result in format_results)
+        print(
+            f"  -> {fmt.upper():5} OK: {ok}  Ostrzeżenia: {warnings}  Błędy: {failed}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
+    started_at = datetime.now(timezone.utc)
+    started_monotonic = time.monotonic()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -437,21 +544,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     overall_errors = max(overall_errors, code)
     _print_summary(all_results)
-    overall_errors = max(
-        overall_errors,
-        _convert_jsonl_outputs(
-            args.output,
-            all_results,
-            formats,
-            memo_arg=args.memo,
-            deleted=args.deleted,
-            overwrite=args.overwrite,
-        ),
+    conversion_results = _convert_jsonl_outputs(
+        args.output,
+        all_results,
+        formats,
+        memo_arg=args.memo,
+        deleted=args.deleted,
+        overwrite=args.overwrite,
     )
+    report_results = [*all_results, *conversion_results]
+    _print_format_summary(report_results)
+    overall_errors = max(overall_errors, exit_code(report_results))
 
     if all_results:
-        write_reports(args.output, all_results)
-        overall_errors = max(overall_errors, exit_code(all_results))
+        finished_at = datetime.now(timezone.utc)
+        write_reports(
+            args.output,
+            report_results,
+            run_metadata={
+                "dbfbridge_version": __version__,
+                "started_at": started_at.isoformat(),
+                "finished_at": finished_at.isoformat(),
+                "elapsed_seconds": time.monotonic() - started_monotonic,
+                "source": str(args.source.resolve()),
+                "output": str(args.output.resolve()),
+                "requested_formats": formats,
+                "memo_policy": args.memo or "per-format-default",
+                "memo_policy_by_format": {
+                    fmt: _resolve_memo_policy(fmt, args.memo) for fmt in formats
+                },
+                "deleted_policy": args.deleted,
+                "encoding": args.encoding,
+                "decode_errors": args.decode_errors,
+                "missing_memo_policy": args.missing_memo,
+                "overwrite": args.overwrite,
+                "validation_enabled": args.validate,
+                "exit_code": overall_errors,
+            },
+        )
 
     print(f"\n[dbf-bridge] Zakończono. Kod wyjścia: {overall_errors}")
     return overall_errors

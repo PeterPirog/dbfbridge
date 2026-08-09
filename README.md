@@ -15,7 +15,8 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 - **Polish encoding auto-fallback**: detects cp1250 from DBF header, falls back to cp852 → Mazovia when data doesn't match the declared codepage (common in legacy Polish FoxPro/Clipper data)
 - **Memo-safe CSV**: memo fields (M) are omitted in CSV (null) to avoid separator/newline issues; full memo content preserved in JSON/JSONL
 - **Schema files**: `<table>_schema.json` preserves exact DBF field descriptors, header/codepage details, and FPT memo reconstruction parameters
-- **Migration reports**: `migration_report.jsonl` + `.csv` with SHA-256, record counts, null stats, memo hashes
+- **Migration reports**: `migration_report.jsonl` + `.csv` with per-format status,
+  SHA-256, record counts, schema hashes, XLSX sheet counts, failures, and run configuration
 - **Verification tool**: `dbf-bridge-verify` checks completeness, record counts, SHA-256, schema, and syntax
 
 ## Install
@@ -114,7 +115,8 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 dbf-bridge-verify --source <DBF_DIR> --output <OUT_DIR> [options]
 ```
 
-Checks: file completeness, record counts, SHA-256, schema, syntax, FPT/CDX presence.
+Checks: file completeness, record counts, SHA-256, schema, syntax, FPT/CDX presence,
+and row counts across all `Dane_*` worksheets in XLSX files.
 
 Exit codes: `0` = OK, `1` = errors, `2` = warnings (with `--strict`).
 

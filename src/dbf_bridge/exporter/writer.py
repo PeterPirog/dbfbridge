@@ -299,6 +299,14 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             memo_hashes=memo_hashes,
             sha256=validation.sha256,
             size_bytes=validation.size_bytes,
+            schema_sha256=sha256_file(schema_path),
+            deleted_output=deleted_path.relative_to(config.output).as_posix()
+            if deleted_path is not None
+            else None,
+            deleted_sha256=sha256_file(deleted_path)
+            if deleted_path is not None and deleted_path.is_file()
+            else None,
+            engine="dbfread-streaming",
             warnings=result_warnings,
             errors=[],
         )

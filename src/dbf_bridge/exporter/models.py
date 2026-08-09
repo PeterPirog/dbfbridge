@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 ExportFormat = Literal["jsonl", "csv", "json"]
+OutputFormat = Literal["jsonl", "csv", "json", "xlsx"]
 DecodeErrors = Literal["strict", "ignore", "replace"]
 DeletedPolicy = Literal["skip", "separate", "include"]
 MissingMemoPolicy = Literal["fail", "null-with-warning"]
@@ -38,7 +39,7 @@ DBF_FIELD_TYPE_NAMES = {
 class ExportConfig:
     source: Path
     output: Path
-    format: ExportFormat = "jsonl"
+    format: OutputFormat = "jsonl"
     encoding: str | None = None
     decode_errors: DecodeErrors = "strict"
     deleted: DeletedPolicy = "skip"
@@ -237,6 +238,12 @@ class TableResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     schema: str | None = None
+    schema_sha256: str | None = None
+    deleted_output: str | None = None
+    deleted_sha256: str | None = None
+    engine: str | None = None
+    sheet_count: int = 0
+    elapsed_seconds: float | None = None
 
     def to_report_dict(self) -> dict[str, Any]:
         return {
@@ -253,6 +260,13 @@ class TableResult:
             "memo_hashes": self.memo_hashes,
             "sha256": self.sha256,
             "size_bytes": self.size_bytes,
+            "schema": self.schema,
+            "schema_sha256": self.schema_sha256,
+            "deleted_output": self.deleted_output,
+            "deleted_sha256": self.deleted_sha256,
+            "engine": self.engine,
+            "sheet_count": self.sheet_count,
+            "elapsed_seconds": self.elapsed_seconds,
             "warnings": self.warnings,
             "errors": self.errors,
         }

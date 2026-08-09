@@ -3,12 +3,12 @@ dbf_bridge.verifier
 ====================
 
 Weryfikuje poprawność konwersji plików DBF (wraz z FPT/CDX) do formatów
-pośrednich CSV / JSON / JSONL. Skrypt sprawdza:
+pośrednich CSV / JSON / JSONL / XLSX. Skrypt sprawdza:
   1. Kompletność plików (każdy DBF ma odpowiednik w każdym formacie).
-  2. Liczbę rekordów (CSV/JSON/JSONL vs DBF).
+  2. Liczbę rekordów (CSV/JSON/JSONL/XLSX vs DBF).
   3. SHA-256 plików wyjściowych vs raport migracji.
   4. Zgodność schema (nazwy pól, typy, długości).
-  5. Poprawność składniową (CSV, JSON, JSONL).
+  5. Poprawność składniową (CSV, JSON, JSONL, XLSX).
   6. Obecność FPT/CDX.
 
 Punkt wejścia: dbf-bridge-verify
@@ -20,7 +20,10 @@ import argparse
 import csv
 import hashlib
 import json
+import posixpath
 import sys
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,12 +39,12 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULTS = {
     "source": PROJECT_DIR / "tests" / "fixtures" / "input",
     "output": PROJECT_DIR / "tests" / "fixtures" / "output",
-    "formats": "csv,json,jsonl",
+    "formats": "csv,json,jsonl,xlsx",
     "verbose": True,
     "strict": True,
 }
 
-ALL_FORMATS: tuple[str, ...] = ("csv", "json", "jsonl")
+ALL_FORMATS: tuple[str, ...] = ("csv", "json", "jsonl", "xlsx")
 
 
 @dataclass
@@ -156,6 +159,54 @@ def count_csv_records(path: Path) -> tuple[int, list[str]]:
             if len(row) != len(header):
                 errors.append(f"row {row_number}: {len(row)} cols, expected {len(header)}")
     return count, errors
+
+
+def count_xlsx_records(path: Path) -> tuple[int, list[str]]:
+    """Count rows in all ``Dane_*`` worksheets without loading the workbook."""
+    errors: list[str] = []
+    records = 0
+    try:
+        with zipfile.ZipFile(path) as archive:
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            relationships = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            rel_targets = {
+                rel.attrib["Id"]: rel.attrib["Target"]
+                for rel in relationships
+                if "Id" in rel.attrib and "Target" in rel.attrib
+            }
+            relationship_key = (
+                "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+            )
+            sheets = [
+                (sheet.attrib.get("name", ""), sheet.attrib.get(relationship_key))
+                for sheet in workbook.iter()
+                if sheet.tag.endswith("}sheet")
+            ]
+            data_sheets = [(name, rel_id) for name, rel_id in sheets if name.startswith("Dane_")]
+            if not data_sheets:
+                return 0, ["XLSX has no Dane_* worksheet"]
+
+            for name, rel_id in data_sheets:
+                target = rel_targets.get(rel_id or "")
+                if target is None:
+                    errors.append(f"worksheet {name!r} has no relationship target")
+                    continue
+                member = target.lstrip("/")
+                if not member.startswith("xl/"):
+                    member = posixpath.normpath(posixpath.join("xl", member))
+                last_row_number = 0
+                with archive.open(member) as worksheet_xml:
+                    for _, element in ET.iterparse(worksheet_xml, events=("end",)):
+                        if element.tag.endswith("}row"):
+                            last_row_number = max(
+                                last_row_number,
+                                int(element.attrib.get("r", last_row_number + 1)),
+                            )
+                        element.clear()
+                records += max(0, last_row_number - 1)
+    except (KeyError, OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+        errors.append(f"invalid XLSX: {exc}")
+    return records, errors
 
 
 def read_dbf_stats(dbf_path: Path) -> tuple[int, int, list[dict[str, Any]], str | None, str | None]:
@@ -296,6 +347,13 @@ def verify_table(
     for fmt in formats:
         out_path = output_root / base_rel.with_suffix(f".{fmt}")
         fc = FileCheck(relative_path=out_path.relative_to(output_root).as_posix())
+        report_entry = migration_report.get((rel, fmt)) if migration_report is not None else None
+        if report_entry is not None and report_entry.get("status") in {"FAILED", "UNSUPPORTED"}:
+            report_errors = report_entry.get("errors") or []
+            fc.errors.append(
+                f"migration report status is {report_entry.get('status')}: "
+                f"{' | '.join(str(error) for error in report_errors)}"
+            )
         if not out_path.is_file():
             fc.errors.append(f"{fmt} output missing")
             check.formats[fmt] = fc
@@ -310,6 +368,8 @@ def verify_table(
             fc.record_count, errs = count_jsonl_records(out_path)
         elif fmt == "json":
             fc.record_count, errs = count_json_records(out_path)
+        elif fmt == "xlsx":
+            fc.record_count, errs = count_xlsx_records(out_path)
         else:
             errs = [f"unknown format {fmt}"]
             fc.record_count = 0
@@ -320,7 +380,6 @@ def verify_table(
             fc.errors.append(f"record count {fc.record_count} != DBF active {expected}")
 
         if migration_report is not None:
-            report_entry = migration_report.get((rel, fmt))
             if report_entry is None:
                 fc.warnings.append(f"no migration_report entry for ({rel}, {fmt})")
             else:
