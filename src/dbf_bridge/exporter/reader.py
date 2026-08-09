@@ -34,6 +34,16 @@ class FieldParseError(ValueError):
     """Raised with field context when dbfread cannot parse a field."""
 
 
+class LosslessText(str):
+    """Decoded text retaining bytes when a fallback code page was required."""
+
+    def __new__(cls, value: str, raw_bytes: bytes, encoding: str | None) -> LosslessText:
+        instance = super().__new__(cls, value)
+        instance.raw_bytes = raw_bytes
+        instance.source_encoding = encoding
+        return instance
+
+
 class LosslessFieldParser(FieldParser):
     """FieldParser z automatycznym fallback dla polskich stron kodowych.
 
@@ -69,12 +79,12 @@ class LosslessFieldParser(FieldParser):
                 if alt == primary:
                     continue
                 try:
-                    return text.decode(alt, errors="strict")
+                    return LosslessText(text.decode(alt, errors="strict"), text, alt)
                 except (UnicodeDecodeError, LookupError):
                     continue
             # Żadna strona kodowa nie pasuje — zwróć z replace, aby nie
             # przerywać eksportu całej tabeli.
-            return text.decode(primary, errors="replace")
+            return LosslessText(text.decode(primary, errors="replace"), text, None)
 
     def parse(self, field: object, data: bytes) -> object:
         try:
@@ -216,8 +226,17 @@ def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
             )
             ordinal += 1
 
+        # Keep the complete VFP header region, not only its fixed 32-byte
+        # prefix.  Bytes after the field terminator may contain reserved
+        # padding and a database-container backlink.  They are irrelevant to
+        # a logical export but must be restored for a byte-identical DBF.
+        infile.seek(0)
+        complete_header = infile.read(header_length)
+        if len(complete_header) != header_length:
+            raise ValueError(f"DBF header region is truncated in {dbf_path.name}.")
+
     return RawHeader(
-        header_bytes=header_data,
+        header_bytes=complete_header,
         dbversion_byte=dbversion_byte,
         language_driver=language_driver,
         year=unpacked[1],

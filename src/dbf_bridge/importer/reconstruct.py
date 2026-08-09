@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Iterable, Mapping
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +13,7 @@ from dbfread import DBF
 from dbf_bridge.exporter.reader import LosslessFieldParser
 from dbf_bridge.exporter.validation import sha256_file
 
-from .checksum import CanonicalChecksum
+from .checksum import CanonicalChecksum, canonical_record
 from .models import ImportConfig, ReconstructionResult
 from .readers import discover_inputs, iter_records, load_schema, schema_path_for
 from .reporting import write_reconstruction_report
@@ -119,7 +122,19 @@ def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
                     "Raw FPT SHA-256 differs from the original although memo content may still "
                     "match canonically."
                 )
+            if result.expected_source_dbf_sha256 is None:
+                result.warnings.append(
+                    "The schema has no source DBF SHA-256. Exact binary identity cannot be "
+                    "verified; regenerate JSONL and schema with the current exporter."
+                )
             if not result.canonical_match:
+                result.differences = diagnose_reconstruction(
+                    data_path,
+                    config.format,
+                    schema,
+                    config.memo,
+                    destination,
+                )
                 result.errors.append(
                     "Canonical checksum mismatch after reading the reconstructed DBF/FPT."
                 )
@@ -171,3 +186,95 @@ def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
         deleted["__deleted__"] = True
         checksum.update(deleted)
     return checksum
+
+
+def iter_dbf_records(path: Path, schema: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
+    encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
+    table = DBF(
+        path,
+        load=False,
+        encoding=encoding,
+        parserclass=LosslessFieldParser,
+        char_decode_errors="strict",
+    )
+    for record in table.records:
+        yield dict(record)
+    for record in table.deleted:
+        deleted = dict(record)
+        deleted["__deleted__"] = True
+        yield deleted
+
+
+def diagnose_reconstruction(
+    data_path: Path,
+    input_format: str,
+    schema: Mapping[str, Any],
+    memo_policy: str,
+    reconstructed: Path,
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return bounded record/field diagnostics for a canonical mismatch."""
+
+    expected_records = _apply_memo_policy(
+        iter_records(data_path, input_format, schema), schema, memo_policy
+    )
+    fields = list(schema.get("fields") or [])
+    differences: list[dict[str, Any]] = []
+    for record_number, pair in enumerate(
+        zip_longest(expected_records, iter_dbf_records(reconstructed, schema)), start=1
+    ):
+        expected, actual = pair
+        if expected is None or actual is None:
+            differences.append(
+                {
+                    "scope": "record_count",
+                    "record": record_number,
+                    "expected_present": expected is not None,
+                    "actual_present": actual is not None,
+                }
+            )
+            break
+        expected_deleted = bool(expected.get("__deleted__", False))
+        actual_deleted = bool(actual.get("__deleted__", False))
+        if expected_deleted != actual_deleted:
+            differences.append(
+                {
+                    "scope": "deleted_marker",
+                    "record": record_number,
+                    "expected": expected_deleted,
+                    "actual": actual_deleted,
+                }
+            )
+        expected_values = canonical_record(expected, fields)
+        actual_values = canonical_record(actual, fields)
+        for name in expected_values:
+            if expected_values[name] == actual_values.get(name):
+                continue
+            differences.append(
+                {
+                    "scope": "field",
+                    "record": record_number,
+                    "field": name,
+                    "expected": _diagnostic_value(expected_values[name]),
+                    "actual": _diagnostic_value(actual_values.get(name)),
+                }
+            )
+            if len(differences) >= limit:
+                return differences
+        if len(differences) >= limit:
+            return differences
+    return differences
+
+
+def _diagnostic_value(value: Any) -> dict[str, Any]:
+    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    preview = str(value)
+    if len(preview) > 160:
+        preview = f"{preview[:157]}..."
+    return {
+        "type": type(value).__name__,
+        "length": len(value) if isinstance(value, (str, list, dict)) else None,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "preview": preview,
+    }
