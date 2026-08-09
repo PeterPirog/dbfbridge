@@ -194,7 +194,7 @@ def open_table(dbf_path: Path, config: ExportConfig) -> DBF:
     )
 
 
-def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool]]:
+def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool, bytes]]:
     """Yield active and deleted records in their original on-disk order."""
 
     with open(table.filename, "rb") as infile, table._open_memofile() as memofile:
@@ -209,8 +209,17 @@ def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool]]:
                 raise ValueError(
                     f"Unexpected DBF record marker {marker!r} in {Path(table.filename).name}."
                 )
-            items = [(field.name, parse(field, infile.read(field.length))) for field in table.fields]
-            yield table.recfactory(items), marker == b"*"
+            raw_fields = [infile.read(field.length) for field in table.fields]
+            if any(
+                len(raw) != field.length
+                for raw, field in zip(raw_fields, table.fields, strict=True)
+            ):
+                raise ValueError(f"Truncated DBF record in {Path(table.filename).name}.")
+            items = [
+                (field.name, parse(field, raw))
+                for field, raw in zip(table.fields, raw_fields, strict=True)
+            ]
+            yield table.recfactory(items), marker == b"*", marker + b"".join(raw_fields)
 
 
 def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:

@@ -22,6 +22,7 @@ def write_reconstruction_report(path: Path, results: list[ReconstructionResult])
         "raw_dbf_matches": sum(result.raw_dbf_match is True for result in results),
         "raw_dbf_mismatches": sum(result.raw_dbf_match is False for result in results),
         "raw_dbf_unverifiable": sum(result.raw_dbf_match is None for result in results),
+        "raw_layout_restored": sum(result.raw_layout_restored for result in results),
         "raw_fpt_matches": sum(result.raw_fpt_match is True for result in results),
         "raw_fpt_mismatches": sum(result.raw_fpt_match is False for result in results),
         "raw_fpt_unverifiable": sum(

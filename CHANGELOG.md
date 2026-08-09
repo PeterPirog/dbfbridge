@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved complete VFP DBF header regions, structural-index flags, fallback-codepage
   bytes, and per-record binary/text memo types during JSON/JSONL reconstruction
 - Preserved the physical order of active and deleted records with `--deleted include`
+- Retained source record images in JSON/JSONL, restored original memo pointers, and
+  relocated generated FPT blocks before raw SHA-256 verification
+- Reconstructed scientific notation used by Visual FoxPro in narrow N/F fields
+- Classified DBF binary differences using the actual header and record lengths
 - Accepted FoxPro's compact negative fractional representation in narrow numeric fields
 - Added field-level diagnostics and explicit unverifiable counts to reconstruction reports
 - Preserved memo values longer than Excel's 32,767-character cell limit in

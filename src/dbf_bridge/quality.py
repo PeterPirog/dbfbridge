@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import struct
 import sys
 from itertools import zip_longest
 from pathlib import Path
@@ -145,7 +146,11 @@ def run_quality_check(
 
         if errors or not canonical_match or record_differences:
             status = "FAILED"
-        elif raw_dbf["match"] and (not raw_fpt["applicable"] or raw_fpt["match"]):
+        elif (
+            not warnings
+            and raw_dbf["match"]
+            and (not raw_fpt["applicable"] or raw_fpt["match"])
+        ):
             status = "OK"
         else:
             status = "WARNING"
@@ -270,6 +275,12 @@ def _different_offsets(
 ) -> list[dict[str, Any]]:
     differences: list[dict[str, Any]] = []
     offset = 0
+    header_length = record_length = None
+    if kind == "dbf":
+        with source.open("rb") as infile:
+            header = infile.read(32)
+        if len(header) == 32:
+            header_length, record_length = struct.unpack_from("<HH", header, 8)
     with source.open("rb") as left, reconstructed.open("rb") as right:
         while len(differences) < limit:
             left_chunk = left.read(1024 * 1024)
@@ -285,7 +296,12 @@ def _different_offsets(
                             "offset": absolute,
                             "source_byte": left_chunk[index],
                             "reconstructed_byte": right_chunk[index],
-                            "area": _binary_area(absolute, kind),
+                            "area": _binary_area(
+                                absolute,
+                                kind,
+                                header_length=header_length,
+                                record_length=record_length,
+                            ),
                         }
                     )
                     if len(differences) >= limit:
@@ -309,7 +325,13 @@ def _different_offsets(
     return differences
 
 
-def _binary_area(offset: int, kind: str) -> str:
+def _binary_area(
+    offset: int,
+    kind: str,
+    *,
+    header_length: int | None = None,
+    record_length: int | None = None,
+) -> str:
     if kind == "fpt":
         if 0 <= offset <= 3:
             return "fpt_header.next_free_block"
@@ -336,8 +358,13 @@ def _binary_area(offset: int, kind: str) -> str:
         return "header.structural_index_flag"
     if offset == 29:
         return "header.language_driver"
-    if 32 <= offset < 4096:
+    if header_length is not None and 32 <= offset < header_length:
         return "field_descriptors_or_header_padding"
+    if header_length is not None and record_length:
+        relative = offset - header_length
+        if relative >= 0:
+            record_index, record_offset = divmod(relative, record_length)
+            return f"record_data[record={record_index + 1},offset={record_offset}]"
     return "record_data_or_file_tail"
 
 
@@ -352,10 +379,16 @@ def _raw_dbf_causes(comparison: dict[str, Any], deleted_records: int) -> list[st
         causes.append("The DBF last-update header bytes differ.")
     if "field_descriptors_or_header_padding" in areas:
         causes.append("A field descriptor, reserved header byte, or VFP backlink area differs.")
-    if deleted_records and "record_data_or_file_tail" in areas:
+    record_areas = {area for area in areas if str(area).startswith("record_data")}
+    if deleted_records and record_areas:
         causes.append(
-            "Deleted records are exported after active records, so their original physical "
+            "The JSONL may predate physical-order/raw-record metadata, so deleted record "
             "positions may not be reproducible."
+        )
+    elif record_areas:
+        causes.append(
+            "Record bytes differ (for example memo pointers, numeric formatting, or blank "
+            "logical markers); compare canonical data and raw-layout metadata."
         )
     if not causes:
         causes.append("Inspect first_different_offsets and the retained JSONL artifacts.")

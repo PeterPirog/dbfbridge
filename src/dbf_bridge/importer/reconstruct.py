@@ -17,7 +17,7 @@ from .checksum import CanonicalChecksum, canonical_record
 from .models import ImportConfig, ReconstructionResult
 from .readers import discover_inputs, iter_records, load_schema, schema_path_for
 from .reporting import write_reconstruction_report
-from .writer import memo_output_path, output_hashes, write_dbf
+from .writer import memo_output_path, output_hashes, restore_raw_layout, write_dbf
 
 
 def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
@@ -83,6 +83,16 @@ def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
             )
             if config.progress:
                 print()
+            if config.format in {"json", "jsonl"}:
+                result.raw_layout_restored = restore_raw_layout(
+                    destination,
+                    _apply_memo_policy(
+                        iter_records(data_path, config.format, schema),
+                        schema,
+                        config.memo,
+                    ),
+                    schema,
+                )
             reconstructed_checksum = checksum_dbf(destination, schema)
             result.record_count = input_checksum.record_count
             result.active_records = input_checksum.active_records

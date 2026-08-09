@@ -10,7 +10,11 @@ import dbf
 import pytest
 
 from dbf_bridge.cli import main as export_main
-from dbf_bridge.exporter.serialization import BINARY_MEMO_FIELDS_KEY, RAW_TEXT_FIELDS_KEY
+from dbf_bridge.exporter.serialization import (
+    BINARY_MEMO_FIELDS_KEY,
+    RAW_RECORD_KEY,
+    RAW_TEXT_FIELDS_KEY,
+)
 from dbf_bridge.import_cli import main as import_main
 from dbf_bridge.quality import _compare_jsonl, _different_offsets, run_quality_check
 
@@ -203,6 +207,17 @@ def test_quality_diagnostics_identify_record_field_and_binary_area(tmp_path: Pat
         }
     ]
 
+    source_records = tmp_path / "source-records.dbf"
+    rebuilt_records = tmp_path / "rebuilt-records.dbf"
+    record_file = bytearray(80)
+    struct.pack_into("<HH", record_file, 8, 64, 10)
+    source_records.write_bytes(record_file)
+    record_file[65] = 7
+    rebuilt_records.write_bytes(record_file)
+    assert _different_offsets(source_records, rebuilt_records, 5, kind="dbf")[0]["area"] == (
+        "record_data[record=1,offset=1]"
+    )
+
 
 def test_jsonl_roundtrip_preserves_narrow_negative_numeric_and_complete_header(
     tmp_path: Path,
@@ -388,3 +403,141 @@ def test_jsonl_roundtrip_retains_raw_text_bytes_selected_by_encoding_fallback(
         == 0
     )
     assert _sha256(dbf_path) == _sha256(rebuilt / "fallback.dbf")
+
+
+def test_jsonl_roundtrip_restores_scientific_numeric_storage(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    rebuilt = tmp_path / "rebuilt"
+    source.mkdir()
+    dbf_path = source / "scientific.dbf"
+    table = dbf.Table(str(dbf_path), "VALUE F(6,1)", dbf_type="vfp", codepage=0xC8)
+    table.open(dbf.READ_WRITE)
+    table.append({"VALUE": None})
+    table.close()
+    raw = dbf_path.read_bytes()
+    header_length = struct.unpack_from("<H", raw, 8)[0]
+    with dbf_path.open("r+b") as handle:
+        handle.seek(header_length + 1)
+        handle.write(b"9.0E+9")
+
+    assert (
+        export_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(exported),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    record = json.loads((exported / "scientific.jsonl").read_text(encoding="utf-8"))
+    assert record["VALUE"] == 9_000_000_000.0
+    assert RAW_RECORD_KEY in record
+
+    assert (
+        import_main(
+            [
+                "--source",
+                str(exported),
+                "--output",
+                str(rebuilt),
+                "--formats",
+                "jsonl",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    assert _sha256(dbf_path) == _sha256(rebuilt / "scientific.dbf")
+
+
+def test_jsonl_roundtrip_relocates_memo_to_original_pointer(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    exported = tmp_path / "exported"
+    rebuilt = tmp_path / "rebuilt"
+    source.mkdir()
+    dbf_path = source / "relocated.dbf"
+    table = dbf.Table(
+        str(dbf_path), "ID N(3,0); NOTES M", memo_size=64, dbf_type="vfp", codepage=0xC8
+    )
+    table.open(dbf.READ_WRITE)
+    table.append({"ID": 1, "NOTES": "Memo pod odległym wskaźnikiem"})
+    table.close()
+
+    dbf_bytes = dbf_path.read_bytes()
+    header_length = struct.unpack_from("<H", dbf_bytes, 8)[0]
+    memo_address = struct.unpack_from("<I", dbf_bytes, 32 + 32 + 12)[0]
+    old_pointer = struct.unpack_from("<I", dbf_bytes, header_length + memo_address)[0]
+    new_pointer = old_pointer + 20
+    fpt_path = dbf_path.with_suffix(".fpt")
+    with fpt_path.open("r+b") as handle:
+        prefix = handle.read(8)
+        block_size = struct.unpack_from(">H", prefix, 6)[0]
+        handle.seek(old_pointer * block_size)
+        block_header = handle.read(8)
+        payload_length = struct.unpack_from(">I", block_header, 4)[0]
+        span = ((8 + payload_length + block_size - 1) // block_size) * block_size
+        handle.seek(old_pointer * block_size)
+        block = handle.read(span).ljust(span, b"\0")
+        handle.seek(old_pointer * block_size)
+        handle.write(b"\0" * span)
+        handle.seek(new_pointer * block_size)
+        handle.write(block)
+        handle.truncate(new_pointer * block_size + span)
+        handle.seek(0)
+        handle.write(struct.pack(">I", new_pointer + span // block_size))
+    with dbf_path.open("r+b") as handle:
+        handle.seek(header_length + memo_address)
+        handle.write(struct.pack("<I", new_pointer))
+
+    assert (
+        export_main(
+            [
+                "--source",
+                str(source),
+                "--output",
+                str(exported),
+                "--formats",
+                "jsonl",
+                "--memo",
+                "inline",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+    assert (
+        import_main(
+            [
+                "--source",
+                str(exported),
+                "--output",
+                str(rebuilt),
+                "--formats",
+                "jsonl",
+                "--memo",
+                "inline",
+                "--overwrite",
+                "--no-progress",
+            ]
+        )
+        == 0
+    )
+
+    assert _sha256(dbf_path) == _sha256(rebuilt / "relocated.dbf")
+    assert _sha256(fpt_path) == _sha256(rebuilt / "relocated.fpt")
+    report = [
+        json.loads(line)
+        for line in (rebuilt / "reconstruction_report.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert report[1]["raw_layout_restored"] is True

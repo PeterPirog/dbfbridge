@@ -12,6 +12,7 @@ from .models import FieldMetadata
 BINARY_FIELD_FLAG = 0x04
 BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
 RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
+RAW_RECORD_KEY = "__dbfbridge_raw_record__"
 UNSUPPORTED_FIELD_TYPES = {"Q", "W"}
 VFP_DOUBLE_VERSIONS = {0x30, 0x31, 0x32}
 
