@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -73,6 +74,7 @@ class FieldMetadata:
     ordinal: int | None = None
     address: int | None = None
     index_field_flag: int = 0
+    descriptor_bytes: bytes | None = None
 
     def to_schema(self) -> dict[str, Any]:
         memo_storage = None
@@ -102,6 +104,9 @@ class FieldMetadata:
                 "binary": bool(self.flags & 0x04),
             },
             "index_field_flag": self.index_field_flag,
+            "descriptor_base64": base64.b64encode(self.descriptor_bytes).decode("ascii")
+            if self.descriptor_bytes is not None
+            else None,
             "memo_storage": memo_storage,
             "unsupported_reason": self.unsupported_reason,
             "supported": self.supported,
@@ -137,6 +142,10 @@ class TableMetadata:
     memo_next_free_block: int | None = None
     memo_block_size: int | None = None
     memo_export_policy: str = "inline"
+    header_bytes: bytes | None = None
+    source_sha256: str | None = None
+    memo_header_bytes: bytes | None = None
+    memo_sha256: str | None = None
 
     @property
     def memo_fields(self) -> list[str]:
@@ -158,6 +167,7 @@ class TableMetadata:
                 "filename": self.dbf_path.name,
                 "relative_path": self.relative_path.as_posix(),
                 "size_bytes": self.source_size_bytes,
+                "sha256": self.source_sha256,
             },
             "dbf": {
                 "format_family": "Microsoft Visual FoxPro" if is_vfp else self.dbversion,
@@ -174,6 +184,9 @@ class TableMetadata:
                 "language_driver": f"0x{self.language_driver:02x}",
                 "language_driver_name": self.language_driver_name,
                 "encoding": self.encoding,
+                "header_base64": base64.b64encode(self.header_bytes).decode("ascii")
+                if self.header_bytes is not None
+                else None,
             },
             "text_encoding": {
                 "language_driver_byte": f"0x{self.language_driver:02x}",
@@ -190,6 +203,10 @@ class TableMetadata:
                 "required": bool(self.memo_fields),
                 "format": "FPT" if is_fpt else None,
                 "size_bytes": self.memo_size_bytes,
+                "sha256": self.memo_sha256,
+                "header_base64": base64.b64encode(self.memo_header_bytes).decode("ascii")
+                if self.memo_header_bytes is not None
+                else None,
                 "file_header_bytes": 512 if self.memo_present and is_fpt else None,
                 "block_size_bytes": self.memo_block_size,
                 "next_free_block": self.memo_next_free_block,

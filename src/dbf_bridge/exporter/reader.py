@@ -14,6 +14,7 @@ from dbfread.field_parser import FieldParser
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, TableMetadata
 from .polish_codecs import POLISH_FALLBACK_ENCODINGS, register_polish_codecs
 from .serialization import field_metadata
+from .validation import sha256_file
 
 # Rejestrujemy polskie tabele kodowe (Mazovia/PIAST) przy imporcie modułu,
 # aby były dostępne automatycznie — bez konieczności wywoływania przez
@@ -90,6 +91,7 @@ class LosslessFieldParser(FieldParser):
 
 @dataclass(frozen=True)
 class RawHeader:
+    header_bytes: bytes
     dbversion_byte: int
     language_driver: int
     year: int
@@ -114,20 +116,7 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         raise UnsupportedTableError(details)
 
     table = open_table(discovered.source_path, config)
-    fields = [
-        field_metadata(
-            name=field.name,
-            dbf_type=field.type,
-            length=field.length,
-            decimal_count=field.decimal_count,
-            dbversion_byte=table.header.dbversion,
-            flags=field.set_fields_flag,
-            ordinal=ordinal,
-            address=field.address,
-            index_field_flag=field.index_field_flag,
-        )
-        for ordinal, field in enumerate(table.fields, start=1)
-    ]
+    fields = raw.fields
     warnings: list[str] = []
     if config.decode_errors in {"ignore", "replace"}:
         warnings.append(
@@ -174,6 +163,12 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         memo_next_free_block=memo_next_block,
         memo_block_size=memo_block_size,
         memo_export_policy=config.memo,
+        header_bytes=raw.header_bytes,
+        source_sha256=sha256_file(discovered.source_path),
+        memo_header_bytes=_read_prefix(memo_path, 512),
+        memo_sha256=sha256_file(memo_path)
+        if memo_path is not None and memo_path.is_file()
+        else None,
     )
 
 
@@ -222,6 +217,7 @@ def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
             ordinal += 1
 
     return RawHeader(
+        header_bytes=header_data,
         dbversion_byte=dbversion_byte,
         language_driver=language_driver,
         year=unpacked[1],
@@ -244,20 +240,13 @@ def _parse_field_descriptor(
     dbversion_byte: int,
     ordinal: int,
 ) -> FieldMetadata:
-    (
-        raw_name,
-        raw_type,
-        address,
-        length,
-        decimal_count,
-        _reserved1,
-        _workarea_id,
-        _reserved2,
-        _reserved3,
-        set_fields_flag,
-        _reserved4,
-        index_field_flag,
-    ) = FIELD_DESCRIPTOR.unpack(descriptor_data)
+    raw_name = descriptor_data[:11]
+    raw_type = descriptor_data[11:12]
+    address = struct.unpack_from("<L", descriptor_data, 12)[0]
+    length = descriptor_data[16]
+    decimal_count = descriptor_data[17]
+    set_fields_flag = descriptor_data[18]
+    index_field_flag = descriptor_data[31]
     dbf_type = raw_type.decode("ascii")
     name = raw_name.split(b"\0", 1)[0].decode(encoding, errors=config.decode_errors)
     if dbf_type == "C":
@@ -274,6 +263,7 @@ def _parse_field_descriptor(
         ordinal=ordinal,
         address=address,
         index_field_flag=index_field_flag,
+        descriptor_bytes=descriptor_data,
     )
 
 
@@ -313,6 +303,8 @@ def metadata_from_failed_header(
         decode_errors=config.decode_errors,
         encoding_fallbacks=list(dict.fromkeys([encoding, *POLISH_FALLBACK_ENCODINGS])),
         memo_export_policy=config.memo,
+        header_bytes=raw.header_bytes,
+        source_sha256=sha256_file(dbf_path),
     )
 
 
@@ -336,6 +328,13 @@ def _memo_file_details(memo_path: Path | None) -> tuple[int | None, int | None, 
         return size, None, None
     next_free_block, _reserved, block_size = FPT_HEADER_PREFIX.unpack(header)
     return size, next_free_block, block_size
+
+
+def _read_prefix(path: Path | None, size: int) -> bytes | None:
+    if path is None or not path.is_file():
+        return None
+    with path.open("rb") as infile:
+        return infile.read(size)
 
 
 __all__ = [

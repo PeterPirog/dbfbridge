@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dbfbridge"
 version = "0.1.0"
-description = "DBF (Visual FoxPro) -> CSV/JSON/JSONL exporter with Polish encoding fallback (Mazovia/cp852/cp1250)."
+description = "Visual FoxPro DBF migration, reconstruction, and quality verification toolkit."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Peter Pirog", email = "pirog.peter@gmail.com" },
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -31,16 +30,16 @@ classifiers = [
 ]
 dependencies = [
     "dbfread>=2.0.7",
+    "dbf>=0.99.11",
+    "openpyxl>=3.1.5",
     "orjson>=3.10",
     "polars>=1.0",
     "xlsxwriter>=3.2",
 ]
 
 [project.optional-dependencies]
-# dbf (Ethan Furman) — required for generating synthetic test DBF fixtures.
-# Not needed for export-only usage.
-# Note: dbf 0.99.11 (2025-09-02) actively maintained, supports Python 3.10-3.13.
-import = ["dbf>=0.99.11"]
+# Kept as a backwards-compatible no-op; DBF reconstruction is installed by default.
+import = []
 # Kept as a backwards-compatible no-op; XLSX support is installed by default.
 xlsx = []
 dev = [
@@ -55,6 +54,8 @@ dev = [
 
 [project.scripts]
 dbf-bridge = "dbf_bridge.cli:main"
+dbf-bridge-import = "dbf_bridge.import_cli:main"
+dbf-bridge-quality = "dbf_bridge.quality:main"
 dbf-bridge-verify = "dbf_bridge.verifier:main"
 
 [project.urls]

@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - XlsxWriter constant-memory output with automatic Excel sheet splitting
 - Strict line-numbered JSONL errors, cancellation/progress callbacks, and atomic outputs
 - Synthetic large-file benchmark with time, throughput, record count, output size, and peak RSS
+- Schema-driven JSONL/JSON/CSV/XLSX → Visual FoxPro DBF/FPT reconstruction
+- Diagnostic DBF → JSONL → DBF quality checker with raw and canonical checksums,
+  field-level differences, binary offsets, and retained intermediate artifacts
+- Raw DBF/FPT headers, field descriptors, and source checksums in schema files for
+  reproducible reconstruction
 
 ### Fixed
 - Preserved memo values longer than Excel's 32,767-character cell limit in

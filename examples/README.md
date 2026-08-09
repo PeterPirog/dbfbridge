@@ -6,7 +6,9 @@ Przykłady uruchamiania konwertera `dbfbridge` na rzeczywistych danych.
 
 | Plik | Opis |
 |------|------|
-| `export_dbf.py` | Eksport DBF → CSV/JSON/JSONL (domyślnie `K:\dbf_source` → `K:\dbf_output`) |
+| `export_dbf.py` | Eksport DBF → CSV/JSON/JSONL/XLSX |
+| `export_from_file_to_dbf.py` | Rekonstrukcja DBF/FPT z jednego wybranego formatu i schematów |
+| `check_conversion_quality.py` | Diagnostyczny round-trip DBF → JSONL → DBF |
 | `verify_dbf.py` | Weryfikacja poprawności konwersji |
 
 ## Uruchamianie
@@ -29,6 +31,15 @@ python examples/export_dbf.py --source "D:\MojeDBF" --output "D:\Wynik" --format
 
 # Weryfikacja
 python examples/verify_dbf.py
+
+# Rekonstrukcja drzewa DBF/FPT z JSONL
+python examples/export_from_file_to_dbf.py --source "K:\dbf_output" `
+  --output "K:\dbf_output_reconstructed" --formats jsonl `
+  --memo inline --overwrite --progress
+
+# Pełna kontrola jakości z raportem diagnostycznym
+python examples/check_conversion_quality.py --source "K:\dbf_source" `
+  --output "K:\dbf_quality" --overwrite --progress
 ```
 
 ## Uwaga o danych
