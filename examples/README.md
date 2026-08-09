@@ -42,6 +42,9 @@ python examples/check_conversion_quality.py --source "K:\dbf_source" `
   --output "K:\dbf_quality" --overwrite --progress
 ```
 
+Dla porównania surowej sumy DBF eksport źródłowy musi używać
+`--deleted include`, aby zachować również fizyczną kolejność rekordów usuniętych.
+
 ## Uwaga o danych
 
 Pliki DBF/FPT/CDX oraz wynikowe CSV/JSON/JSONL są ignorowane przez git

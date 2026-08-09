@@ -57,6 +57,17 @@ def source_tree(tmp_path: Path) -> Path:
         }
     )
     dbf.delete(table[-1])
+    table.append(
+        {
+            "ID": 3,
+            "NAME": "Po rekordzie usuniętym",
+            "AMOUNT": 7.5,
+            "ACTIVE": False,
+            "CREATED": date(2024, 3, 4),
+            "CHANGED": datetime(2024, 3, 4, 5, 6, 7),
+            "NOTES": "Trzeci rekord",
+        }
+    )
     table.close()
     return source
 
