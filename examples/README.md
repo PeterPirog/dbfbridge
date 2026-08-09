@@ -29,6 +29,10 @@ python examples/export_dbf.py
 # Eksport z własnymi ścieżkami
 python examples/export_dbf.py --source "D:\MojeDBF" --output "D:\Wynik" --formats jsonl
 
+# Kolejne uruchomienie: konwertuj tylko nowe lub zmienione tabele
+python examples/export_dbf.py --source "D:\MojeDBF" --output "D:\Wynik" `
+  --formats jsonl --incremental
+
 # Weryfikacja
 python examples/verify_dbf.py
 

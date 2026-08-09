@@ -41,7 +41,15 @@ from dbf_bridge.converters import (
 )
 from dbf_bridge.exporter.config import ConfigError, make_config
 from dbf_bridge.exporter.discovery import discover_tables
-from dbf_bridge.exporter.models import TableResult
+from dbf_bridge.exporter.incremental import (
+    CHECKSUM_MANIFEST_NAME,
+    OUTPUT_COMPATIBILITY_VERSION,
+    cached_results_for_table,
+    load_checksum_manifest,
+    source_fingerprint,
+    write_checksum_manifest,
+)
+from dbf_bridge.exporter.models import DiscoveredTable, TableResult
 from dbf_bridge.exporter.reporting import exit_code, write_reports
 from dbf_bridge.exporter.validation import sha256_file
 from dbf_bridge.exporter.writer import export_table
@@ -62,6 +70,7 @@ DEFAULTS = {
     "validate": True,
     "progress": True,
     "xlsx_long_text": "overflow",
+    "incremental": False,
 }
 
 DEFAULT_MEMO_POLICY: dict[str, str] = {
@@ -163,6 +172,15 @@ def build_parser() -> argparse.ArgumentParser:
             "(domyślnie), 'error' przerywa konwersję tabeli."
         ),
     )
+    parser.add_argument(
+        "--incremental",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULTS["incremental"],
+        help=(
+            "Pomiń niezmienione tabele, jeśli źródła, konfiguracja, schemat i wszystkie "
+            "żądane wyniki są zgodne z conversion_checksums.json."
+        ),
+    )
     return parser
 
 
@@ -230,6 +248,7 @@ def _export_one(
     validate: bool,
     overwrite: bool,
     progress: bool,
+    tables: list[DiscoveredTable] | None = None,
 ) -> tuple[int, list[TableResult]]:
     try:
         config = make_config(
@@ -250,9 +269,9 @@ def _export_one(
         return 1, []
 
     print(f"[dbf-bridge] Eksport {fmt.upper()} (memo={memo}) -> {config.output}")
-    tables = discover_tables(config.source)
+    tables = discover_tables(config.source) if tables is None else tables
     if not tables:
-        print(f"[dbf-bridge] Nie znaleziono plików DBF w: {config.source}")
+        print("[dbf-bridge] Brak tabel wymagających konwersji.")
         return 0, []
 
     total = len(tables)
@@ -294,8 +313,11 @@ def _print_summary(results: list[TableResult]) -> None:
         return
     ok = sum(1 for r in results if r.status == "OK")
     warning = sum(1 for r in results if r.status == "WARNING")
+    skipped = sum(1 for r in results if r.status == "SKIPPED")
     failed = sum(1 for r in results if r.status in {"FAILED", "UNSUPPORTED"})
-    print(f"  -> OK: {ok}  Ostrzeżenia: {warning}  Błędy: {failed}")
+    print(
+        f"  -> OK: {ok}  Ostrzeżenia: {warning}  Pominięte: {skipped}  Błędy: {failed}"
+    )
     for r in results:
         if r.status in {"FAILED", "UNSUPPORTED"} or r.errors:
             print(f"      - {r.table}: {r.status} | {'; '.join(r.errors) if r.errors else ''}")
@@ -526,10 +548,46 @@ def _print_format_summary(results: list[TableResult]) -> None:
         format_results = [result for result in results if result.format == fmt]
         ok = sum(result.status == "OK" for result in format_results)
         warnings = sum(result.status == "WARNING" for result in format_results)
+        skipped = sum(result.status == "SKIPPED" for result in format_results)
         failed = sum(result.status in {"FAILED", "UNSUPPORTED"} for result in format_results)
         print(
-            f"  -> {fmt.upper():5} OK: {ok}  Ostrzeżenia: {warnings}  Błędy: {failed}"
+            f"  -> {fmt.upper():5} OK: {ok}  Ostrzeżenia: {warnings}  "
+            f"Pominięte: {skipped}  Błędy: {failed}"
         )
+
+
+def _incremental_signature(args: argparse.Namespace, formats: list[str]) -> dict[str, object]:
+    return {
+        "output_compatibility_version": OUTPUT_COMPATIBILITY_VERSION,
+        "source": str(args.source.resolve()),
+        "formats": sorted(formats),
+        "memo_policy_by_format": {
+            fmt: _resolve_memo_policy(fmt, args.memo) for fmt in sorted(formats)
+        },
+        "strip_spaces": args.strip_spaces,
+        "encoding": args.encoding,
+        "decode_errors": args.decode_errors,
+        "deleted_policy": args.deleted,
+        "missing_memo_policy": args.missing_memo,
+        "validation_enabled": args.validate,
+        "xlsx_long_text_policy": args.xlsx_long_text,
+    }
+
+
+def _source_root(source: Path) -> Path:
+    resolved = source.resolve()
+    return resolved if resolved.is_dir() else resolved.parent
+
+
+def _known_source_hashes(output: Path, result: TableResult) -> tuple[str | None, str | None]:
+    if result.schema is None:
+        return None, None
+    schema_path = output / result.schema
+    if not schema_path.is_file():
+        return None, None
+    with schema_path.open("r", encoding="utf-8") as infile:
+        schema = json.load(infile)
+    return schema.get("source", {}).get("sha256"), schema.get("memo", {}).get("sha256")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -554,9 +612,46 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[dbf-bridge] Output:   {args.output}")
     print(f"[dbf-bridge] Formats:  {', '.join(formats)}")
     print(f"[dbf-bridge] Overwrite: {args.overwrite}")
+    print(f"[dbf-bridge] Incremental: {args.incremental}")
     print()
 
     overall_errors = 0
+    discovered_tables = discover_tables(args.source)
+    signature = _incremental_signature(args, formats)
+    result_formats = ["jsonl", *(fmt for fmt in formats if fmt != "jsonl")]
+    source_root = _source_root(args.source)
+    fingerprints: dict[str, dict[str, object]] = {}
+    cached_results: list[TableResult] = []
+    tables_to_convert = discovered_tables
+    if args.incremental:
+        manifest, manifest_warning = load_checksum_manifest(args.output)
+        if manifest_warning:
+            print(f"[dbf-bridge] Ostrzeżenie: {manifest_warning}", file=sys.stderr)
+        if manifest is not None and manifest.get("signature") == signature:
+            tables_to_convert = []
+            print(f"[dbf-bridge] Weryfikacja {CHECKSUM_MANIFEST_NAME}...")
+            for table in discovered_tables:
+                table_name = table.relative_path.as_posix()
+                fingerprint = source_fingerprint(table, source_root)
+                fingerprints[table_name] = fingerprint
+                cached = cached_results_for_table(
+                    manifest,
+                    table_name,
+                    fingerprint,
+                    signature,
+                    result_formats,
+                    args.output,
+                )
+                if cached is None:
+                    tables_to_convert.append(table)
+                else:
+                    cached_results.extend(cached)
+            print(
+                f"[dbf-bridge] Przyrostowo: do konwersji {len(tables_to_convert)}, "
+                f"pominięto {len(cached_results) // len(result_formats)}."
+            )
+        elif manifest is not None:
+            print("[dbf-bridge] Konfiguracja uległa zmianie; wszystkie tabele będą przeliczone.")
     jsonl_memo = _resolve_memo_policy("jsonl", args.memo)
     code, all_results = _export_one(
         source=args.source,
@@ -571,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         validate=args.validate,
         overwrite=args.overwrite,
         progress=args.progress,
+        tables=tables_to_convert,
     )
     overall_errors = max(overall_errors, code)
     _print_summary(all_results)
@@ -583,11 +679,15 @@ def main(argv: list[str] | None = None) -> int:
         overwrite=args.overwrite,
         xlsx_long_text=args.xlsx_long_text,
     )
-    report_results = [*all_results, *conversion_results]
+    report_results = [*all_results, *conversion_results, *cached_results]
+    format_order = {fmt: index for index, fmt in enumerate(formats)}
+    report_results.sort(
+        key=lambda result: (result.table.lower(), format_order.get(result.format, len(formats)))
+    )
     _print_format_summary(report_results)
     overall_errors = max(overall_errors, exit_code(report_results))
 
-    if all_results:
+    if report_results:
         finished_at = datetime.now(timezone.utc)
         write_reports(
             args.output,
@@ -611,8 +711,36 @@ def main(argv: list[str] | None = None) -> int:
                 "overwrite": args.overwrite,
                 "validation_enabled": args.validate,
                 "xlsx_long_text_policy": args.xlsx_long_text,
+                "incremental_enabled": args.incremental,
+                "converted_tables": len(tables_to_convert),
+                "skipped_tables": len(cached_results) // len(result_formats),
+                "checksum_manifest": CHECKSUM_MANIFEST_NAME,
                 "exit_code": overall_errors,
             },
+        )
+        jsonl_results = {result.table: result for result in report_results if result.format == "jsonl"}
+        for table in discovered_tables:
+            table_name = table.relative_path.as_posix()
+            if table_name in fingerprints:
+                continue
+            result = jsonl_results.get(table_name)
+            if result is None or result.status not in {"OK", "WARNING", "SKIPPED"}:
+                continue
+            dbf_hash, fpt_hash = _known_source_hashes(args.output, result)
+            fingerprints[table_name] = source_fingerprint(
+                table,
+                source_root,
+                known_dbf_sha256=dbf_hash,
+                known_fpt_sha256=fpt_hash,
+            )
+        write_checksum_manifest(
+            args.output,
+            source_root=source_root,
+            signature=signature,
+            fingerprints=fingerprints,
+            results=report_results,
+            requested_formats=result_formats,
+            dbfbridge_version=__version__,
         )
 
     print(f"\n[dbf-bridge] Zakończono. Kod wyjścia: {overall_errors}")

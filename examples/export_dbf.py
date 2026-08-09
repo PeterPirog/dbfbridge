@@ -18,6 +18,7 @@ Uruchamianie z PyCharm:
 Uruchamianie z linii poleceń:
     python examples/export_dbf.py
     python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --formats jsonl
+    python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --formats jsonl --incremental
 
 Wymagania:
     pip install dbfbridge
@@ -26,7 +27,8 @@ Wynik:
     W katalogu output powstają pliki CSV, JSON, JSONL (zależnie od --formats)
     z zachowaniem struktury katalogów źródłowych, pliki <nazwa>_schema.json
     z metadanymi DBF oraz migration_report.jsonl/.csv z raportem migracji
-    (SHA-256, liczniki rekordów, statystyki null/memo).
+    (SHA-256, liczniki rekordów, statystyki null/memo). Plik
+    conversion_checksums.json umożliwia późniejszy eksport przyrostowy.
 """
 
 from __future__ import annotations

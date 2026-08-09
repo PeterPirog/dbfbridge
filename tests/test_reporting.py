@@ -119,7 +119,7 @@ def test_xlsx_long_memo_overflow_is_returned_for_migration_report(tmp_path: Path
         run_metadata={"requested_formats": ["jsonl", "xlsx"]},
     )
     lines = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
-    assert lines[0]["report_version"] == 3
+    assert lines[0]["report_version"] == 4
     assert lines[0]["format_summary"]["xlsx"]["overflow_values"] == 1
     assert lines[0]["format_summary"]["xlsx"]["overflow_chunks"] == 2
     assert lines[0]["format_summary"]["xlsx"]["overflow_sheets"] == 1

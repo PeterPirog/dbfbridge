@@ -71,7 +71,7 @@ def write_jsonl_report(
 
     complete_tables = sum(
         all(
-            statuses_by_table[table].get(fmt) in {"OK", "WARNING"}
+            statuses_by_table[table].get(fmt) in {"OK", "WARNING", "SKIPPED"}
             for fmt in requested_formats
         )
         for table in table_names
@@ -80,6 +80,7 @@ def write_jsonl_report(
         fmt: {
             "ok": statuses_by_format[fmt]["OK"],
             "warning": statuses_by_format[fmt]["WARNING"],
+            "skipped": statuses_by_format[fmt]["SKIPPED"],
             "failed": statuses_by_format[fmt]["FAILED"],
             "unsupported": statuses_by_format[fmt]["UNSUPPORTED"],
             "overflow_values": sum(
@@ -98,13 +99,14 @@ def write_jsonl_report(
     run.setdefault("exit_code", exit_code(results))
     summary = {
         "type": "summary",
-        "report_version": 3,
+        "report_version": 4,
         "tables": len(table_names),
         "outputs": len(results),
         "formats": sorted({result.format for result in results}),
         "requested_formats": requested_formats,
         "ok": sum(1 for result in results if result.status == "OK"),
         "warning": sum(1 for result in results if result.status == "WARNING"),
+        "skipped": sum(1 for result in results if result.status == "SKIPPED"),
         "failed": sum(1 for result in results if result.status == "FAILED"),
         "unsupported": sum(1 for result in results if result.status == "UNSUPPORTED"),
         "complete_tables": complete_tables,
