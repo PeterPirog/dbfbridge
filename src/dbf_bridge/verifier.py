@@ -569,8 +569,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[verify] Strict:  {args.strict}")
     print()
 
-    checks, global_errors = verify_all(args.source, args.output, formats, args.verbose)
-    summary = summarize(checks, global_errors)
+    from dbf_bridge import verify_conversion
+
+    run = verify_conversion(
+        args.source,
+        args.output,
+        formats=formats,
+        strict=args.strict,
+        report=args.report,
+        verbose=args.verbose,
+    )
+    checks = list(run.checks)
+    global_errors = list(run.global_errors)
+    summary = run.summary
 
     print("\n" + "=" * 70)
     print("[verify] Podsumowanie weryfikacji")
@@ -606,17 +617,9 @@ def main(argv: list[str] | None = None) -> int:
             for w in c.warnings[:3]:
                 print(f"        {w}")
 
-    report_path = args.report or (args.output / "verification_report.json")
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    with report_path.open("w", encoding="utf-8") as outfile:
-        json.dump(summary, outfile, ensure_ascii=False, indent=2)
+    report_path = run.report_path
     print(f"\n[verify] Raport: {report_path}")
-
-    if summary["failed"] > 0 or global_errors:
-        return 1
-    if args.strict and summary["warning"] > 0:
-        return 2
-    return 0
+    return run.exit_code
 
 
 if __name__ == "__main__":

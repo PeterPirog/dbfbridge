@@ -69,6 +69,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 dbf_bridge = ["py.typed"]
+dbfbridge = ["py.typed"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

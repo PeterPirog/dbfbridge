@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from dbf_bridge.importer import ImportConfig, reconstruct_tree
+from dbf_bridge import reconstruct_dbf
 
 FORMATS = ("jsonl", "json", "csv", "xlsx")
 
@@ -57,20 +57,28 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"[dbf-bridge-import] {exc}", file=sys.stderr)
         return 1
-    args.output.mkdir(parents=True, exist_ok=True)
-    results = reconstruct_tree(
-        ImportConfig(
-            source=args.source,
-            output=args.output,
-            format=input_format,  # type: ignore[arg-type]
+    try:
+        run = reconstruct_dbf(
+            args.source,
+            args.output,
+            input_format=input_format,
             memo=args.memo,
             overwrite=args.overwrite,
-            progress=args.progress,
+            progress=(
+                lambda event: print(
+                    f"\r[dbf-bridge-import] {event.current}/{event.total} "
+                    f"{event.table}: {event.records or 0:,} rekordów",
+                    end="\n" if event.records is not None else "",
+                    flush=True,
+                )
+            )
+            if args.progress
+            else None,
         )
-    )
-    if not results:
-        print(f"[dbf-bridge-import] No *.{input_format} data files found.", file=sys.stderr)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"[dbf-bridge-import] {exc}", file=sys.stderr)
         return 1
+    results = run.results
     ok = sum(result.status == "OK" for result in results)
     warning = sum(result.status == "WARNING" for result in results)
     failed = sum(result.status == "FAILED" for result in results)
@@ -83,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             details = "; ".join([*result.warnings, *result.errors])
             print(f"  - {result.source}: {result.status} | {details}")
     print(f"[dbf-bridge-import] Report: {args.output / 'reconstruction_report.jsonl'}")
-    return 1 if failed else 2 if warning else 0
+    return run.exit_code
 
 
 if __name__ == "__main__":

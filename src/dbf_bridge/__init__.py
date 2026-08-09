@@ -1,19 +1,10 @@
-"""Visual FoxPro DBF migration, reconstruction, and verification toolkit.
+"""Public Python API for Visual FoxPro migration and reconstruction.
 
-Public API:
-    from dbf_bridge.exporter.config import make_config
-    from dbf_bridge.exporter.discovery import discover_tables
-    from dbf_bridge.exporter.writer import export_table
-    from dbf_bridge.exporter.reporting import write_reports
+The preferred import after installing the ``dbfbridge`` distribution is::
 
-CLI entry points (installed via pip):
-    dbf-bridge         — export DBF trees to CSV/JSON/JSONL/XLSX
-    dbf-bridge-verify  — verify export integrity
-    dbf-bridge-import  — reconstruct DBF/FPT trees from one exported format
-    dbf-bridge-quality — run a retained diagnostic round trip
+    from dbfbridge import export_dbf, reconstruct_dbf
 
-The command-line interfaces are the stable interface in 0.1.0. A higher-level
-``convert`` / ``verify`` facade is planned for a later release.
+The historical ``dbf_bridge`` package name exports the same API.
 """
 
 from __future__ import annotations
@@ -24,4 +15,56 @@ __version__ = "0.1.0"
 
 register_polish_codecs()
 
-__all__ = ["__version__"]
+from .api import (  # noqa: E402
+    ProgressCallback,
+    check_conversion_quality,
+    export_dbf,
+    reconstruct_dbf,
+    verify_conversion,
+)
+from .api_models import (  # noqa: E402
+    DBFBridgeRunError,
+    ExportOptions,
+    ExportRunResult,
+    ProgressEvent,
+    QualityRunResult,
+    ReconstructionOptions,
+    ReconstructionRunResult,
+    VerificationRunResult,
+)
+from .exporter.models import (  # noqa: E402
+    DecodeErrors,
+    DeletedPolicy,
+    MemoPolicy,
+    MissingMemoPolicy,
+    OutputFormat,
+    TableResult,
+    TableStatus,
+)
+from .importer.models import InputFormat, ReconstructionResult  # noqa: E402
+
+__all__ = [
+    "DBFBridgeRunError",
+    "DecodeErrors",
+    "DeletedPolicy",
+    "ExportOptions",
+    "ExportRunResult",
+    "InputFormat",
+    "MemoPolicy",
+    "MissingMemoPolicy",
+    "OutputFormat",
+    "ProgressCallback",
+    "ProgressEvent",
+    "QualityRunResult",
+    "ReconstructionOptions",
+    "ReconstructionResult",
+    "ReconstructionRunResult",
+    "TableResult",
+    "TableStatus",
+    "VerificationRunResult",
+    "__version__",
+    "check_conversion_quality",
+    "export_dbf",
+    "reconstruct_dbf",
+    "verify_conversion",
+]

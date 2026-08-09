@@ -12,6 +12,7 @@ Read this file before changing the repository. User-facing behavior is documente
 - schema-driven CSV/JSON/JSONL/XLSX → DBF/FPT reconstruction;
 - export verification and diagnostic DBF → JSONL → DBF round trips;
 - cp1250/cp852/Mazovia decoding for legacy Polish data.
+- typed high-level API available from both `dbfbridge` and `dbf_bridge`.
 
 Repository: <https://github.com/PeterPirog/dbfbridge>
 
@@ -23,6 +24,8 @@ Current package version/status: 0.1.0, alpha.
 
 ```text
 src/dbf_bridge/
+├── api.py                 stable high-level Python functions
+├── api_models.py          options, progress events, and run results
 ├── cli.py                 export CLI and multi-format orchestration
 ├── converters.py          streaming JSONL → JSON/CSV/XLSX converters
 ├── verifier.py            exported-file verifier
@@ -46,11 +49,14 @@ src/dbf_bridge/
     ├── reconstruct.py     directory-tree orchestration
     ├── writer.py          DBF/FPT creation and raw-layout restoration
     └── reporting.py       reconstruction_report.jsonl
+src/dbfbridge/
+└── __init__.py            recommended public import name
 ```
 
 Other important paths:
 
 - `examples/` — thin executable wrappers and PowerShell examples;
+- `examples/python_api.py` — complete programmatic API example;
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
 - `benchmarks/` — synthetic JSONL conversion benchmark;
@@ -75,6 +81,17 @@ Console entry points in `pyproject.toml` must stay synchronized with README and 
 - `dbf-bridge-verify` → `dbf_bridge.verifier:main`;
 - `dbf-bridge-import` → `dbf_bridge.import_cli:main`;
 - `dbf-bridge-quality` → `dbf_bridge.quality:main`.
+
+The public Python interface must stay synchronized as well:
+
+- `export_dbf()` → `ExportRunResult`;
+- `reconstruct_dbf()` → `ReconstructionRunResult`;
+- `verify_conversion()` → `VerificationRunResult`;
+- `check_conversion_quality()` → `QualityRunResult`.
+
+Use `from dbfbridge import ...` in user documentation. `dbf_bridge` exposes the same
+symbols for compatibility. CLI modules should delegate to these functions wherever
+possible instead of creating a second behavior path.
 
 ## Data and reconstruction rules
 
@@ -142,10 +159,13 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
   behavior, options, defaults, entry points, or dependencies change.
 - User-facing reports must include enough context to diagnose a failed table without the
   original Python traceback.
+- Public API functions are silent by default, accept `str` and `PathLike`, return typed
+  run results, and expose structured progress through `ProgressEvent` callbacks.
+- Keep `src/dbfbridge/__init__.py`, `src/dbf_bridge/__init__.py`, their `__all__` lists,
+  type markers, README API tables, and API tests synchronized.
 
 ## Known follow-up work
 
-- High-level public `convert` / `verify` Python facade;
 - CI test matrix for supported Python versions;
 - PyPI publication workflow;
 - index-aware CDX reconstruction, if a reliable source of tag definitions is added.

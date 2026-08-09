@@ -5,7 +5,8 @@
 - export DBF directory trees to CSV, JSON, JSONL, and XLSX;
 - reconstruct DBF/FPT directory trees from one exported format and companion schemas;
 - verify exported files and run diagnostic DBF → JSONL → DBF round trips;
-- preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback.
+- preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
+- expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
 > Status: **0.1.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
 
@@ -64,6 +65,23 @@ dbf-bridge-import --source <OUT_DIR> --output <REBUILT_DIR> \
 # Retain a diagnostic DBF → JSONL → DBF round trip
 dbf-bridge-quality --source <DBF_DIR> --output <QUALITY_DIR> \
   --overwrite --progress
+```
+
+The equivalent Python call is silent and returns a structured result:
+
+```python
+from dbfbridge import export_dbf
+
+run = export_dbf(
+    "<DBF_DIR>",
+    "<OUT_DIR>",
+    formats=("csv", "json", "jsonl", "xlsx"),
+    memo="inline",
+    incremental=True,
+)
+
+print(run.ok, run.skipped, run.failed)
+run.raise_for_errors()
 ```
 
 Windows PowerShell examples are available in the
@@ -172,27 +190,112 @@ for failures, and `2` for warnings.
 
 ## Python API
 
-The stable interface in 0.1.0 is the command-line interface. Lower-level exporter
-functions are available for advanced use:
+The installed distribution is named `dbfbridge`, and the recommended import is also
+`dbfbridge` (without an underscore). The historical internal package name
+`dbf_bridge` exports the same public symbols for compatibility.
+
+### Operations
+
+| Function | Result type | Purpose |
+|---|---|---|
+| `export_dbf()` | `ExportRunResult` | DBF/FPT tree → one or more modern formats |
+| `reconstruct_dbf()` | `ReconstructionRunResult` | one exported format + schemas → DBF/FPT tree |
+| `verify_conversion()` | `VerificationRunResult` | exported files vs source DBF and migration report |
+| `check_conversion_quality()` | `QualityRunResult` | retained DBF → JSONL → DBF diagnostics |
+
+Functions accept `str`, `pathlib.Path`, or another `os.PathLike`. They do not print by
+default. A completed operation returns table-level objects, aggregate counters, report
+paths, and the CLI-compatible `exit_code` (`0` OK, `1` error, `2` warning). Per-table
+failures are data, not immediate exceptions, so an application can inspect every table.
+Call `result.raise_for_errors()` when fail-fast behavior is preferred.
+
+#### Export and incremental export
 
 ```python
-from pathlib import Path
+from dbfbridge import ExportOptions, export_dbf
 
-from dbf_bridge.exporter.config import make_config
-from dbf_bridge.exporter.discovery import discover_tables
-from dbf_bridge.exporter.reporting import write_reports
-from dbf_bridge.exporter.writer import export_table
+options = ExportOptions(
+    formats=("csv", "json", "jsonl", "xlsx"),
+    memo="inline",
+    deleted="include",
+    overwrite=True,
+    incremental=True,
+)
+run = export_dbf("K:/dbf_source", "K:/dbf_output", options=options)
 
-config = make_config(
-    source=Path("<DBF_DIR>"),
-    output=Path("<OUT_DIR>"),
-    export_format="jsonl",
+for table in run.results:
+    print(table.table, table.format, table.status, table.sha256)
+
+print(run.migration_report_jsonl)
+print(run.checksum_manifest)
+run.raise_for_errors()
+```
+
+Every `ExportOptions` field is also available directly as a keyword of `export_dbf()`.
+Use either the reusable options object or individual option keywords in one call.
+
+#### Structured progress
+
+```python
+from dbfbridge import ProgressEvent, export_dbf
+
+def show_progress(event: ProgressEvent) -> None:
+    print(event.operation, event.current, event.total, event.table, event.records)
+
+run = export_dbf(
+    "K:/dbf_source",
+    "K:/dbf_output",
+    formats="jsonl,xlsx",
+    progress=show_progress,
+)
+```
+
+The callback receives `ProgressEvent` objects and is independent of CLI output. This
+makes it suitable for GUI progress bars, web jobs, queues, logs, or monitoring systems.
+
+#### Reconstruction, verification, and quality
+
+```python
+from dbfbridge import (
+    check_conversion_quality,
+    reconstruct_dbf,
+    verify_conversion,
+)
+
+reconstruction = reconstruct_dbf(
+    "K:/dbf_output",
+    "K:/dbf_reconstructed",
+    input_format="jsonl",
     memo="inline",
     overwrite=True,
 )
-results = [export_table(table, config) for table in discover_tables(config.source)]
-write_reports(config.output, results)
+
+verification = verify_conversion(
+    "K:/dbf_source",
+    "K:/dbf_output",
+    formats=("csv", "json", "jsonl", "xlsx"),
+)
+
+quality = check_conversion_quality(
+    "K:/dbf_source",
+    "K:/dbf_quality",
+    overwrite=True,
+    max_differences=20,
+)
+
+for result in (reconstruction, verification, quality):
+    print(type(result).__name__, result.exit_code, result.report_path)
+    result.raise_for_errors()
 ```
+
+Invalid global arguments, unsafe paths, and missing source directories raise standard
+`ValueError` or `FileNotFoundError` immediately. `DBFBridgeRunError` is raised only by
+`raise_for_errors()` and keeps the complete run object in its `result` attribute.
+
+The lower-level modules under `dbf_bridge.exporter` and `dbf_bridge.importer` remain
+available for custom pipelines, but the functions above are the supported high-level API.
+A complete executable example is in
+[`examples/python_api.py`](https://github.com/PeterPirog/dbfbridge/blob/main/examples/python_api.py).
 
 ## Development
 
@@ -219,9 +322,8 @@ the [benchmark guide](https://github.com/PeterPirog/dbfbridge/blob/main/benchmar
 
 - CDX tag definitions are not reconstructed.
 - Exact raw FPT reconstruction is not possible for unreferenced source blocks.
-- A high-level `from dbf_bridge import convert, verify` facade, CI matrix, and PyPI
-  publication workflow are planned; the existing CLI and lower-level modules remain the
-  current interfaces.
+- A CI matrix and PyPI publication workflow are planned.
+- Future high-level operations will follow the existing function + typed-result model.
 
 ## License
 

@@ -18,10 +18,12 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dbf_bridge import __version__
+from dbf_bridge.api_models import ExportRunResult, ProgressEvent
 from dbf_bridge.converters import (
     ConversionStats,
     jsonl_to_csv,
@@ -234,6 +236,8 @@ def _export_one(
     overwrite: bool,
     progress: bool,
     tables: list[DiscoveredTable] | None = None,
+    console: bool = True,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[int, list[TableResult]]:
     try:
         config = make_config(
@@ -250,22 +254,22 @@ def _export_one(
             overwrite=overwrite,
         )
     except ConfigError as exc:
+        if not console:
+            raise
         print(f"[dbf-bridge] Błąd konfiguracji: {exc}", file=sys.stderr)
         return 1, []
 
-    print(f"[dbf-bridge] Eksport {fmt.upper()} (memo={memo}) -> {config.output}")
+    if console:
+        print(f"[dbf-bridge] Eksport {fmt.upper()} (memo={memo}) -> {config.output}")
     tables = discover_tables(config.source) if tables is None else tables
     if not tables:
-        print("[dbf-bridge] Brak tabel wymagających konwersji.")
+        if console:
+            print("[dbf-bridge] Brak tabel wymagających konwersji.")
         return 0, []
 
     total = len(tables)
-    print(f"[dbf-bridge] Znaleziono {_format_count(total)} plik(ów) DBF.")
-
-    if not progress:
-        return 0, [export_table(table, config) for table in tables]
-
-    import time
+    if console:
+        print(f"[dbf-bridge] Znaleziono {_format_count(total)} plik(ów) DBF.")
 
     label = f"[dbf-bridge] {fmt.upper():5}"
     start = time.monotonic()
@@ -287,9 +291,22 @@ def _export_one(
             )
         elapsed = time.monotonic() - start
         rate = i / elapsed if elapsed > 0 else None
-        _print_progress(label, i, total, elapsed_s=elapsed, rate=rate)
-    sys.stderr.write("\n")
-    sys.stderr.flush()
+        if progress and console:
+            _print_progress(label, i, total, elapsed_s=elapsed, rate=rate)
+        if progress_callback is not None:
+            progress_callback(
+                ProgressEvent(
+                    operation="export",
+                    current=i,
+                    total=total,
+                    table=table.relative_path.as_posix(),
+                    format=fmt,
+                    records=results[-1].active_records + results[-1].deleted_records,
+                )
+            )
+    if progress and console:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
     return 0, results
 
 
@@ -344,14 +361,19 @@ def _convert_jsonl_outputs(
     deleted: str,
     overwrite: bool,
     xlsx_long_text: str = "overflow",
+    console: bool = True,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
 ) -> list[TableResult]:
     conversion_results: list[TableResult] = []
     target_formats = [fmt for fmt in formats if fmt != "jsonl"]
     if not target_formats:
         return conversion_results
 
+    total = len(results) * len(target_formats)
+    current = 0
     for result in results:
         for fmt in target_formats:
+            current += 1
             intended_output = str(Path(result.table).with_suffix(f".{fmt}")).replace("\\", "/")
             if result.status in {"FAILED", "UNSUPPORTED"} or result.output is None:
                 conversion_results.append(
@@ -372,6 +394,16 @@ def _convert_jsonl_outputs(
                         ],
                     )
                 )
+                if progress_callback is not None:
+                    progress_callback(
+                        ProgressEvent(
+                            operation="convert",
+                            current=current,
+                            total=total,
+                            table=result.table,
+                            format=fmt,
+                        )
+                    )
                 continue
 
             primary_source = output / result.output
@@ -429,18 +461,20 @@ def _convert_jsonl_outputs(
                             f"({stats.overflow_chunk_count} części, "
                             f"{stats.overflow_sheet_count} arkusz(e) przepełnień)"
                         )
-                    print(
-                        f"  -> {source_path.name} -> {fmt.upper()}: "
-                        f"{_format_count(stats.record_count)} rekordów, "
-                        f"{stats.megabytes_per_second:.1f} MB/s, {stats.engine}{sheet_info}"
-                    )
+                    if console:
+                        print(
+                            f"  -> {source_path.name} -> {fmt.upper()}: "
+                            f"{_format_count(stats.record_count)} rekordów, "
+                            f"{stats.megabytes_per_second:.1f} MB/s, {stats.engine}{sheet_info}"
+                        )
                 except Exception as exc:
                     message = f"{variant}: {exc}"
                     errors.append(message)
-                    print(
-                        f"[dbf-bridge] Błąd konwersji {source_path} -> {fmt}: {exc}",
-                        file=sys.stderr,
-                    )
+                    if console:
+                        print(
+                            f"[dbf-bridge] Błąd konwersji {source_path} -> {fmt}: {exc}",
+                            file=sys.stderr,
+                        )
 
             primary = converted.get("primary")
             deleted_result = converted.get("deleted")
@@ -479,6 +513,17 @@ def _convert_jsonl_outputs(
                     errors=errors,
                 )
             )
+            if progress_callback is not None:
+                progress_callback(
+                    ProgressEvent(
+                        operation="convert",
+                        current=current,
+                        total=total,
+                        table=result.table,
+                        format=fmt,
+                        records=result.active_records + result.deleted_records,
+                    )
+                )
     return conversion_results
 
 
@@ -532,21 +577,33 @@ def _print_format_summary(results: list[TableResult]) -> None:
         )
 
 
-def _incremental_signature(args: argparse.Namespace, formats: list[str]) -> dict[str, object]:
+def _incremental_signature(
+    *,
+    source: Path,
+    formats: list[str],
+    memo: str | None,
+    strip_spaces: bool,
+    encoding: str,
+    decode_errors: str,
+    deleted: str,
+    missing_memo: str,
+    validate: bool,
+    xlsx_long_text: str,
+) -> dict[str, object]:
     return {
         "output_compatibility_version": OUTPUT_COMPATIBILITY_VERSION,
-        "source": str(args.source.resolve()),
+        "source": str(source.resolve()),
         "formats": sorted(formats),
         "memo_policy_by_format": {
-            fmt: _resolve_memo_policy(fmt, args.memo) for fmt in sorted(formats)
+            fmt: _resolve_memo_policy(fmt, memo) for fmt in sorted(formats)
         },
-        "strip_spaces": args.strip_spaces,
-        "encoding": args.encoding,
-        "decode_errors": args.decode_errors,
-        "deleted_policy": args.deleted,
-        "missing_memo_policy": args.missing_memo,
-        "validation_enabled": args.validate,
-        "xlsx_long_text_policy": args.xlsx_long_text,
+        "strip_spaces": strip_spaces,
+        "encoding": encoding,
+        "decode_errors": decode_errors,
+        "deleted_policy": deleted,
+        "missing_memo_policy": missing_memo,
+        "validation_enabled": validate,
+        "xlsx_long_text_policy": xlsx_long_text,
     }
 
 
@@ -566,50 +623,82 @@ def _known_source_hashes(output: Path, result: TableResult) -> tuple[str | None,
     return schema.get("source", {}).get("sha256"), schema.get("memo", {}).get("sha256")
 
 
-def main(argv: list[str] | None = None) -> int:
+def run_export(
+    *,
+    source: Path,
+    output: Path,
+    formats: tuple[str, ...],
+    memo: str | None,
+    strip_spaces: bool,
+    encoding: str,
+    decode_errors: str,
+    deleted: str,
+    missing_memo: str,
+    overwrite: bool,
+    validate: bool,
+    xlsx_long_text: str,
+    incremental: bool,
+    console: bool,
+    show_progress: bool = False,
+    progress_callback: Callable[[ProgressEvent], None] | None = None,
+) -> ExportRunResult:
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.monotonic()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if not args.source.is_dir() and not (
-        args.source.is_file() and args.source.suffix.lower() == ".dbf"
-    ):
-        print(
-            f"[dbf-bridge] Błąd: katalog lub plik DBF nie istnieje: {args.source}", file=sys.stderr
-        )
-        return 1
-
-    args.output.mkdir(parents=True, exist_ok=True)
-
-    try:
-        formats = _resolve_formats(args.formats)
-    except ValueError as exc:
-        print(f"[dbf-bridge] Błąd: {exc}", file=sys.stderr)
-        return 1
-
-    print(f"[dbf-bridge] Source:   {args.source}")
-    print(f"[dbf-bridge] Output:   {args.output}")
-    print(f"[dbf-bridge] Formats:  {', '.join(formats)}")
-    print(f"[dbf-bridge] Overwrite: {args.overwrite}")
-    print(f"[dbf-bridge] Incremental: {args.incremental}")
-    print()
+    if not source.is_dir() and not (source.is_file() and source.suffix.lower() == ".dbf"):
+        raise FileNotFoundError(f"DBF source does not exist: {source}")
+    make_config(
+        source=source,
+        output=output,
+        export_format="jsonl",
+        encoding=encoding,
+        decode_errors=decode_errors,  # type: ignore[arg-type]
+        deleted=deleted,  # type: ignore[arg-type]
+        missing_memo=missing_memo,  # type: ignore[arg-type]
+        memo=_resolve_memo_policy("jsonl", memo),  # type: ignore[arg-type]
+        strip_spaces=strip_spaces,
+        validate=validate,
+        overwrite=overwrite,
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    requested_formats = list(formats)
+    if console:
+        print(f"[dbf-bridge] Source:   {source}")
+        print(f"[dbf-bridge] Output:   {output}")
+        print(f"[dbf-bridge] Formats:  {', '.join(requested_formats)}")
+        print(f"[dbf-bridge] Overwrite: {overwrite}")
+        print(f"[dbf-bridge] Incremental: {incremental}")
+        print()
 
     overall_errors = 0
-    discovered_tables = discover_tables(args.source)
-    signature = _incremental_signature(args, formats)
-    result_formats = ["jsonl", *(fmt for fmt in formats if fmt != "jsonl")]
-    source_root = _source_root(args.source)
+    warnings: list[str] = []
+    discovered_tables = discover_tables(source)
+    signature = _incremental_signature(
+        source=source,
+        formats=requested_formats,
+        memo=memo,
+        strip_spaces=strip_spaces,
+        encoding=encoding,
+        decode_errors=decode_errors,
+        deleted=deleted,
+        missing_memo=missing_memo,
+        validate=validate,
+        xlsx_long_text=xlsx_long_text,
+    )
+    result_formats = ["jsonl", *(fmt for fmt in requested_formats if fmt != "jsonl")]
+    source_root = _source_root(source)
     fingerprints: dict[str, dict[str, object]] = {}
     cached_results: list[TableResult] = []
     tables_to_convert = discovered_tables
-    if args.incremental:
-        manifest, manifest_warning = load_checksum_manifest(args.output)
+    if incremental:
+        manifest, manifest_warning = load_checksum_manifest(output)
         if manifest_warning:
-            print(f"[dbf-bridge] Ostrzeżenie: {manifest_warning}", file=sys.stderr)
+            warnings.append(manifest_warning)
+            if console:
+                print(f"[dbf-bridge] Ostrzeżenie: {manifest_warning}", file=sys.stderr)
         if manifest is not None and manifest.get("signature") == signature:
             tables_to_convert = []
-            print(f"[dbf-bridge] Weryfikacja {CHECKSUM_MANIFEST_NAME}...")
+            if console:
+                print(f"[dbf-bridge] Weryfikacja {CHECKSUM_MANIFEST_NAME}...")
             for table in discovered_tables:
                 table_name = table.relative_path.as_posix()
                 fingerprint = source_fingerprint(table, source_root)
@@ -620,78 +709,85 @@ def main(argv: list[str] | None = None) -> int:
                     fingerprint,
                     signature,
                     result_formats,
-                    args.output,
+                    output,
                 )
                 if cached is None:
                     tables_to_convert.append(table)
                 else:
                     cached_results.extend(cached)
-            print(
-                f"[dbf-bridge] Przyrostowo: do konwersji {len(tables_to_convert)}, "
-                f"pominięto {len(cached_results) // len(result_formats)}."
-            )
-        elif manifest is not None:
+            if console:
+                print(
+                    f"[dbf-bridge] Przyrostowo: do konwersji {len(tables_to_convert)}, "
+                    f"pominięto {len(cached_results) // len(result_formats)}."
+                )
+        elif manifest is not None and console:
             print("[dbf-bridge] Konfiguracja uległa zmianie; wszystkie tabele będą przeliczone.")
-    jsonl_memo = _resolve_memo_policy("jsonl", args.memo)
+    jsonl_memo = _resolve_memo_policy("jsonl", memo)
     code, all_results = _export_one(
-        source=args.source,
-        output=args.output,
+        source=source,
+        output=output,
         fmt="jsonl",
         memo=jsonl_memo,
-        strip_spaces=args.strip_spaces,
-        encoding=args.encoding,
-        decode_errors=args.decode_errors,
-        deleted=args.deleted,
-        missing_memo=args.missing_memo,
-        validate=args.validate,
-        overwrite=args.overwrite,
-        progress=args.progress,
+        strip_spaces=strip_spaces,
+        encoding=encoding,
+        decode_errors=decode_errors,
+        deleted=deleted,
+        missing_memo=missing_memo,
+        validate=validate,
+        overwrite=overwrite,
+        progress=show_progress,
         tables=tables_to_convert,
+        console=console,
+        progress_callback=progress_callback,
     )
     overall_errors = max(overall_errors, code)
-    _print_summary(all_results)
+    if console:
+        _print_summary(all_results)
     conversion_results = _convert_jsonl_outputs(
-        args.output,
+        output,
         all_results,
-        formats,
-        memo_arg=args.memo,
-        deleted=args.deleted,
-        overwrite=args.overwrite,
-        xlsx_long_text=args.xlsx_long_text,
+        requested_formats,
+        memo_arg=memo,
+        deleted=deleted,
+        overwrite=overwrite,
+        xlsx_long_text=xlsx_long_text,
+        console=console,
+        progress_callback=progress_callback,
     )
     report_results = [*all_results, *conversion_results, *cached_results]
-    format_order = {fmt: index for index, fmt in enumerate(formats)}
+    format_order = {fmt: index for index, fmt in enumerate(requested_formats)}
     report_results.sort(
         key=lambda result: (result.table.lower(), format_order.get(result.format, len(formats)))
     )
-    _print_format_summary(report_results)
+    if console:
+        _print_format_summary(report_results)
     overall_errors = max(overall_errors, exit_code(report_results))
 
     if report_results:
         finished_at = datetime.now(timezone.utc)
         write_reports(
-            args.output,
+            output,
             report_results,
             run_metadata={
                 "dbfbridge_version": __version__,
                 "started_at": started_at.isoformat(),
                 "finished_at": finished_at.isoformat(),
                 "elapsed_seconds": time.monotonic() - started_monotonic,
-                "source": str(args.source.resolve()),
-                "output": str(args.output.resolve()),
-                "requested_formats": formats,
-                "memo_policy": args.memo or "per-format-default",
+                "source": str(source.resolve()),
+                "output": str(output.resolve()),
+                "requested_formats": requested_formats,
+                "memo_policy": memo or "per-format-default",
                 "memo_policy_by_format": {
-                    fmt: _resolve_memo_policy(fmt, args.memo) for fmt in formats
+                    fmt: _resolve_memo_policy(fmt, memo) for fmt in requested_formats
                 },
-                "deleted_policy": args.deleted,
-                "encoding": args.encoding,
-                "decode_errors": args.decode_errors,
-                "missing_memo_policy": args.missing_memo,
-                "overwrite": args.overwrite,
-                "validation_enabled": args.validate,
-                "xlsx_long_text_policy": args.xlsx_long_text,
-                "incremental_enabled": args.incremental,
+                "deleted_policy": deleted,
+                "encoding": encoding,
+                "decode_errors": decode_errors,
+                "missing_memo_policy": missing_memo,
+                "overwrite": overwrite,
+                "validation_enabled": validate,
+                "xlsx_long_text_policy": xlsx_long_text,
+                "incremental_enabled": incremental,
                 "converted_tables": len(tables_to_convert),
                 "skipped_tables": len(cached_results) // len(result_formats),
                 "checksum_manifest": CHECKSUM_MANIFEST_NAME,
@@ -708,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
             result = jsonl_results.get(table_name)
             if result is None or result.status not in {"OK", "WARNING", "SKIPPED"}:
                 continue
-            dbf_hash, fpt_hash = _known_source_hashes(args.output, result)
+            dbf_hash, fpt_hash = _known_source_hashes(output, result)
             fingerprints[table_name] = source_fingerprint(
                 table,
                 source_root,
@@ -716,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
                 known_fpt_sha256=fpt_hash,
             )
         write_checksum_manifest(
-            args.output,
+            output,
             source_root=source_root,
             signature=signature,
             fingerprints=fingerprints,
@@ -725,8 +821,48 @@ def main(argv: list[str] | None = None) -> int:
             dbfbridge_version=__version__,
         )
 
-    print(f"\n[dbf-bridge] Zakończono. Kod wyjścia: {overall_errors}")
-    return overall_errors
+    elapsed = time.monotonic() - started_monotonic
+    result = ExportRunResult(
+        source=source.resolve(),
+        output=output.resolve(),
+        formats=tuple(requested_formats),
+        results=tuple(report_results),
+        exit_code=overall_errors,
+        elapsed_seconds=elapsed,
+        migration_report_jsonl=output / "migration_report.jsonl" if report_results else None,
+        migration_report_csv=output / "migration_report.csv" if report_results else None,
+        checksum_manifest=output / CHECKSUM_MANIFEST_NAME if report_results else None,
+        warnings=tuple(warnings),
+    )
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        formats = tuple(_resolve_formats(args.formats))
+        result = run_export(
+            source=args.source,
+            output=args.output,
+            formats=formats,
+            memo=args.memo,
+            strip_spaces=args.strip_spaces,
+            encoding=args.encoding,
+            decode_errors=args.decode_errors,
+            deleted=args.deleted,
+            missing_memo=args.missing_memo,
+            overwrite=args.overwrite,
+            validate=args.validate,
+            xlsx_long_text=args.xlsx_long_text,
+            incremental=args.incremental,
+            console=True,
+            show_progress=args.progress,
+        )
+    except (ConfigError, FileNotFoundError, ValueError) as exc:
+        print(f"[dbf-bridge] Błąd: {exc}", file=sys.stderr)
+        return 1
+    print(f"\n[dbf-bridge] Zakończono. Kod wyjścia: {result.exit_code}")
+    return result.exit_code
 
 
 if __name__ == "__main__":
