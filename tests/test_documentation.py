@@ -4,7 +4,10 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 import dbfbridge
 from dbf_bridge import __version__

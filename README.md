@@ -307,6 +307,12 @@ python -m build
 twine check dist/*
 ```
 
+Continuous integration runs linting and the test suite on Python 3.10–3.13 on Linux,
+plus Python 3.12 on Windows. Release archives are built separately and published through
+PyPI Trusted Publishing; no long-lived PyPI token is stored in the repository. The exact
+versioning, publisher configuration, release, and post-publication checks are documented
+in [PUBLISHING.md](PUBLISHING.md).
+
 Tests generate their deterministic DBF/FPT fixtures automatically. To create a reusable
 fixture tree manually:
 
@@ -322,7 +328,6 @@ the [benchmark guide](https://github.com/PeterPirog/dbfbridge/blob/main/benchmar
 
 - CDX tag definitions are not reconstructed.
 - Exact raw FPT reconstruction is not possible for unreferenced source blocks.
-- A CI matrix and PyPI publication workflow are planned.
 - Future high-level operations will follow the existing function + typed-result model.
 
 ## License
