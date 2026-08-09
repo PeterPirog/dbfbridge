@@ -30,6 +30,9 @@ REPORT_FIELDS = [
     "deleted_sha256",
     "engine",
     "sheet_count",
+    "overflow_value_count",
+    "overflow_chunk_count",
+    "overflow_sheet_count",
     "elapsed_seconds",
     "warnings",
     "errors",
@@ -79,6 +82,15 @@ def write_jsonl_report(
             "warning": statuses_by_format[fmt]["WARNING"],
             "failed": statuses_by_format[fmt]["FAILED"],
             "unsupported": statuses_by_format[fmt]["UNSUPPORTED"],
+            "overflow_values": sum(
+                result.overflow_value_count for result in results if result.format == fmt
+            ),
+            "overflow_chunks": sum(
+                result.overflow_chunk_count for result in results if result.format == fmt
+            ),
+            "overflow_sheets": sum(
+                result.overflow_sheet_count for result in results if result.format == fmt
+            ),
         }
         for fmt in sorted(statuses_by_format)
     }
@@ -86,7 +98,7 @@ def write_jsonl_report(
     run.setdefault("exit_code", exit_code(results))
     summary = {
         "type": "summary",
-        "report_version": 2,
+        "report_version": 3,
         "tables": len(table_names),
         "outputs": len(results),
         "formats": sorted({result.format for result in results}),

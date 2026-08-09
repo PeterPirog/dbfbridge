@@ -58,7 +58,7 @@ def test_report_summary_tracks_each_format_and_failed_output(tmp_path: Path) -> 
     assert "Excel cell limit" in lines[2]["errors"][0]
 
 
-def test_xlsx_conversion_failure_is_returned_for_migration_report(tmp_path: Path) -> None:
+def test_xlsx_long_memo_overflow_is_returned_for_migration_report(tmp_path: Path) -> None:
     jsonl = tmp_path / "example.jsonl"
     jsonl.write_text(
         json.dumps({"OPIS": "x" * (EXCEL_MAX_STRING_LENGTH + 1)}) + "\n",
@@ -104,7 +104,25 @@ def test_xlsx_conversion_failure_is_returned_for_migration_report(tmp_path: Path
 
     assert len(results) == 1
     assert results[0].format == "xlsx"
-    assert results[0].status == "FAILED"
-    assert results[0].sha256 is None
-    assert "32767-character cell limit" in results[0].errors[0]
-    assert not (tmp_path / "example.xlsx").exists()
+    assert results[0].status == "OK"
+    assert results[0].sha256 is not None
+    assert results[0].errors == []
+    assert results[0].overflow_value_count == 1
+    assert results[0].overflow_chunk_count == 2
+    assert results[0].overflow_sheet_count == 1
+    assert (tmp_path / "example.xlsx").exists()
+
+    report = tmp_path / "overflow_report.jsonl"
+    write_jsonl_report(
+        report,
+        [source_result, results[0]],
+        run_metadata={"requested_formats": ["jsonl", "xlsx"]},
+    )
+    lines = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
+    assert lines[0]["report_version"] == 3
+    assert lines[0]["format_summary"]["xlsx"]["overflow_values"] == 1
+    assert lines[0]["format_summary"]["xlsx"]["overflow_chunks"] == 2
+    assert lines[0]["format_summary"]["xlsx"]["overflow_sheets"] == 1
+    assert lines[2]["overflow_value_count"] == 1
+    assert lines[2]["overflow_chunk_count"] == 2
+    assert lines[2]["overflow_sheet_count"] == 1

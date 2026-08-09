@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synthetic large-file benchmark with time, throughput, record count, output size, and peak RSS
 
 ### Fixed
+- Preserved memo values longer than Excel's 32,767-character cell limit in
+  reconstructable `Dlugie_teksty_*` overflow sheets and reported their counts
 - Recorded CSV, JSON, JSONL, and XLSX successes and failures in migration reports,
   including per-format summaries, hashes, schema references, XLSX sheet counts,
   run configuration, and the final exit code

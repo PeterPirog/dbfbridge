@@ -178,13 +178,56 @@ def test_xlsx_splits_sheets_without_losing_boundary_records(tmp_path: Path) -> N
     workbook.close()
 
 
-def test_xlsx_rejects_cell_and_column_limits_atomically(tmp_path: Path) -> None:
+def test_xlsx_preserves_long_text_in_overflow_sheets(tmp_path: Path) -> None:
+    source = tmp_path / "input.jsonl"
+    destination = tmp_path / "output.xlsx"
+    long_text = "początek:" + ("😀ż" * 20_000) + ":koniec"
+    _write_jsonl(source, [{"id": 1, "OPIS": long_text}])
+
+    stats = jsonl_to_xlsx(source, destination, columns=["id", "OPIS"])
+
+    assert stats.record_count == 1
+    assert stats.sheet_count == 1
+    assert stats.overflow_value_count == 1
+    assert stats.overflow_chunk_count >= 2
+    assert stats.overflow_sheet_count == 1
+    assert count_xlsx_records(destination) == (1, [])
+
+    workbook = openpyxl.load_workbook(destination, read_only=True, data_only=False)
+    assert workbook["Dane_1"]["B2"].value == "[[DBFBRIDGE_OVERFLOW:1]]"
+    overflow = workbook["Dlugie_teksty_1"]
+    assert [cell.value for cell in overflow[1]] == [
+        "overflow_id",
+        "data_sheet",
+        "data_row",
+        "source_line",
+        "column",
+        "value_type",
+        "part",
+        "parts",
+        "text",
+    ]
+    rows = list(overflow.iter_rows(min_row=2, values_only=True))
+    assert all(row[0] == 1 for row in rows)
+    assert all(row[1:6] == ("Dane_1", 2, 1, "OPIS", "string") for row in rows)
+    assert [row[6] for row in rows] == list(range(1, len(rows) + 1))
+    assert all(row[7] == len(rows) for row in rows)
+    assert "".join(row[8] for row in rows) == long_text
+    workbook.close()
+
+
+def test_xlsx_error_policy_and_column_limit_are_atomic(tmp_path: Path) -> None:
     source = tmp_path / "input.jsonl"
     destination = tmp_path / "output.xlsx"
     _write_jsonl(source, [{"text": "x" * (EXCEL_MAX_STRING_LENGTH + 1)}])
 
     with pytest.raises(JsonlConversionError, match="cell limit"):
-        jsonl_to_xlsx(source, destination, columns=["text"])
+        jsonl_to_xlsx(
+            source,
+            destination,
+            columns=["text"],
+            long_text_policy="error",
+        )
     assert not destination.exists()
     assert not (tmp_path / "output.xlsx.partial").exists()
 

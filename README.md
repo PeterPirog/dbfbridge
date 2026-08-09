@@ -11,12 +11,12 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 - **Lossless**: SHA-256 verification, schema preservation, Decimal precision for numbers
 - **Streaming & atomic**: handles multi-GB FPT memo files without loading everything into RAM; writes via `.partial` + rename
 - **Large-file conversion**: binary JSON streaming, Polars lazy CSV sinks, and constant-memory XLSX writing
-- **Excel-safe XLSX**: automatic `Dane_1`, `Dane_2`, ... sheet splitting, formula-safe text, and explicit row/column/cell limits
+- **Excel-safe XLSX**: automatic `Dane_1`, `Dane_2`, ... sheet splitting, formula-safe text, and lossless overflow sheets for values longer than Excel's cell limit
 - **Polish encoding auto-fallback**: detects cp1250 from DBF header, falls back to cp852 → Mazovia when data doesn't match the declared codepage (common in legacy Polish FoxPro/Clipper data)
 - **Memo-safe CSV**: memo fields (M) are omitted in CSV (null) to avoid separator/newline issues; full memo content preserved in JSON/JSONL
 - **Schema files**: `<table>_schema.json` preserves exact DBF field descriptors, header/codepage details, and FPT memo reconstruction parameters
 - **Migration reports**: `migration_report.jsonl` + `.csv` with per-format status,
-  SHA-256, record counts, schema hashes, XLSX sheet counts, failures, and run configuration
+  SHA-256, record counts, schema hashes, XLSX data/overflow sheet counts, failures, and run configuration
 - **Verification tool**: `dbf-bridge-verify` checks completeness, record counts, SHA-256, schema, and syntax
 
 ## Install
@@ -108,6 +108,7 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 | `--strip-spaces` / `--no-strip-spaces` | off | Trim trailing spaces from Character (C) fields |
 | `--overwrite` / `--no-overwrite` | on | Overwrite existing output files |
 | `--no-validate` | off | Skip SHA-256 round-trip validation |
+| `--xlsx-long-text` | `overflow` | `overflow` preserves long values in `Dlugie_teksty_*`; `error` rejects them |
 
 ### `dbf-bridge-verify` — verify
 
@@ -127,7 +128,14 @@ Exit codes: `0` = OK, `1` = errors, `2` = warnings (with `--strict`).
 | **CSV** | null (skip) | RFC-compatible quoting, configurable converter separator | Excel, Power Query, BI tools |
 | **JSON** | inline | Single JSON array | Archival, small tables |
 | **JSONL** | inline | 1 line = 1 JSON object | Streaming, round-trip, Neo4j import |
-| **XLSX** | inline | Constant-memory sheets, 1 row = 1 record | Excel |
+| **XLSX** | inline | Constant-memory sheets, 1 row = 1 record; long values use lossless overflow rows | Excel |
+
+Excel cells are limited to 32,767 UTF-16 code units. When an inline memo exceeds
+that limit, its data cell contains `[[DBFBRIDGE_OVERFLOW:<id>]]`, while the complete
+value is split into ordered rows in `Dlugie_teksty_1`, `Dlugie_teksty_2`, ... . Each
+overflow row records the data sheet, Excel row, JSONL source line, DBF column,
+value type, part number, total parts, and text chunk. Concatenating `text` in `part`
+order for an `overflow_id` recreates the original value exactly.
 
 Each source table has a companion `<table>_schema.json`. It records DBF field order,
 type, length, decimal count, address and flags; DBF/VFP header and codepage details;

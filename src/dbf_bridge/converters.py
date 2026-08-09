@@ -66,6 +66,9 @@ class ConversionStats:
     elapsed_seconds: float
     engine: str
     sheet_count: int = 0
+    overflow_value_count: int = 0
+    overflow_chunk_count: int = 0
+    overflow_sheet_count: int = 0
 
     @property
     def megabytes_per_second(self) -> float:
@@ -89,6 +92,74 @@ class _Inspection:
     unsupported_integer: bool = False
     records: int = 0
     skipped_invalid: int = 0
+
+
+@dataclass
+class _XlsxOverflowWriter:
+    """Stream values that do not fit in an Excel cell to companion sheets."""
+
+    workbook: Any
+    max_rows_per_sheet: int = EXCEL_MAX_ROWS
+    worksheet: Any = None
+    row_index: int = EXCEL_MAX_ROWS
+    sheet_count: int = 0
+    value_count: int = 0
+    chunk_count: int = 0
+
+    def write(
+        self,
+        text: str,
+        *,
+        data_sheet: str,
+        data_row: int,
+        source_line: int,
+        column: str,
+        value_type: str,
+    ) -> str:
+        self.value_count += 1
+        overflow_id = self.value_count
+        part_count = _excel_chunk_count(text)
+        for part, chunk in enumerate(_iter_excel_chunks(text), start=1):
+            self._ensure_row()
+            values = (
+                overflow_id,
+                data_sheet,
+                data_row,
+                source_line,
+                column,
+                value_type,
+                part,
+                part_count,
+                chunk,
+            )
+            for column_index, value in enumerate(values):
+                if isinstance(value, int):
+                    self.worksheet.write_number(self.row_index, column_index, value)
+                else:
+                    self.worksheet.write_string(self.row_index, column_index, value)
+            self.row_index += 1
+            self.chunk_count += 1
+        return f"[[DBFBRIDGE_OVERFLOW:{overflow_id}]]"
+
+    def _ensure_row(self) -> None:
+        if self.row_index < self.max_rows_per_sheet:
+            return
+        self.sheet_count += 1
+        self.worksheet = self.workbook.add_worksheet(f"Dlugie_teksty_{self.sheet_count}")
+        headers = (
+            "overflow_id",
+            "data_sheet",
+            "data_row",
+            "source_line",
+            "column",
+            "value_type",
+            "part",
+            "parts",
+            "text",
+        )
+        for column_index, name in enumerate(headers):
+            self.worksheet.write_string(0, column_index, name)
+        self.row_index = 1
 
 
 class _ProgressReporter:
@@ -300,12 +371,20 @@ def jsonl_to_xlsx(
     flatten: bool = False,
     overwrite: bool = True,
     max_rows_per_sheet: int = EXCEL_MAX_ROWS,
+    long_text_policy: str = "overflow",
     progress_callback: Callable[[ConversionProgress], None] | None = None,
     cancel_callback: Callable[[], bool] | None = None,
 ) -> ConversionStats:
-    """Convert JSONL to XLSX row by row using XlsxWriter constant-memory mode."""
+    """Convert JSONL to XLSX row by row using XlsxWriter constant-memory mode.
+
+    Values exceeding Excel's cell limit are losslessly split across companion
+    ``Dlugie_teksty_*`` sheets by default. The data cell contains a stable
+    overflow marker and the companion rows contain reconstruction metadata.
+    """
     if not 2 <= max_rows_per_sheet <= EXCEL_MAX_ROWS:
         raise ValueError(f"max_rows_per_sheet must be between 2 and {EXCEL_MAX_ROWS}.")
+    if long_text_policy not in {"overflow", "error"}:
+        raise ValueError("long_text_policy must be 'overflow' or 'error'.")
 
     try:
         import xlsxwriter
@@ -351,6 +430,7 @@ def jsonl_to_xlsx(
             },
         )
         blank_row_format = workbook.add_format()
+        overflow = _XlsxOverflowWriter(workbook)
         worksheet = _new_worksheet(workbook, sheet_count, selected_columns)
         row_index = 1
         with source_path.open("rb", buffering=IO_BUFFER_SIZE) as infile:
@@ -373,6 +453,8 @@ def jsonl_to_xlsx(
                     normalized,
                     selected_columns,
                     blank_row_format,
+                    overflow,
+                    long_text_policy,
                 )
                 row_index += 1
         workbook.close()
@@ -396,6 +478,9 @@ def jsonl_to_xlsx(
         started,
         engine="xlsxwriter-constant-memory",
         sheet_count=sheet_count,
+        overflow_value_count=overflow.value_count,
+        overflow_chunk_count=overflow.chunk_count,
+        overflow_sheet_count=overflow.sheet_count,
     )
 
 
@@ -705,6 +790,8 @@ def _write_xlsx_row(
     record: Mapping[str, Any],
     columns: Sequence[str],
     blank_row_format: Any,
+    overflow: _XlsxOverflowWriter,
+    long_text_policy: str,
 ) -> None:
     wrote_value = False
     for column_index, name in enumerate(columns):
@@ -719,11 +806,21 @@ def _write_xlsx_row(
             worksheet.write_number(row_index, column_index, value)
             wrote_value = True
             continue
-        text = value if isinstance(value, str) else _dumps_text(value)
-        if len(text) > EXCEL_MAX_STRING_LENGTH:
-            raise JsonlConversionError(
-                f"XLSX value at line {line_number}, column {name!r} exceeds "
-                f"Excel's {EXCEL_MAX_STRING_LENGTH}-character cell limit."
+        is_string = isinstance(value, str)
+        text = value if is_string else _dumps_text(value)
+        if _excel_string_length(text) > EXCEL_MAX_STRING_LENGTH:
+            if long_text_policy == "error":
+                raise JsonlConversionError(
+                    f"XLSX value at line {line_number}, column {name!r} exceeds "
+                    f"Excel's {EXCEL_MAX_STRING_LENGTH}-character cell limit."
+                )
+            text = overflow.write(
+                text,
+                data_sheet=worksheet.get_name(),
+                data_row=row_index + 1,
+                source_line=line_number,
+                column=name,
+                value_type="string" if is_string else "json",
             )
         worksheet.write_string(row_index, column_index, text)
         wrote_value = True
@@ -735,6 +832,36 @@ def _dumps_text(value: Any) -> str:
     if orjson is not None:
         return orjson.dumps(value).decode("utf-8")
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def _excel_string_length(text: str) -> int:
+    """Return the length Excel applies to a string (UTF-16 code units)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _excel_chunk_count(text: str) -> int:
+    units = 0
+    chunks = 1
+    for character in text:
+        character_units = 2 if ord(character) > 0xFFFF else 1
+        if units and units + character_units > EXCEL_MAX_STRING_LENGTH:
+            chunks += 1
+            units = 0
+        units += character_units
+    return chunks
+
+
+def _iter_excel_chunks(text: str) -> Iterator[str]:
+    start = 0
+    units = 0
+    for index, character in enumerate(text):
+        character_units = 2 if ord(character) > 0xFFFF else 1
+        if units and units + character_units > EXCEL_MAX_STRING_LENGTH:
+            yield text[start:index]
+            start = index
+            units = 0
+        units += character_units
+    yield text[start:]
 
 
 def _flush_and_fsync(handle: BinaryIO | TextIO) -> None:
@@ -759,6 +886,9 @@ def _stats(
     *,
     engine: str,
     sheet_count: int = 0,
+    overflow_value_count: int = 0,
+    overflow_chunk_count: int = 0,
+    overflow_sheet_count: int = 0,
 ) -> ConversionStats:
     return ConversionStats(
         source=source,
@@ -770,4 +900,7 @@ def _stats(
         elapsed_seconds=time.monotonic() - started,
         engine=engine,
         sheet_count=sheet_count,
+        overflow_value_count=overflow_value_count,
+        overflow_chunk_count=overflow_chunk_count,
+        overflow_sheet_count=overflow_sheet_count,
     )

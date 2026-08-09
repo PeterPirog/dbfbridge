@@ -243,6 +243,9 @@ class TableResult:
     deleted_sha256: str | None = None
     engine: str | None = None
     sheet_count: int = 0
+    overflow_value_count: int = 0
+    overflow_chunk_count: int = 0
+    overflow_sheet_count: int = 0
     elapsed_seconds: float | None = None
 
     def to_report_dict(self) -> dict[str, Any]:
@@ -266,6 +269,9 @@ class TableResult:
             "deleted_sha256": self.deleted_sha256,
             "engine": self.engine,
             "sheet_count": self.sheet_count,
+            "overflow_value_count": self.overflow_value_count,
+            "overflow_chunk_count": self.overflow_chunk_count,
+            "overflow_sheet_count": self.overflow_sheet_count,
             "elapsed_seconds": self.elapsed_seconds,
             "warnings": self.warnings,
             "errors": self.errors,
