@@ -26,9 +26,11 @@ Domyślnie:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from dbf_bridge.converters import jsonl_to_csv, jsonl_to_json, jsonl_to_xlsx
 from dbf_bridge.exporter.config import ConfigError, make_config
 from dbf_bridge.exporter.discovery import discover_tables
 from dbf_bridge.exporter.models import TableResult
@@ -66,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dbf-bridge",
         description=(
-            "Rekurencyjnie eksportuje pliki DBF do CSV, JSON i JSONL z zachowaniem "
+            "Rekurencyjnie eksportuje pliki DBF do CSV, JSON, JSONL i XLSX z zachowaniem "
             "struktury katalogów. Fasada nad pakietem dbf_bridge.exporter."
         ),
     )
@@ -279,6 +281,122 @@ def _print_summary(results: list[TableResult]) -> None:
             print(f"      - {r.table}: {r.status} | {'; '.join(r.errors) if r.errors else ''}")
 
 
+def _schema_details(
+    output: Path,
+    result: TableResult,
+) -> tuple[list[str], list[str], dict[str, str]]:
+    if result.schema is None:
+        return [], [], {}
+    schema_path = output / result.schema
+    with schema_path.open("r", encoding="utf-8") as infile:
+        schema = json.loads(infile.readline())
+    fields = schema.get("fields", [])
+    columns = [field["name"] for field in fields]
+    memo_fields = [field["name"] for field in fields if field.get("is_memo")]
+    schema_types: dict[str, str] = {}
+    for field in fields:
+        representation = field.get("target_representation")
+        if representation == "boolean-or-null":
+            schema_types[field["name"]] = "boolean"
+        elif representation == "number":
+            is_integer = field.get("decimal_count") == 0 and field.get("dbf_type") not in {
+                "B",
+                "F",
+                "O",
+            }
+            schema_types[field["name"]] = "integer" if is_integer else "number"
+        else:
+            schema_types[field["name"]] = "string"
+    return columns, memo_fields, schema_types
+
+
+def _convert_jsonl_outputs(
+    output: Path,
+    results: list[TableResult],
+    formats: list[str],
+    *,
+    memo_arg: str | None,
+    deleted: str,
+    overwrite: bool,
+) -> int:
+    errors = 0
+    target_formats = [fmt for fmt in formats if fmt != "jsonl"]
+    if not target_formats:
+        return errors
+
+    for result in results:
+        if result.status in {"FAILED", "UNSUPPORTED"} or result.output is None:
+            continue
+        primary_source = output / result.output
+        columns, memo_fields, schema_types = _schema_details(output, result)
+        if deleted == "include":
+            columns.append("__deleted__")
+            schema_types["__deleted__"] = "boolean"
+        sources = [
+            (
+                primary_source,
+                columns,
+                schema_types,
+                result.active_records + (result.deleted_records if deleted == "include" else 0),
+            )
+        ]
+        if deleted == "separate":
+            deleted_source = primary_source.with_name(
+                f"{primary_source.stem}.deleted{primary_source.suffix}"
+            )
+            deleted_columns = [*columns, "__deleted__"]
+            deleted_schema_types = {**schema_types, "__deleted__": "boolean"}
+            sources.append(
+                (deleted_source, deleted_columns, deleted_schema_types, result.deleted_records)
+            )
+
+        for source_path, source_columns, source_schema, record_count in sources:
+            for fmt in target_formats:
+                destination_path = source_path.with_suffix(f".{fmt}")
+                try:
+                    if fmt == "csv":
+                        null_columns = (
+                            memo_fields
+                            if _resolve_memo_policy("csv", memo_arg) != "inline"
+                            else []
+                        )
+                        stats = jsonl_to_csv(
+                            source_path,
+                            destination_path,
+                            columns=source_columns,
+                            schema_types=source_schema,
+                            expected_record_count=record_count,
+                            source_is_validated=True,
+                            null_columns=null_columns,
+                            overwrite=overwrite,
+                        )
+                    elif fmt == "json":
+                        stats = jsonl_to_json(
+                            source_path,
+                            destination_path,
+                            overwrite=overwrite,
+                        )
+                    else:
+                        stats = jsonl_to_xlsx(
+                            source_path,
+                            destination_path,
+                            columns=source_columns,
+                            overwrite=overwrite,
+                        )
+                    print(
+                        f"  -> {source_path.name} -> {fmt.upper()}: "
+                        f"{_format_count(stats.record_count)} rekordów, "
+                        f"{stats.megabytes_per_second:.1f} MB/s, {stats.engine}"
+                    )
+                except Exception as exc:
+                    print(
+                        f"[dbf-bridge] Błąd konwersji {source_path} -> {fmt}: {exc}",
+                        file=sys.stderr,
+                    )
+                    errors = 1
+    return errors
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -302,63 +420,34 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     overall_errors = 0
-    all_results: list[TableResult] = []
-
-    # Ensure JSONL is always processed first – it serves jako pośredni format.
-    if "jsonl" not in formats:
-        formats.insert(0, "jsonl")
-
-    for fmt in formats:
-        memo = _resolve_memo_policy(fmt, args.memo)
-        if fmt == "jsonl":
-            # Eksport DBF → JSONL (pełny eksport z walidacją itp.)
-            code, results = _export_one(
-                source=args.source,
-                output=args.output,
-                fmt=fmt,
-                memo=memo,
-                strip_spaces=args.strip_spaces,
-                encoding=args.encoding,
-                decode_errors=args.decode_errors,
-                deleted=args.deleted,
-                missing_memo=args.missing_memo,
-                validate=args.validate,
-                overwrite=args.overwrite,
-                progress=args.progress,
-            )
-            if code != 0:
-                overall_errors = max(overall_errors, code)
-            all_results.extend(results)
-            _print_summary(results)
-        else:
-            # Konwersja z istniejących plików JSONL.
-            if jsonl_to_csv is None:
-                print(
-                    "[dbf-bridge] Konwersja wymaga opcjonalnych zależności (openpyxl, pandas itp.).",
-                    file=sys.stderr,
-                )
-                overall_errors = max(overall_errors, 1)
-                continue
-
-            jsonl_files = list(Path(args.output).rglob("*.jsonl"))
-            for src_path in jsonl_files:
-                dest_path = src_path.with_suffix(f".{fmt}")
-                try:
-                    if fmt == "csv":
-                        jsonl_to_csv(src_path, dest_path)
-                    elif fmt == "json":
-                        jsonl_to_json(src_path, dest_path)
-                    elif fmt == "xlsx":
-                        jsonl_to_xlsx(src_path, dest_path)
-                except Exception as exc:  # pragma: no cover – unlikely but guard against failures
-                    print(
-                        f"[dbf-bridge] Błąd konwersji {src_path} → {fmt}: {exc}",
-                        file=sys.stderr,
-                    )
-                    overall_errors = max(overall_errors, 1)
-            # Brak obiektów TableResult dla tych formatów; podsumowanie nie jest potrzebne.
-
-*** End of File ***
+    jsonl_memo = _resolve_memo_policy("jsonl", args.memo)
+    code, all_results = _export_one(
+        source=args.source,
+        output=args.output,
+        fmt="jsonl",
+        memo=jsonl_memo,
+        strip_spaces=args.strip_spaces,
+        encoding=args.encoding,
+        decode_errors=args.decode_errors,
+        deleted=args.deleted,
+        missing_memo=args.missing_memo,
+        validate=args.validate,
+        overwrite=args.overwrite,
+        progress=args.progress,
+    )
+    overall_errors = max(overall_errors, code)
+    _print_summary(all_results)
+    overall_errors = max(
+        overall_errors,
+        _convert_jsonl_outputs(
+            args.output,
+            all_results,
+            formats,
+            memo_arg=args.memo,
+            deleted=args.deleted,
+            overwrite=args.overwrite,
+        ),
+    )
 
     if all_results:
         write_reports(args.output, all_results)

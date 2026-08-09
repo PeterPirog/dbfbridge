@@ -109,17 +109,37 @@ def count_jsonl_records(path: Path) -> tuple[int, list[str]]:
 
 def count_json_records(path: Path) -> tuple[int, list[str]]:
     errors: list[str] = []
-    try:
-        with path.open("r", encoding="utf-8") as infile:
-            data = json.load(infile)
-    except json.JSONDecodeError as exc:
-        return 0, [f"JSON parse error: {exc.msg}"]
-    if not isinstance(data, list):
-        return 0, ["JSON top-level is not an array"]
-    for i, item in enumerate(data, start=1):
-        if not isinstance(item, dict):
-            errors.append(f"element {i}: not a JSON object")
-    return len(data), errors
+    count = 0
+    opened = False
+    closed = False
+    with path.open("r", encoding="utf-8", newline="") as infile:
+        for line_number, line in enumerate(infile, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            if not opened:
+                if text != "[":
+                    return 0, ["JSON top-level is not an array"]
+                opened = True
+                continue
+            if text == "]":
+                closed = True
+                continue
+            if closed:
+                errors.append(f"line {line_number}: content after JSON array")
+                continue
+            payload = text[:-1] if text.endswith(",") else text
+            try:
+                item = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                errors.append(f"line {line_number}: {exc.msg}")
+                continue
+            count += 1
+            if not isinstance(item, dict):
+                errors.append(f"element {count}: not a JSON object")
+    if not opened or not closed:
+        errors.append("JSON array is incomplete")
+    return count, errors
 
 
 def count_csv_records(path: Path) -> tuple[int, list[str]]:

@@ -174,19 +174,40 @@ def _parse_json(path: Path, fields: list[FieldMetadata]) -> ValidationResult:
     collector = StatsCollector(fields)
     result = ValidationResult()
     with path.open("r", encoding="utf-8", newline="") as infile:
-        try:
-            data = json.load(infile)
-        except json.JSONDecodeError as exc:
-            result.errors.append(f"Invalid JSON: {exc.msg}.")
-            return result
-    if not isinstance(data, list):
-        result.errors.append("JSON output is not a JSON array.")
-        return result
-    for index, record in enumerate(data, start=1):
-        if not isinstance(record, dict):
-            result.errors.append(f"JSON element {index} is not a JSON object.")
-            continue
-        collector.add(record)
+        opened = False
+        closed = False
+        element_index = 0
+        for line_number, line in enumerate(infile, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            if not opened:
+                if text != "[":
+                    result.errors.append("JSON output is not a JSON array.")
+                    return result
+                opened = True
+                continue
+            if text == "]":
+                closed = True
+                continue
+            if closed:
+                result.errors.append(f"Unexpected JSON content at line {line_number}.")
+                continue
+            element_index += 1
+            payload = text[:-1] if text.endswith(",") else text
+            try:
+                record = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                result.errors.append(
+                    f"Invalid JSON element {element_index} at line {line_number}: {exc.msg}."
+                )
+                continue
+            if not isinstance(record, dict):
+                result.errors.append(f"JSON element {element_index} is not a JSON object.")
+                continue
+            collector.add(record)
+    if not opened or not closed:
+        result.errors.append("JSON output is not a complete JSON array.")
 
     stats = collector.finish()
     result.record_count = stats.record_count

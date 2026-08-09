@@ -45,6 +45,8 @@ tests/fixtures/output/
 *.csv
 *.json
 *.jsonl
+*.xlsx
+benchmark-data/
 # Schema/metadata/report files (generated)
 *.schema.jsonl
 *.metadata.json

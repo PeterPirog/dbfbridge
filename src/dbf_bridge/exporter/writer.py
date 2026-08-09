@@ -381,7 +381,12 @@ def _write_record(
         writer.write("\n")
         return False
     if config.format == "json":
-        text = json.dumps(record, ensure_ascii=False, allow_nan=False, indent=2)
+        text = json.dumps(
+            record,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
         if not json_first:
             writer.write(",\n")
         writer.write(text)

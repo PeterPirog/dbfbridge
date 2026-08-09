@@ -1,15 +1,9 @@
-import sys
 from pathlib import Path
 
 import pytest
 
-# Ensure the package src directory is on PYTHONPATH for imports
-repo_root = Path(__file__).resolve().parents[1]
-src_path = repo_root / "src"
-sys.path.insert(0, str(src_path))
+from dbf_bridge.cli import ALL_FORMATS, _resolve_formats, _resolve_memo_policy, main
 
-# Import the CLI entry point from the package
-from dbf_bridge.cli import main, _resolve_formats, _resolve_memo_policy, ALL_FORMATS
 
 @pytest.fixture(scope="module")
 def sample_input_dir() -> Path:
