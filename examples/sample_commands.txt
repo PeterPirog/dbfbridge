@@ -1,6 +1,20 @@
 # Example full command for exporting DBF files (PowerShell)
+
 python examples/export_dbf.py --source "K:\\dbf_source" --output "K:\\dbf_output" --overwrite --progress --memo inline --formats csv,json,jsonl,xlsx
+
+
 python examples/export_from_file_to_dbf.py --source "K:\\dbf_output" --output "K:\\dbf_output_reconstructed" --overwrite --progress --memo inline --formats jsonl
+
 python examples/check_conversion_quality.py --source "K:\\dbf_source" --output "K:\\dbf_quality" --overwrite --progress
 
 python -m pip install -e .
+
+
+##########################################
+
+python examples/export_dbf.py --source "K:\\dbf_source_small" --output "K:\\dbf_output_small" --overwrite --progress --memo inline --formats csv,json,jsonl,xlsx
+
+python examples/export_from_file_to_dbf.py --source "K:\\dbf_output_small" --output "K:\\dbf_output_reconstructed_small" --overwrite --progress --memo inline --formats jsonl
+
+
+python examples/check_conversion_quality.py --source "K:\\dbf_source_small" --output "K:\\dbf_quality_small" --overwrite --progress
