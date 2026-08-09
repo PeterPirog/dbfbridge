@@ -1,10 +1,10 @@
 # dbfbridge
 
-**DBF (Visual FoxPro) → CSV / JSON / JSONL / XLSX** exporter with automatic Polish encoding fallback (cp1250 → cp852 → Mazovia).
+**DBF (Visual FoxPro) ↔ CSV / JSON / JSONL / XLSX** migration toolkit with automatic Polish encoding fallback (cp1250 → cp852 → Mazovia).
 
 Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index files) to modern interchange formats. Designed for migrating legacy FoxPro/Clipper databases to modern systems (Neo4j, PostgreSQL, data warehouses).
 
-> **Status: 0.1.0 (alpha) — export only.** Round-trip import (CSV/JSON/JSONL → DBF) is planned for a later release (see [Roadmap](#roadmap)).
+> **Status: 0.1.0 (alpha).** Export, schema-driven DBF/FPT reconstruction, and diagnostic round-trip verification are available.
 
 ## Features
 
@@ -18,6 +18,8 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 - **Migration reports**: `migration_report.jsonl` + `.csv` with per-format status,
   SHA-256, record counts, schema hashes, XLSX data/overflow sheet counts, failures, and run configuration
 - **Verification tool**: `dbf-bridge-verify` checks completeness, record counts, SHA-256, schema, and syntax
+- **DBF/FPT reconstruction**: one selected JSONL, JSON, CSV, or XLSX tree can be rebuilt using companion schemas
+- **Quality diagnostics**: DBF → JSONL → DBF checks raw and canonical SHA-256 and identifies differing fields or binary offsets
 
 ## Install
 
@@ -61,6 +63,13 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR>
 
 # Verify the conversion
 dbf-bridge-verify --source <DBF_DIR> --output <OUT_DIR>
+
+# Reconstruct the same directory tree from exactly one format
+dbf-bridge-import --source <OUT_DIR> --output <REBUILT_DIR> \
+  --formats jsonl --memo inline --overwrite --progress
+
+# Run a retained, diagnostic DBF -> JSONL -> DBF round-trip
+dbf-bridge-quality --source <DBF_DIR> --output <QUALITY_DIR> --overwrite --progress
 ```
 
 ### Python API
@@ -120,6 +129,38 @@ Checks: file completeness, record counts, SHA-256, schema, syntax, FPT/CDX prese
 and row counts across all `Dane_*` worksheets in XLSX files.
 
 Exit codes: `0` = OK, `1` = errors, `2` = warnings (with `--strict`).
+
+### `dbf-bridge-import` — reconstruct DBF/FPT
+
+`--formats` must contain exactly one of `jsonl`, `json`, `csv`, or `xlsx`.
+For each data file the importer requires a sibling `<table>_schema.json`, preserves
+the relative path and original DBF/FPT filename casing, writes atomically, and creates
+`reconstruction_report.jsonl`. The report contains:
+
+- schema SHA-256;
+- schema-aware canonical SHA-256 before and after reconstruction;
+- reconstructed DBF/FPT SHA-256;
+- original raw SHA-256 recorded by newer schemas and raw match flags;
+- record/deleted-record counts, warnings, and errors.
+
+The canonical checksum normalizes values according to DBF type, length, precision,
+field order, flags, and deleted status. It therefore detects data or structure loss
+without treating harmless JSON whitespace as a difference.
+
+### `dbf-bridge-quality` — diagnostic round-trip
+
+This command retains three trees under the selected output directory:
+
+1. `01_forward_jsonl` — source DBF converted to JSONL and schemas;
+2. `02_reconstructed_dbf` — reconstructed DBF/FPT;
+3. `03_reexported_jsonl` — reconstructed DBF exported again for field comparison.
+
+`conversion_quality_report.jsonl` reports raw DBF/FPT checksums, canonical checksums,
+the first differing record fields (with bounded previews and value hashes), and the
+first differing binary offsets categorized as header, descriptor, record, or FPT areas.
+CDX files cannot be reconstructed because a DBF schema does not contain index tag
+expressions; this is reported separately and the reconstructed structural-index flag
+is cleared so the DBF does not reference a missing CDX.
 
 ## Output formats
 

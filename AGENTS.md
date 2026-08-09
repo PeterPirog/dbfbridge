@@ -106,13 +106,12 @@ dbfbridge/
 - [x] Uruchomić `dbf-bridge --source tests/fixtures/input --output tests/fixtures/output`
 - [x] Uruchomić `dbf-bridge-verify` na wyniku — 3/3 OK, 80 rekordów, 0 błędów
 
-### Krok 3 — Implementacja round-trip X → DBF (nowa funkcjonalność)
-- [ ] Utworzyć `src/dbf_bridge/importer/` subpackage
-- [ ] `dbf_writer.py` — tworzenie DBF (VFP) z CSV/JSON/JSONL + `<table>_schema.json`
-- [ ] Użycie biblioteki `dbf` (Ethan Furman) do zapisu — `dbf.Table(path, field_specs, dbf_type="vfp", codepage=0xC8)`
-- [ ] Obsługa FPT memo (tworzenie pliku memo)
-- [ ] CLI: `dbf-bridge-import` (nowy punkt wejścia)
-- [ ] Walidacja round-trip: DBF → X → DBF' — porównanie rekordów
+### Krok 3 — Implementacja round-trip X → DBF — UKOŃCZONE
+- [x] `src/dbf_bridge/importer/` — rekonstrukcja z JSONL/JSON/CSV/XLSX
+- [x] Odtwarzanie DBF/FPT, typów, kodowania, deskryptorów i drzewa katalogów
+- [x] CLI `dbf-bridge-import` i przykład `export_from_file_to_dbf.py`
+- [x] Kanoniczne i surowe sumy SHA-256 w raporcie rekonstrukcji
+- [x] `dbf-bridge-quality` — diagnostyczny DBF → JSONL → DBF
 
 ### Krok 4 — Dodanie XLSX — UKOŃCZONE
 - [x] Nowy format `xlsx` przez XlsxWriter w trybie `constant_memory`
@@ -142,12 +141,10 @@ dbfbridge/
     Warstwa `dbf_bridge/exporter/reader.py` izoluje tę zależność — w razie potrzeby
     można ją zastąpić alternatywą (np. `dbf` lub własny parser) bez zmiany API.
 
-### Opcjonalne:
-- `dbf>=0.99.11` — zapis DBF (round-trip import, generowanie fixture)
-  - Aktywnie rozwijana przez Ethan Furman (release 2025-09-02, Python 3.10-3.13)
-  - `pip install "dbfbridge[import]"` lub `pip install "dbfbridge[dev]"`
-- `xlsxwriter>=3.2` — zapis XLSX (instalowany domyślnie)
-- `openpyxl>=3.1.5` — wyłącznie testowy odczyt i weryfikacja XLSX
+### Podstawowe dla rekonstrukcji:
+- `dbf>=0.99.11` — zapis DBF/FPT
+- `openpyxl>=3.1.5` — streamingowy odczyt XLSX
+- `xlsxwriter>=3.2` — zapis XLSX
 
 ### Dev:
 - `pytest>=8.0`, `pytest-cov>=5.0`, `build>=1.2`, `twine>=5.1`

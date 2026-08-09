@@ -47,6 +47,8 @@ def test_vfp_schema_contains_reconstruction_metadata(tmp_path: Path) -> None:
     assert schema["dbf"]["record_count_from_header"] == 1
     assert schema["dbf"]["header_length_bytes"] > 0
     assert schema["dbf"]["record_length_bytes"] > 0
+    assert len(schema["dbf"]["header_base64"]) > 0
+    assert len(schema["source"]["sha256"]) == 64
     assert schema["text_encoding"]["language_driver_byte"] == "0xc8"
     assert schema["text_encoding"]["declared_or_detected_encoding"] == "cp1250"
     assert schema["text_encoding"]["decode_errors"] == "strict"
@@ -72,6 +74,8 @@ def test_vfp_schema_contains_reconstruction_metadata(tmp_path: Path) -> None:
     assert memo["field_names"] == ["NOTATKA"]
     assert memo["export_policy"] == "inline"
     assert memo["values_in_data_output"] is True
+    assert len(memo["sha256"]) == 64
+    assert len(memo["header_base64"]) > 0
 
     fields = {field["name"]: field for field in schema["fields"]}
     assert fields["NAZWA"]["ordinal"] == 2
@@ -79,6 +83,7 @@ def test_vfp_schema_contains_reconstruction_metadata(tmp_path: Path) -> None:
     assert fields["NAZWA"]["dbf_type_name"] == "Character"
     assert fields["NAZWA"]["length"] == 60
     assert fields["NAZWA"]["address"] > 0
+    assert len(fields["NAZWA"]["descriptor_base64"]) > 0
     assert fields["NOTATKA"]["dbf_type"] == "M"
     assert fields["NOTATKA"]["length"] == 4
     assert fields["NOTATKA"]["memo_storage"]["file_format"] == "FPT"
@@ -90,3 +95,5 @@ def test_xlsxwriter_is_installed_by_default() -> None:
     dependencies = project["project"]["dependencies"]
 
     assert any(dependency.startswith("xlsxwriter>=") for dependency in dependencies)
+    assert any(dependency.startswith("openpyxl>=") for dependency in dependencies)
+    assert any(dependency.startswith("dbf>=") for dependency in dependencies)
