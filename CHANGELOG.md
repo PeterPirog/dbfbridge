@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synthetic large-file benchmark with time, throughput, record count, output size, and peak RSS
 
 ### Fixed
+- Recorded CSV, JSON, JSONL, and XLSX successes and failures in migration reports,
+  including per-format summaries, hashes, schema references, XLSX sheet counts,
+  run configuration, and the final exit code
+- Added bounded-memory XLSX record verification across split worksheets
 - Made XlsxWriter a default dependency so a standard install supports XLSX output
 - Fixed Windows `Bad file descriptor` failures when atomically committing JSON and CSV files
 - Removed the invalid CLI marker and undefined `jsonl_to_*` calls that prevented startup

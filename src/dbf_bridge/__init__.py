@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from .exporter.polish_codecs import register_polish_codecs
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 register_polish_codecs()
 

@@ -17,7 +17,7 @@ from dbf_bridge.converters import (
     jsonl_to_json,
     jsonl_to_xlsx,
 )
-from dbf_bridge.verifier import count_json_records
+from dbf_bridge.verifier import count_json_records, count_xlsx_records
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
@@ -150,6 +150,7 @@ def test_xlsx_splits_sheets_without_losing_boundary_records(tmp_path: Path) -> N
         }
         for index in range(1, 8)
     ]
+    records.append({"id": None, "text": None, "formula": None, "nested": None})
     _write_jsonl(source, records)
 
     stats = jsonl_to_xlsx(
@@ -160,7 +161,8 @@ def test_xlsx_splits_sheets_without_losing_boundary_records(tmp_path: Path) -> N
     )
 
     assert stats.sheet_count == 3
-    assert stats.record_count == 7
+    assert stats.record_count == 8
+    assert count_xlsx_records(destination) == (8, [])
     workbook = openpyxl.load_workbook(destination, read_only=False, data_only=False)
     assert workbook.sheetnames == ["Dane_1", "Dane_2", "Dane_3"]
     ids: list[int] = []

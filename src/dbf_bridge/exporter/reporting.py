@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import os
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,26 +24,81 @@ REPORT_FIELDS = [
     "memo_hashes",
     "sha256",
     "size_bytes",
+    "schema",
+    "schema_sha256",
+    "deleted_output",
+    "deleted_sha256",
+    "engine",
+    "sheet_count",
+    "elapsed_seconds",
     "warnings",
     "errors",
 ]
 
 
-def write_reports(output_root: Path, results: list[TableResult]) -> None:
+def write_reports(
+    output_root: Path,
+    results: list[TableResult],
+    *,
+    run_metadata: dict[str, Any] | None = None,
+) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
-    write_jsonl_report(output_root / "migration_report.jsonl", results)
+    write_jsonl_report(
+        output_root / "migration_report.jsonl",
+        results,
+        run_metadata=run_metadata,
+    )
     write_csv_report(output_root / "migration_report.csv", results)
 
 
-def write_jsonl_report(path: Path, results: list[TableResult]) -> None:
+def write_jsonl_report(
+    path: Path,
+    results: list[TableResult],
+    *,
+    run_metadata: dict[str, Any] | None = None,
+) -> None:
+    run = dict(run_metadata or {})
+    requested_formats = list(run.get("requested_formats") or sorted({r.format for r in results}))
+    table_names = sorted({result.table for result in results})
+    statuses_by_format: dict[str, Counter[str]] = defaultdict(Counter)
+    statuses_by_table: dict[str, dict[str, str]] = defaultdict(dict)
+    for result in results:
+        statuses_by_format[result.format][result.status] += 1
+        statuses_by_table[result.table][result.format] = result.status
+
+    complete_tables = sum(
+        all(
+            statuses_by_table[table].get(fmt) in {"OK", "WARNING"}
+            for fmt in requested_formats
+        )
+        for table in table_names
+    )
+    format_summary = {
+        fmt: {
+            "ok": statuses_by_format[fmt]["OK"],
+            "warning": statuses_by_format[fmt]["WARNING"],
+            "failed": statuses_by_format[fmt]["FAILED"],
+            "unsupported": statuses_by_format[fmt]["UNSUPPORTED"],
+        }
+        for fmt in sorted(statuses_by_format)
+    }
+    run.setdefault("finished_at", datetime.now(timezone.utc).isoformat())
+    run.setdefault("exit_code", exit_code(results))
     summary = {
         "type": "summary",
-        "tables": len(results),
+        "report_version": 2,
+        "tables": len(table_names),
+        "outputs": len(results),
         "formats": sorted({result.format for result in results}),
+        "requested_formats": requested_formats,
         "ok": sum(1 for result in results if result.status == "OK"),
         "warning": sum(1 for result in results if result.status == "WARNING"),
         "failed": sum(1 for result in results if result.status == "FAILED"),
         "unsupported": sum(1 for result in results if result.status == "UNSUPPORTED"),
+        "complete_tables": complete_tables,
+        "incomplete_tables": len(table_names) - complete_tables,
+        "format_summary": format_summary,
+        "run": run,
     }
     lines = [summary]
     lines.extend({"type": "table", **result.to_report_dict()} for result in results)
