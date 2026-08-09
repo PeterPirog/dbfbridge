@@ -272,6 +272,8 @@ def restore_raw_layout(
             os.fsync(relocated_fpt.fileno())
             relocated_fpt.close()
             relocated_fpt = None
+            generated_fpt.close()
+            generated_fpt = None
             os.replace(fpt_partial, fpt)
         os.replace(dbf_partial, destination)
         return True

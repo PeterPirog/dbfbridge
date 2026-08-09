@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproducible reconstruction
 
 ### Fixed
+- Closed the generated FPT read handle before raw-layout replacement, preventing
+  Windows `WinError 5` failures during memo-table reconstruction
 - Preserved complete VFP DBF header regions, structural-index flags, fallback-codepage
   bytes, and per-record binary/text memo types during JSON/JSONL reconstruction
 - Preserved the physical order of active and deleted records with `--deleted include`
