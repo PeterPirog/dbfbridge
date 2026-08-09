@@ -11,7 +11,7 @@ Read this file before changing the repository. User-facing behavior is documente
 - checksum-based incremental re-export;
 - schema-driven CSV/JSON/JSONL/XLSX → DBF/FPT reconstruction;
 - export verification and diagnostic DBF → JSONL → DBF round trips;
-- cp1250/cp852/Mazovia decoding for legacy Polish data.
+- cp1250/cp852/Mazovia decoding for legacy Polish data;
 - typed high-level API available from both `dbfbridge` and `dbf_bridge`.
 
 Repository: <https://github.com/PeterPirog/dbfbridge>
@@ -60,6 +60,9 @@ Other important paths:
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
 - `benchmarks/` — synthetic JSONL conversion benchmark;
+- `.github/workflows/ci.yml` — Linux/Windows compatibility checks;
+- `.github/workflows/publish.yml` — release build and PyPI Trusted Publishing;
+- `PUBLISHING.md` — release checklist and one-time PyPI configuration;
 - `pyproject.toml` — package metadata, runtime/dev dependencies, console scripts.
 
 ## Command-line interfaces
@@ -145,6 +148,10 @@ python -m dbf_bridge.verifier --help
 python -m dbf_bridge.quality --help
 ```
 
+Before a release, also follow `PUBLISHING.md`. A GitHub release tag must exactly match
+`v<project.version>`; `publish.yml` rejects mismatches before uploading immutable PyPI
+artifacts.
+
 Also inspect `git diff --check` and do not commit generated DBF/FPT/CDX, conversion
 outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 
@@ -166,6 +173,4 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 
 ## Known follow-up work
 
-- CI test matrix for supported Python versions;
-- PyPI publication workflow;
 - index-aware CDX reconstruction, if a reliable source of tag definitions is added.

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-09
+
 ### Added
 - Initial project structure extracted from a legacy DBF migration toolkit.
 - `dbf_bridge.exporter` — streaming, atomic DBF → CSV/JSON/JSONL export with:
@@ -44,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `raise_for_errors()` helpers
 - Shared execution paths for CLI adapters and public operations instead of CLI-only logic
 - Executable `examples/python_api.py` integration example and complete API documentation
+- GitHub Actions CI for Python 3.10–3.13 on Linux and Python 3.12 on Windows
+- Secretless PyPI Trusted Publishing workflow with release-tag validation
+- PyPI release checklist, explicit SPDX license files, and packaging consistency tests
 
 ### Fixed
 - Closed the generated FPT read handle before raw-layout replacement, preventing
@@ -71,5 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved separately exported deleted records in CSV, JSON, and XLSX conversions
 
 ### Pending (planned for 0.2.0+)
-- GitHub Actions CI (Python 3.10/3.11/3.12)
-- PyPI publication
+- Index-aware CDX reconstruction when reliable tag definitions are available
+
+[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.1.0
