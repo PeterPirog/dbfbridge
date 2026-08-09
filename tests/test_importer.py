@@ -16,6 +16,7 @@ from dbf_bridge.exporter.serialization import (
     RAW_TEXT_FIELDS_KEY,
 )
 from dbf_bridge.import_cli import main as import_main
+from dbf_bridge.importer import writer
 from dbf_bridge.quality import _compare_jsonl, _different_offsets, run_quality_check
 
 
@@ -458,7 +459,9 @@ def test_jsonl_roundtrip_restores_scientific_numeric_storage(tmp_path: Path) -> 
     assert _sha256(dbf_path) == _sha256(rebuilt / "scientific.dbf")
 
 
-def test_jsonl_roundtrip_relocates_memo_to_original_pointer(tmp_path: Path) -> None:
+def test_jsonl_roundtrip_relocates_memo_to_original_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source"
     exported = tmp_path / "exported"
     rebuilt = tmp_path / "rebuilt"
@@ -514,6 +517,27 @@ def test_jsonl_roundtrip_relocates_memo_to_original_pointer(tmp_path: Path) -> N
         )
         == 0
     )
+
+    rebuilt_fpt = rebuilt / "relocated.fpt"
+    opened_fpt_handles: list[object] = []
+    original_path_open = Path.open
+    original_replace = writer.os.replace
+
+    def track_fpt_open(path: Path, *args: object, **kwargs: object) -> object:
+        handle = original_path_open(path, *args, **kwargs)
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if path == rebuilt_fpt and mode == "rb":
+            opened_fpt_handles.append(handle)
+        return handle
+
+    def windows_strict_replace(source_path: object, destination_path: object) -> None:
+        if Path(destination_path) == rebuilt_fpt and ".raw-layout.partial" in str(source_path):
+            assert opened_fpt_handles
+            assert all(handle.closed for handle in opened_fpt_handles)
+        original_replace(source_path, destination_path)
+
+    monkeypatch.setattr(Path, "open", track_fpt_open)
+    monkeypatch.setattr(writer.os, "replace", windows_strict_replace)
     assert (
         import_main(
             [
