@@ -11,7 +11,7 @@ DecodeErrors = Literal["strict", "ignore", "replace"]
 DeletedPolicy = Literal["skip", "separate", "include"]
 MissingMemoPolicy = Literal["fail", "null-with-warning"]
 MemoPolicy = Literal["skip", "inline", "null"]
-TableStatus = Literal["OK", "WARNING", "FAILED", "UNSUPPORTED"]
+TableStatus = Literal["OK", "WARNING", "SKIPPED", "FAILED", "UNSUPPORTED"]
 
 DBF_FIELD_TYPE_NAMES = {
     "0": "Null flags",
@@ -243,7 +243,7 @@ class TableResult:
     output: str | None
     status: TableStatus
     encoding: str | None
-    format: ExportFormat = "jsonl"
+    format: OutputFormat = "jsonl"
     active_records: int = 0
     deleted_records: int = 0
     memo_fields: list[str] = field(default_factory=list)

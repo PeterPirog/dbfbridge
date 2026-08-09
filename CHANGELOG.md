@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field-level differences, binary offsets, and retained intermediate artifacts
 - Raw DBF/FPT headers, field descriptors, and source checksums in schema files for
   reproducible reconstruction
+- Atomic `conversion_checksums.json` manifests and `--incremental` export that skips
+  unchanged tables only after source, configuration, schema, and output verification
 
 ### Fixed
 - Closed the generated FPT read handle before raw-layout replacement, preventing

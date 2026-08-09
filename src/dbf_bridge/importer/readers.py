@@ -19,6 +19,7 @@ def discover_inputs(source: Path, input_format: str) -> list[Path]:
         "migration_report.csv",
         "verification_report.json",
         "conversion_quality_report.jsonl",
+        "conversion_checksums.json",
         "reconstruction_report.jsonl",
     }
     return sorted(

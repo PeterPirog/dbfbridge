@@ -17,6 +17,8 @@ Lossless, streaming, atomic export of DBF tables (with FPT memo and CDX index fi
 - **Schema files**: `<table>_schema.json` preserves exact DBF field descriptors, header/codepage details, and FPT memo reconstruction parameters
 - **Migration reports**: `migration_report.jsonl` + `.csv` with per-format status,
   SHA-256, record counts, schema hashes, XLSX data/overflow sheet counts, failures, and run configuration
+- **Incremental export**: `conversion_checksums.json` tracks DBF/FPT/CDX and output
+  SHA-256 values so unchanged, complete tables can be skipped safely
 - **Verification tool**: `dbf-bridge-verify` checks completeness, record counts, SHA-256, schema, and syntax
 - **DBF/FPT reconstruction**: one selected JSONL, JSON, CSV, or XLSX tree can be rebuilt using companion schemas
 - **Quality diagnostics**: DBF → JSONL → DBF checks raw and canonical SHA-256 and identifies differing fields or binary offsets
@@ -60,6 +62,9 @@ If `dbfread` becomes unmaintained or incompatible with future Python versions, t
 ```bash
 # Export all DBF files in a directory tree to CSV + JSON + JSONL
 dbf-bridge --source <DBF_DIR> --output <OUT_DIR>
+
+# On later runs, convert only new, changed, missing, or damaged tables
+dbf-bridge --source <DBF_DIR> --output <OUT_DIR> --incremental
 
 # Verify the conversion
 dbf-bridge-verify --source <DBF_DIR> --output <OUT_DIR>
@@ -118,6 +123,15 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> [options]
 | `--overwrite` / `--no-overwrite` | on | Overwrite existing output files |
 | `--no-validate` | off | Skip SHA-256 round-trip validation |
 | `--xlsx-long-text` | `overflow` | `overflow` preserves long values in `Dlugie_teksty_*`; `error` rejects them |
+| `--incremental` / `--no-incremental` | off | Reuse complete results whose source, configuration, schema, and output checksums still match |
+
+Every successful export writes `conversion_checksums.json` atomically. It records
+SHA-256 and size information for source DBF/FPT/CDX files, the output-affecting CLI
+configuration, schemas, and every requested data format. With `--incremental`, a table
+is reported as `SKIPPED` only when all these values still match. A changed companion
+FPT/CDX, a changed option, or a missing, truncated, or modified output causes that table
+to be converted again. Source files removed since the previous run are removed from the
+new manifest, but their old output files are not deleted automatically.
 
 ### `dbf-bridge-verify` — verify
 
