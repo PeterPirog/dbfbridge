@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consistent user/developer documentation for all four CLIs, default dependencies,
   reports, reconstruction guarantees, and PowerShell examples
 - Source-distribution manifest containing tests, fixture generator, examples, and benchmarks
+- Typed high-level Python API importable through `from dbfbridge import ...` and the
+  compatible `dbf_bridge` namespace
+- Programmatic export, reconstruction, verification, and quality-check functions with
+  reusable option objects, structured progress events, rich run results, and
+  `raise_for_errors()` helpers
+- Shared execution paths for CLI adapters and public operations instead of CLI-only logic
+- Executable `examples/python_api.py` integration example and complete API documentation
 
 ### Fixed
 - Closed the generated FPT read handle before raw-layout replacement, preventing
@@ -64,6 +71,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserved separately exported deleted records in CSV, JSON, and XLSX conversions
 
 ### Pending (planned for 0.2.0+)
-- Python API: `from dbf_bridge import convert, verify`
 - GitHub Actions CI (Python 3.10/3.11/3.12)
 - PyPI publication

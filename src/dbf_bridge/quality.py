@@ -8,6 +8,7 @@ import json
 import os
 import struct
 import sys
+from collections.abc import Callable
 from itertools import zip_longest
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ def run_quality_check(
     overwrite: bool,
     progress: bool,
     max_differences: int = 20,
+    progress_callback: Callable[[str, int, int, str, int | None], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     source_resolved = source.resolve()
     output_resolved = output.resolve()
@@ -36,7 +38,18 @@ def run_quality_check(
     forward = output / "01_forward_jsonl"
     reconstructed = output / "02_reconstructed_dbf"
     verification = output / "03_reexported_jsonl"
-    forward_results = _export_tree(source, forward, overwrite=overwrite, progress=progress)
+    forward_results = _export_tree(
+        source,
+        forward,
+        overwrite=overwrite,
+        progress=progress,
+        stage="forward-export",
+        progress_callback=progress_callback,
+    )
+    reconstruction_progress: Callable[[int, int, str, int | None], None] | None = None
+    if progress_callback is not None:
+        def reconstruction_progress(current: int, total: int, table: str, records: int | None) -> None:
+            progress_callback("reconstruction", current, total, table, records)
     import_results = reconstruct_tree(
         ImportConfig(
             source=forward,
@@ -45,13 +58,16 @@ def run_quality_check(
             memo="inline",
             overwrite=overwrite,
             progress=progress,
-        )
+        ),
+        progress_callback=reconstruction_progress,
     )
     verification_results = _export_tree(
         reconstructed,
         verification,
         overwrite=overwrite,
         progress=progress,
+        stage="verification-export",
+        progress_callback=progress_callback,
     )
 
     import_by_output = {result.output: result for result in import_results}
@@ -205,6 +221,8 @@ def _export_tree(
     *,
     overwrite: bool,
     progress: bool,
+    stage: str,
+    progress_callback: Callable[[str, int, int, str, int | None], None] | None,
 ) -> list[Any]:
     config = make_config(
         source=source,
@@ -221,6 +239,8 @@ def _export_tree(
         if progress:
             print(f"[quality] JSONL {index}/{len(tables)}: {table.relative_path}")
         results.append(export_table(table, config))
+        if progress_callback is not None:
+            progress_callback(stage, index, len(tables), table.relative_path.as_posix(), None)
     write_reports(output, results, run_metadata={"requested_formats": ["jsonl"]})
     return results
 
@@ -490,13 +510,23 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        reports, summary = run_quality_check(
+        from dbf_bridge import check_conversion_quality
+
+        run = check_conversion_quality(
             args.source,
             args.output,
             overwrite=args.overwrite,
-            progress=args.progress,
             max_differences=args.max_differences,
+            progress=(
+                lambda event: print(
+                    f"[quality] {event.message} {event.current}/{event.total}: {event.table}"
+                )
+            )
+            if args.progress
+            else None,
         )
+        reports = run.reports
+        summary = run.summary
     except Exception as exc:
         print(f"[quality] Failed: {exc}", file=sys.stderr)
         return 1
@@ -511,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"differences={len(report['differences'])}"
             )
     print(f"[quality] Report: {args.output / 'conversion_quality_report.jsonl'}")
-    return 1 if summary["failed"] else 2 if summary["warning"] else 0
+    return run.exit_code
 
 
 if __name__ == "__main__":

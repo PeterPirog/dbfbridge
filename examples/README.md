@@ -11,6 +11,7 @@ instalacją pakietu.
 | `verify_dbf.py` | `dbf-bridge-verify` | kontrola plików eksportu |
 | `export_from_file_to_dbf.py` | `dbf-bridge-import` | rekonstrukcja DBF/FPT z jednego formatu |
 | `check_conversion_quality.py` | `dbf-bridge-quality` | diagnostyczny DBF → JSONL → DBF |
+| `python_api.py` | publiczne API | kompletny przepływ przez `from dbfbridge import ...` |
 
 ## Uruchomienie w PowerShell
 
@@ -72,3 +73,37 @@ python examples/verify_dbf.py --source "tests\fixtures\input" `
 Pliki DBF/FPT/CDX i wyniki konwersji są ignorowane przez Git, aby przypadkowo nie
 opublikować danych produkcyjnych. Do porównania surowej sumy DBF użyj podczas eksportu
 `--deleted include`, ponieważ zachowuje usunięte rekordy i ich fizyczną kolejność.
+
+## Użycie jako biblioteka
+
+Po `pip install dbfbridge` nie trzeba uruchamiać podprocesów CLI. Te same operacje są
+dostępne jako funkcje zwracające typowane wyniki:
+
+```python
+from dbfbridge import export_dbf, reconstruct_dbf, verify_conversion
+
+export = export_dbf(
+    r"K:\dbf_source",
+    r"K:\dbf_output",
+    formats=("csv", "json", "jsonl", "xlsx"),
+    memo="inline",
+)
+export.raise_for_errors()
+
+verification = verify_conversion(
+    r"K:\dbf_source",
+    r"K:\dbf_output",
+    formats=("csv", "json", "jsonl", "xlsx"),
+)
+
+reconstruction = reconstruct_dbf(
+    r"K:\dbf_output",
+    r"K:\dbf_output_reconstructed",
+    input_format="jsonl",
+    overwrite=True,
+)
+```
+
+Plik `python_api.py` pokazuje obsługę postępu, eksport przyrostowy, weryfikację i
+rekonstrukcję w jednej aplikacji. Funkcje są domyślnie bezgłośne; do GUI lub logowania
+można przekazać callback `progress` otrzymujący obiekty `ProgressEvent`.

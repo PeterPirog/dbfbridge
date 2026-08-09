@@ -16,6 +16,9 @@ python examples/export_from_file_to_dbf.py --source "K:\dbf_output" --output "K:
 # Diagnostyczny round-trip
 python examples/check_conversion_quality.py --source "K:\dbf_source" --output "K:\dbf_quality" --overwrite --progress
 
+# Te same operacje przez publiczne API Pythona
+python examples/python_api.py --source "K:\dbf_source" --output "K:\dbf_output_api" --reconstructed "K:\dbf_output_api_reconstructed"
+
 # Mniejszy zbiór danych
 python examples/export_dbf.py --source "K:\dbf_source_small" --output "K:\dbf_output_small" --overwrite --progress --memo inline --formats csv,json,jsonl,xlsx
 python examples/export_from_file_to_dbf.py --source "K:\dbf_output_small" --output "K:\dbf_output_reconstructed_small" --overwrite --progress --memo inline --formats jsonl

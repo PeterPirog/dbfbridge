@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from itertools import zip_longest
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,11 @@ from .reporting import write_reconstruction_report
 from .writer import memo_output_path, output_hashes, restore_raw_layout, write_dbf
 
 
-def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
+def reconstruct_tree(
+    config: ImportConfig,
+    *,
+    progress_callback: Callable[[int, int, str, int | None], None] | None = None,
+) -> list[ReconstructionResult]:
     inputs = discover_inputs(config.source, config.format)
     results: list[ReconstructionResult] = []
     source_root = config.source if config.source.is_dir() else config.source.parent
@@ -68,6 +72,13 @@ def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
                         f"{record_count:,} rekordów",
                         end="",
                         flush=True,
+                    )
+                if progress_callback is not None:
+                    progress_callback(
+                        table_index,
+                        len(inputs),
+                        table_relative.as_posix(),
+                        record_count,
                     )
 
             input_checksum, warnings = write_dbf(
@@ -156,6 +167,8 @@ def reconstruct_tree(config: ImportConfig) -> list[ReconstructionResult]:
             result.status = "FAILED"
         result.elapsed_seconds = time.monotonic() - started
         results.append(result)
+        if progress_callback is not None:
+            progress_callback(index, len(inputs), relative.as_posix(), result.record_count)
     write_reconstruction_report(config.output / "reconstruction_report.jsonl", results)
     return results
 

@@ -6,6 +6,7 @@ from urllib.parse import unquote
 
 import tomllib
 
+import dbfbridge
 from dbf_bridge import __version__
 
 ROOT = Path(__file__).parents[1]
@@ -19,6 +20,14 @@ def test_documentation_versions_and_entry_points_match_package_metadata() -> Non
     assert f"**{__version__} (alpha)**" in readme
     for command in metadata["scripts"]:
         assert f"`{command}`" in readme
+    for function in (
+        "export_dbf",
+        "reconstruct_dbf",
+        "verify_conversion",
+        "check_conversion_quality",
+    ):
+        assert function in dbfbridge.__all__
+        assert f"`{function}()`" in readme
 
 
 def test_relative_markdown_links_resolve() -> None:
