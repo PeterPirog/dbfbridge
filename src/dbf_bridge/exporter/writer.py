@@ -10,7 +10,7 @@ from dbfread import MissingMemoFile
 
 from .discovery import output_data_path, output_schema_path
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, StreamStats, TableResult
-from .reader import UnsupportedTableError, open_table, read_table_metadata
+from .reader import UnsupportedTableError, iter_physical_records, open_table, read_table_metadata
 from .serialization import SerializationError, serialize_record
 from .validation import StatsCollector, ValidationResult, sha256_file, validate_output
 
@@ -155,40 +155,19 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             elif config.format == "json":
                 data_writer.write("[\n")
             json_first = True
-            for index, record in _iter_records_with_context(
-                table.records,
-                table_report_path,
-                deleted=False,
-            ):
-                serialized = _serialize_context_record(
-                    record,
-                    metadata.fields,
-                    table_report_path,
-                    index,
-                    deleted_marker=False if config.deleted == "include" else None,
-                    memo_policy=config.memo,
-                    strip_spaces=config.strip_spaces,
-                )
-                json_first = not _write_record(
-                    data_writer, serialized, metadata.fields, config, json_first=json_first
-                )
-                data_collector.add(serialized)
-
             deleted_collector = StatsCollector(metadata.fields)
             deleted_stats = deleted_collector.stats
             if config.deleted == "include":
-                for index, record in _iter_records_with_context(
-                    table.deleted,
-                    table_report_path,
-                    deleted=True,
+                for index, (record, is_deleted) in enumerate(
+                    iter_physical_records(table), start=1
                 ):
                     serialized = _serialize_context_record(
                         record,
                         metadata.fields,
                         table_report_path,
                         index,
-                        deleted_marker=True,
-                        deleted=True,
+                        deleted_marker=is_deleted,
+                        deleted=is_deleted,
                         memo_policy=config.memo,
                         strip_spaces=config.strip_spaces,
                     )
@@ -196,8 +175,29 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         data_writer, serialized, metadata.fields, config, json_first=json_first
                     )
                     data_collector.add(serialized)
-                    deleted_collector.add(serialized)
-            elif config.deleted == "separate" and deleted_path is not None:
+                    if is_deleted:
+                        deleted_collector.add(serialized)
+            else:
+                for index, record in _iter_records_with_context(
+                    table.records,
+                    table_report_path,
+                    deleted=False,
+                ):
+                    serialized = _serialize_context_record(
+                        record,
+                        metadata.fields,
+                        table_report_path,
+                        index,
+                        deleted_marker=None,
+                        memo_policy=config.memo,
+                        strip_spaces=config.strip_spaces,
+                    )
+                    json_first = not _write_record(
+                        data_writer, serialized, metadata.fields, config, json_first=json_first
+                    )
+                    data_collector.add(serialized)
+
+            if config.deleted == "separate" and deleted_path is not None:
                 with AtomicTextWriter(deleted_path, overwrite=config.overwrite) as deleted_writer:
                     if config.format == "csv":
                         _write_csv_header(deleted_writer, metadata.fields, include_deleted=True)
@@ -231,7 +231,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         deleted_writer.write("\n]\n")
                     deleted_stats = deleted_collector.finish()
                     deleted_writer.flush_and_fsync()
-            else:
+            elif config.deleted == "skip":
                 deleted_collector.stats.record_count = len(table.deleted)
 
             if config.format == "json":

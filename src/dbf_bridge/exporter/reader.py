@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -191,6 +192,25 @@ def open_table(dbf_path: Path, config: ExportConfig) -> DBF:
         char_decode_errors=config.decode_errors,
         ignore_missing_memofile=config.missing_memo == "null-with-warning",
     )
+
+
+def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool]]:
+    """Yield active and deleted records in their original on-disk order."""
+
+    with open(table.filename, "rb") as infile, table._open_memofile() as memofile:
+        infile.seek(table.header.headerlen)
+        parser = table.parserclass(table, memofile)
+        parse = parser.parse
+        for _record_index in range(table.header.numrecords):
+            marker = infile.read(1)
+            if marker not in {b" ", b"*"}:
+                if marker in {b"\x1a", b""}:
+                    break
+                raise ValueError(
+                    f"Unexpected DBF record marker {marker!r} in {Path(table.filename).name}."
+                )
+            items = [(field.name, parse(field, infile.read(field.length))) for field in table.fields]
+            yield table.recfactory(items), marker == b"*"
 
 
 def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:
