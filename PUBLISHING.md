@@ -18,7 +18,11 @@ Use PyPI Trusted Publishing instead of storing an API token in GitHub:
    | Workflow | `publish.yml` |
    | Environment | `pypi` |
 
-3. In the GitHub repository, create the `pypi` environment and require manual approval.
+3. In the GitHub repository, create an environment named exactly `pypi`. Manual approval
+   is recommended when another trusted maintainer can act as reviewer. In a single-owner
+   repository, do not add a reviewer rule that prevents the owner from approving their
+   own deployment; the environment name is required for Trusted Publishing, but a
+   reviewer rule is an independent GitHub protection setting.
 4. Do not add a `PYPI_TOKEN`; `.github/workflows/publish.yml` requests a short-lived OIDC
    credential with the job-scoped `id-token: write` permission.
 
@@ -58,7 +62,8 @@ Never rebuild and manually upload different files for the same version.
 
 ## Verify after publication
 
-Create a new environment that cannot import the repository checkout:
+Create a new environment outside the repository checkout. Replace `0.1.0` below with the
+version just published:
 
 ```bash
 python -m venv .venv-pypi-check
@@ -69,7 +74,22 @@ python -m venv .venv-pypi-check
 ```
 
 On Windows, use `.venv-pypi-check\Scripts\python.exe` and
-`.venv-pypi-check\Scripts\dbf-bridge.exe`. Confirm the project description, license,
-Python requirement, dependency list, source links, wheel, sdist, and release provenance on
-PyPI. If a serious defect is discovered, publish a new patch version; PyPI does not permit
-replacing an existing file.
+`.venv-pypi-check\Scripts\dbf-bridge.exe`. Run `--help` for the other three commands as
+well, then perform a small synthetic export and verification. Confirm the project
+description, license, Python requirement, dependency list, source links, wheel, sdist,
+and release provenance on PyPI. If a serious defect is discovered, publish a new patch
+version; PyPI does not permit replacing an existing file.
+
+## If publication fails
+
+Do not reuse the version number if PyPI accepted either distribution. First determine
+whether the failure occurred before or after upload:
+
+1. Open the failed `Publish to PyPI` run and inspect the first failing step.
+2. If the build or tests failed, fix the repository, increment the patch version, and
+   publish a new tag and GitHub Release.
+3. If Trusted Publishing failed before upload, verify the PyPI publisher owner,
+   repository, workflow filename, environment name, and exact release tag. Correct the
+   configuration and use GitHub's **Re-run failed jobs** action.
+4. Check the PyPI project page before retrying. Once a filename/version exists there,
+   prepare a new patch release instead of attempting to replace it.

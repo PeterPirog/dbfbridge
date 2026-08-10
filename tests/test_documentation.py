@@ -11,6 +11,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 import dbfbridge
 from dbf_bridge import __version__
+from dbf_bridge.verifier import build_parser as build_verifier_parser
 
 ROOT = Path(__file__).parents[1]
 
@@ -56,3 +57,11 @@ def test_sample_commands_reference_existing_scripts() -> None:
 
     assert scripts
     assert all((ROOT / script).is_file() for script in scripts)
+
+
+def test_verifier_requires_portable_source_and_output_paths() -> None:
+    parser = build_verifier_parser()
+    actions = {option: action for action in parser._actions for option in action.option_strings}
+
+    assert actions["--source"].required
+    assert actions["--output"].required
