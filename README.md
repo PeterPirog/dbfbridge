@@ -87,6 +87,20 @@ run.raise_for_errors()
 Windows PowerShell examples are available in the
 [examples guide](https://github.com/PeterPirog/dbfbridge/blob/main/examples/README.md).
 
+### Choose the right interface and format
+
+| Need | Recommended choice | Why |
+|---|---|---|
+| one-off migration or PowerShell job | CLI commands | direct progress and process exit codes |
+| integration with an application, GUI, or worker | Python API | typed results and structured progress callbacks |
+| large, loss-aware export or later DBF reconstruction | JSONL | streaming, inline memo support, and raw-record metadata |
+| exchange with spreadsheet users | XLSX | readable workbooks and lossless overflow sheets for long text |
+| simple tabular integration | CSV | broad compatibility; memo is skipped unless requested |
+| compact JSON for a smaller table | JSON | one conventional JSON array, but not streaming for consumers |
+
+JSONL is the safest default for migration and reconstruction. CSV and XLSX are useful
+exchange formats, but they cannot retain every DBF-specific binary detail.
+
 ## Export
 
 ```text
@@ -207,7 +221,35 @@ Functions accept `str`, `pathlib.Path`, or another `os.PathLike`. They do not pr
 default. A completed operation returns table-level objects, aggregate counters, report
 paths, and the CLI-compatible `exit_code` (`0` OK, `1` error, `2` warning). Per-table
 failures are data, not immediate exceptions, so an application can inspect every table.
-Call `result.raise_for_errors()` when fail-fast behavior is preferred.
+Call `result.raise_for_errors()` after the run to turn failures into a
+`DBFBridgeRunError`. Warnings do not raise; inspect `exit_code`, `successful`, and the
+table results when warnings must also block the calling application.
+
+### API option reference
+
+The high-level functions use the same behavior as their CLI counterparts, with no
+console output unless a progress callback is supplied.
+
+| `export_dbf()` keyword | Default | Accepted values / behavior |
+|---|---|---|
+| `formats` | `("jsonl",)` | iterable or comma-separated `csv,json,jsonl,xlsx` |
+| `memo` | per format | `skip`, `inline`, `null`, or `None` for format default |
+| `strip_spaces` | `False` | trim trailing spaces in Character fields |
+| `encoding` | `"auto"` | DBF codepage name or automatic header detection |
+| `decode_errors` | `"strict"` | `strict`, `ignore`, or `replace` |
+| `deleted` | `"skip"` | `skip`, `separate`, or `include` |
+| `missing_memo` | `"fail"` | `fail` or `null-with-warning` |
+| `overwrite` / `validate` | `True` / `True` | replace outputs; validate hashes and syntax |
+| `xlsx_long_text` | `"overflow"` | `overflow` or `error` |
+| `incremental` | `False` | reuse only fully verified results from the manifest |
+| `progress` | `None` | callback receiving `ProgressEvent` |
+| `options` | `None` | reusable `ExportOptions`; do not combine with option keywords |
+
+| Operation | Important defaults and controls |
+|---|---|
+| `reconstruct_dbf()` | `input_format="jsonl"`, `memo="inline"`, `overwrite=False`; also accepts `ReconstructionOptions` |
+| `verify_conversion()` | all four formats, `strict=True`, writes `<output>/verification_report.json`; set `write_report=False` for an in-memory check |
+| `check_conversion_quality()` | `overwrite=False`, `max_differences=20`; retains all three diagnostic trees |
 
 #### Export and incremental export
 
@@ -323,6 +365,23 @@ python tests/fixtures/generate_sample_dbf.py --output <FIXTURE_DIR>
 
 Synthetic benchmark instructions and their environment-specific sample results are in
 the [benchmark guide](https://github.com/PeterPirog/dbfbridge/blob/main/benchmarks/README.md).
+
+## Troubleshooting and issue reports
+
+| Symptom | What to check |
+|---|---|
+| missing memo/FPT error | keep the sibling `.FPT`, or deliberately use `--missing-memo null-with-warning` |
+| exit code `2` | the operation completed with warnings; inspect its report before accepting the result |
+| CDX warning | rebuild the index in Visual FoxPro; the exported data is not an index definition |
+| raw hash differs but canonical hash matches | values and schema match, but unused bytes, memo block layout, or metadata differ |
+| incremental table is converted again | its source fingerprint, settings, schema, manifest entry, or an output hash changed |
+| an existing output blocks reconstruction | pass `--overwrite` only after confirming the destination may be replaced |
+
+When reporting a reproducible defect, open a
+[GitHub issue](https://github.com/PeterPirog/dbfbridge/issues) and include the command or
+API call, Python and operating-system versions, the relevant migration/reconstruction/
+quality report entry, and the generated schema. Do not attach production records or memo
+contents; reduce the problem to synthetic data whenever possible.
 
 ## Known limitations and roadmap
 

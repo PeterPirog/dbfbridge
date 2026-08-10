@@ -34,11 +34,7 @@ from dbfread.codepages import guess_encoding
 from dbf_bridge.exporter.discovery import discover_tables
 from dbf_bridge.exporter.models import DiscoveredTable
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-
 DEFAULTS = {
-    "source": PROJECT_DIR / "tests" / "fixtures" / "input",
-    "output": PROJECT_DIR / "tests" / "fixtures" / "output",
     "formats": "csv,json,jsonl,xlsx",
     "verbose": True,
     "strict": True,
@@ -494,14 +490,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         type=Path,
-        default=DEFAULTS["source"],
-        help=f"Katalog źródłowy DBF (domyślnie: {DEFAULTS['source']}).",
+        required=True,
+        help="Katalog źródłowy DBF (wymagany).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULTS["output"],
-        help=f"Katalog wyjściowy (domyślnie: {DEFAULTS['output']}).",
+        required=True,
+        help="Katalog wyników eksportu (wymagany).",
     )
     parser.add_argument(
         "--formats",
