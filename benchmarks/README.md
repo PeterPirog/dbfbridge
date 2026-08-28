@@ -34,8 +34,8 @@ produced with `psutil` installed and its version recorded in the report.
 # Fast control profile (default); one documented command to repeat:
 python -m benchmarks.run_benchmark --profile fast --warmup 1 --repetitions 3
 
-# Full profile (adds the 1,000,000-record, 190k memo-heavy, 190k reconstruction
-# and XLSX conversion scenarios):
+# Full profile (adds the 1,000,000-record, 190k memo-heavy, 190k flat and
+# 190k memo reconstruction and XLSX conversion scenarios):
 python -m benchmarks.run_benchmark --profile full
 
 # Single scenario (e.g. for triage or a quick regression gate):
@@ -106,6 +106,17 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
   are `NOT_AVAILABLE` when the counters or the denominator are unavailable.
 - **Process I/O counters** (`io_*_delta`) are `psutil` process-level deltas
   around the measured call; they cover the worker process only.
+- **Memo reconstruction extras** — `reconstruction_memo_190k` is the only
+  scenario that rebuilds a table whose payload lives in a memo (FPT) file, so
+  it is the only scenario that carries these per-sample fields (and is the only
+  one the baseline gate asks for them):
+  - `output_dbf_bytes` — the final, non-empty size of the reconstructed DBF;
+  - `output_fpt_bytes` — the final, non-empty size of the reconstructed FPT
+    (the sample is `FAILED` when the FPT is missing or empty);
+  - `fpt_mib_per_second` — `output_fpt_bytes / 2^20 / wall_seconds`, i.e. the
+    measured FPT publish throughput. Scenarios without an FPT (flat
+    `reconstruction_190k`, `reconstruction_jsonl_to_dbf`, ...) are **never**
+    given a separate FPT throughput — there is no FPT to attribute.
 
 ## Baseline gate (`--baseline`)
 
@@ -117,12 +128,25 @@ the following is true:
 - the profile is not `full`;
 - `psutil` is unavailable;
 - any scenario is `FAILED`;
-- the run does not contain the full-profile scenario set;
+- the run does not contain the full-profile scenario set (20 `MEASURED`);
+- the report is not exactly the full contract: any unknown status, any
+  duplicate scenario name, any name outside the contract, or the same name in
+  more than one status category;
 - any `MEASURED` scenario has `valid_baseline != true`;
+- a `MEASURED` scenario does not have exactly `environment.repetitions`
+  samples, or any sample is not `MEASURED`;
+- a `MEASURED` scenario does not have exactly `environment.warmup` warm-up
+  samples, or any warm-up sample is not `MEASURED` (a missing, extra or
+  `FAILED` warm-up rejects the baseline regardless of `valid_baseline`);
 - any `MEASURED` sample lacks the required wall/CPU/throughput/output/peak-RSS
   metrics (or the amplification/temporary metrics where applicable);
+- a `reconstruction_memo_190k` sample lacks `output_dbf_bytes > 0`,
+  `output_fpt_bytes > 0`, `fpt_mib_per_second > 0`,
+  `temporary_publish_count >= 2`, or
+  `temporary_bytes_written >= output_dbf_bytes + output_fpt_bytes`;
+- `warmup < 1` or `repetitions < 3`;
 - the worktree was dirty before the run;
-- the exact commit SHA could not be recorded.
+- the exact commit SHA could not be recorded (not a full 40-hex value).
 
 Only a **full, clean, complete, `psutil`-enabled** run may become a baseline.
 `psutil` is an optional, benchmark-only dependency (extra `dbfbridge[benchmark]`);
@@ -201,14 +225,27 @@ to expected counts, sizes and SHA-256.
 
 ## Profiles
 
-`fast` is the control profile (15 scenarios).  `full` **extends** `fast` with
-four additional, distinctly-named scenarios (`export_1m_records`,
-`memo_heavy_190k`, `reconstruction_190k`, `jsonl_conversion_xlsx`) and never
-changes the parameters of a scenario it shares with `fast` — a scenario name
-means the same thing in both profiles.  The full profile generates the 1,000,000-
-record flat fixture and the 190,000-record memo-heavy fixture before measuring;
-on a slow machine give it a generous `--timeout` (default 600 s per scenario) so
-fixture generation does not time out.
+`fast` is the control profile (**15 `MEASURED`** scenarios + 4 `NOT_IMPLEMENTED`).
+`full` **extends** `fast` with five additional, distinctly-named scenarios
+(`export_1m_records`, `memo_heavy_190k`, `reconstruction_190k`,
+`reconstruction_memo_190k`, `jsonl_conversion_xlsx`) and never changes the
+parameters of a scenario it shares with `fast` — a scenario name means the same
+thing in both profiles. A complete full run therefore reports exactly
+**20 `MEASURED`** + 4 `NOT_IMPLEMENTED` (+ 0 `FAILED`).
+
+- `reconstruction_190k` is the **flat / memo-free** reconstruction: 190,000
+  records, no memo field, **no FPT** is produced.
+- `reconstruction_memo_190k` is the **real DBF+FPT reconstruction**: the
+  190,000-record memo-heavy fixture is exported to JSONL *outside* the measured
+  window, then the public `reconstruct_dbf` runs *inside* it and must produce a
+  non-empty DBF **and** a non-empty FPT with the expected record count. It is
+  the only scenario that reports `output_dbf_bytes`, `output_fpt_bytes` and
+  `fpt_mib_per_second` (see "Measurement method").
+
+The full profile generates the 1,000,000-record flat fixture and the
+190,000-record memo-heavy fixture before measuring; on a slow machine give it a
+generous `--timeout` (default 600 s per scenario) so fixture generation does not
+time out.
 
 ## Legacy JSONL conversion benchmark
 

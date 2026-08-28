@@ -389,17 +389,23 @@ Classification recorded in persistent memory:
    captured immediately after the measured call, before the sampler is stopped:
    they include the active sampler's small overhead but not the cost of
    stopping/joining it.
-   **New metric contract (§13)**:
-   - `read_amplification` = `io_read_bytes_delta / input_bytes` and
-     `write_amplification` = `io_write_bytes_delta / output_bytes`, computed
-     from the measured psutil process I/O counters (page-cache aware, platform
-     dependent — a measured system ratio, never a logical read/write count).
-     `NOT_AVAILABLE` when the counters or the denominator are unavailable.
-   - `temporary_bytes_written` = logical size of the atomic `.partial` files at
-     the moment of `os.replace` publish, measured by intercepting `os.replace`
-     inside the worker subprocess only (no production code modified). A real
-     sum (0 when no temporary file was created); `NOT_AVAILABLE` with a reason
-     only when the platform forbids the read.
+    **New metric contract (§13)**:
+    - `read_amplification` = `io_read_bytes_delta / input_bytes` and
+      `write_amplification` = `io_write_bytes_delta / output_bytes`, computed
+      from the measured psutil process I/O counters (page-cache aware, platform
+      dependent — a measured system ratio, never a logical read/write count).
+      `NOT_AVAILABLE` when the counters or the denominator are unavailable.
+    - `temporary_bytes_written` = logical size of the atomic `.partial` files at
+      the moment of `os.replace` publish, measured by intercepting `os.replace`
+      inside the worker subprocess only (no production code modified). A real
+      sum (0 when no temporary file was created); `NOT_AVAILABLE` with a reason
+      only when the platform forbids the read.
+    - `output_dbf_bytes` / `output_fpt_bytes` / `fpt_mib_per_second` are
+      carried **only** by `reconstruction_memo_190k`: the final non-empty DBF
+      and FPT sizes and the measured FPT publish throughput
+      (`output_fpt_bytes / 2^20 / wall_seconds`). Scenarios without an FPT
+      (flat `reconstruction_190k`, `reconstruction_jsonl_to_dbf`) are never
+      given a separate FPT throughput — there is no FPT to attribute.
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
    worker invocation so a crash is contained. Runs an explicit warm-up (default
    1, excluded from results) followed by the measured repetitions; each
@@ -411,7 +417,20 @@ Classification recorded in persistent memory:
    scenario is FAILED, raw samples and errors are preserved, `warmups_succeeded`
    / `warmups_failed` are recorded, and the aggregate is flagged
    `valid_baseline: false` (the Markdown never presents a partial median as a
-   comparable baseline).
+    comparable baseline).
+  - `reconstruction_190k` is the **flat / memo-free** reconstruction (190,000
+    records, no memo field, **no FPT** is produced).
+  - `reconstruction_memo_190k` (full profile) is the **real DBF+FPT
+    reconstruction**: the 190,000-record memo-heavy fixture is exported to JSONL
+    *outside* the measured window, then the public `reconstruct_dbf` runs
+    *inside* it and each measured repetition must produce a non-empty DBF and a
+    non-empty FPT with the expected record count (a missing/empty FPT fails the
+    sample). It is the only scenario that reports `output_dbf_bytes`,
+    `output_fpt_bytes` and `fpt_mib_per_second` (see §13 metric contract).
+    Its code path is validated by a small real integration test
+    (`test_reconstruction_memo_real_integration`) that runs the genuine
+    `reconstruct_dbf` on a 15-record memo DBF+FPT inside `metrics.run`,
+    without mocking any production code.
 - `benchmarks/run_benchmark.py` — controller: runs scenarios in fresh
    subprocesses (diagnostic log opened via a context manager) with a
    configurable per-scenario timeout (`> 0` enforced; `repetitions >= 1` and
@@ -419,14 +438,23 @@ Classification recorded in persistent memory:
    Python, OS, CPU, physical RAM via `psutil`, dependency versions, fixture
    sizes), writes JSON + Markdown **always** (even when scenarios fail),
    distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED` / `NOT_AVAILABLE`,
-   and exits non-zero when any scenario is `FAILED`. **Baseline gate**:
-   `--baseline` refuses (non-zero, nothing copied) unless the run is the **full**
-   profile, `psutil` is available, no scenario FAILED, the full scenario set is
-   present, every `MEASURED` scenario has `valid_baseline: true`, all required
-   wall/CPU/throughput/output/peak-RSS (+ amplification/temporary where
-   applicable) metrics are present, the worktree was clean, and the exact commit
-   SHA is recorded. `psutil` is benchmark-only (extra `dbfbridge[benchmark]`),
-   not a runtime dependency.
+    and exits non-zero when any scenario is `FAILED`. **Baseline gate**:
+    `--baseline` refuses (non-zero, nothing copied) unless the run is the **full**
+    profile, `psutil` is available, no scenario FAILED, the report is exactly the
+    full contract (20 unique `MEASURED`, 4 unique `NOT_IMPLEMENTED`, 0 `FAILED`,
+    no unknown status, no duplicate name, no name outside the contract, no name
+    in more than one status category), `warmup >= 1` and `repetitions >= 3`,
+    every `MEASURED` scenario has exactly `environment.repetitions` `MEASURED`
+    samples **and** exactly `environment.warmup` `MEASURED` warm-up samples
+    (a missing/extra/`FAILED` warm-up rejects the baseline independent of
+    `valid_baseline`), every sample carries all required
+    wall/CPU/throughput/output/peak-RSS (+ amplification/temporary where
+    applicable) metrics, every `reconstruction_memo_190k` sample carries
+    `output_dbf_bytes > 0`, `output_fpt_bytes > 0`, `fpt_mib_per_second > 0`,
+    `temporary_publish_count >= 2` and
+    `temporary_bytes_written >= output_dbf_bytes + output_fpt_bytes`, the
+    worktree was clean, and the exact 40-hex commit SHA is recorded. `psutil`
+    is benchmark-only (extra `dbfbridge[benchmark]`), not a runtime dependency.
 - `benchmarks/__init__.py` — package marker.
 - Diagnostic logs: `benchmark-data/logs/<profile>_<scenario>.log` (working
   directory; git-ignored). Reports: `benchmarks/results/` (git-ignored);
@@ -494,7 +522,15 @@ and re-verifies with a fresh fast run. A fourth commit,
 (strict raw-layout validation, `FixtureIntegrityError`), enforces the warm-up
 failure semantics, strictly re-validates JSONL inputs before reuse, adds the
 §13 metric contract (read/write amplification + `temporary_bytes_written`),
-and installs the `--baseline` gate.)
+and installs the `--baseline` gate. A fifth commit,
+`bench: add memo reconstruction coverage to phase-0 baseline`, adds the real
+`reconstruction_memo_190k` scenario (full profile: 20 `MEASURED` + 4
+`NOT_IMPLEMENTED`; fast stays 15 + 4), the `output_dbf_bytes` /
+`output_fpt_bytes` / `fpt_mib_per_second` metric contract, strictens the
+`--baseline` gate (exact sample and warm-up counts per scenario, the exact
+scenario contract, per-sample `MEASURED` status, the memo-reconstruction
+evidence), and replaces the emulated temporary-bytes test with a real
+`reconstruct_dbf` integration test on a 15-record memo DBF+FPT.)
 
 **A versioned full baseline does NOT exist yet.**  The `--baseline` gate
 requires a full, clean, complete, `psutil`-enabled run and has not been
