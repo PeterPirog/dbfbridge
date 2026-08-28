@@ -24,7 +24,7 @@ The worker prints a single JSON payload to stdout:
 from __future__ import annotations
 
 import argparse
-import contextlib
+import hashlib
 import json
 import statistics
 import sys
@@ -44,6 +44,9 @@ STATUS_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 
 AGGREGATION = "median-of-measured-repetitions"
 
+# Bump when the JSONL input recipe changes; triggers safe regeneration.
+JSONL_INPUT_VERSION = "1"
+
 
 def _median(values: list[float | None]) -> float | None:
     usable = [v for v in values if v is not None]
@@ -52,16 +55,27 @@ def _median(values: list[float | None]) -> float | None:
     return round(statistics.median(usable), 6)
 
 
-def aggregate(samples: list[dict[str, object]]) -> dict[str, object]:
+def aggregate(
+    samples: list[dict[str, object]],
+    *,
+    warmup_samples: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     """Aggregate the SUCCESSFUL measured-run samples into a documented median summary.
 
-    Failed samples never participate in the medians.  When nothing succeeded
-    the aggregate reports ``None`` medians together with ``repetitions_succeeded``
-    ``0``, so a FAILED scenario is never presented as a comparable baseline.
+    - Failed measured samples never participate in the medians.
+    - If **any warm-up** FAILED, ``valid_baseline`` is forced to ``False`` even
+      when every measured repetition succeeded — a broken warm-up means the
+      scenario must not be treated as a comparable baseline.
+    - ``warmups_succeeded`` / ``warmups_failed`` are always reported.
     """
+
+    warmup_samples = warmup_samples or []
+    warmups_succeeded = sum(1 for s in warmup_samples if s.get("status") == "MEASURED")
+    warmups_failed = len(warmup_samples) - warmups_succeeded
 
     success = [s for s in samples if s.get("status") == "MEASURED"]
     failed = len(samples) - len(success)
+    valid = failed == 0 and warmups_failed == 0 and len(success) > 0
 
     def col(key: str) -> list[float | None]:
         out: list[float | None] = []
@@ -85,11 +99,16 @@ def aggregate(samples: list[dict[str, object]]) -> dict[str, object]:
         "repetitions": len(samples),
         "repetitions_succeeded": len(success),
         "repetitions_failed": failed,
-        "valid_baseline": failed == 0 and len(success) > 0,
+        "warmups_succeeded": warmups_succeeded,
+        "warmups_failed": warmups_failed,
+        "valid_baseline": valid,
         "median_wall_seconds": wall,
         "median_cpu_seconds": cpu,
         "median_records_per_second": _median(col("records_per_second")),
         "median_source_mib_per_second": _median(col("source_mib_per_second")),
+        "median_read_amplification": _median(col("read_amplification")),
+        "median_write_amplification": _median(col("write_amplification")),
+        "max_temporary_bytes_written": maxcol("temporary_bytes_written"),
         "max_peak_rss_bytes": maxcol("peak_rss_bytes"),
         "max_output_bytes": maxcol("output_bytes"),
     }
@@ -250,7 +269,7 @@ class Runner:
             "parameters": parameters,
             "warmup_samples": warmup_samples,
             "samples": measured,
-            "aggregated": aggregate(measured),
+            "aggregated": aggregate(measured, warmup_samples=warmup_samples),
             **({"errors": errors} if errors else {}),
         }
 
@@ -294,6 +313,77 @@ class Runner:
             )
         )
 
+    def _prepare_jsonl_input(self, module, name: str, size_mb: int) -> tuple[Path, int, int]:
+        """Prepare (or strictly re-validate) the JSONL conversion input.
+
+        The Phase 0 sidecar ``<name>.jsonl.meta.json`` records:
+
+        - ``generator`` / ``version`` (recipe identity);
+        - ``records``;
+        - ``bytes``;
+        - ``sha256``;
+        - ``complete_line_count``.
+
+        Before reuse **every** value is checked against the file on disk.  A
+        partial, modified, incomplete or inconsistent JSONL is deleted and
+        regenerated.  This happens OUTSIDE the measured window.
+        """
+
+        source = self.work_dir / "jsonl" / name
+        sidecar = source.with_name(name + ".meta.json")
+
+        def measure() -> dict[str, object]:
+            sha = hashlib.sha256()
+            size = 0
+            complete = 0
+            with source.open("rb") as infile:
+                while chunk := infile.read(1 << 20):
+                    sha.update(chunk)
+                    size += len(chunk)
+            with source.open("rb") as infile:
+                for line in infile:
+                    if not line.strip():
+                        continue
+                    try:
+                        json.loads(line)
+                        complete += 1
+                    except json.JSONDecodeError:
+                        pass
+            return {
+                "generator": "benchmark_jsonl_conversion.generate_jsonl",
+                "version": JSONL_INPUT_VERSION,
+                "records": complete,
+                "bytes": size,
+                "sha256": sha.hexdigest(),
+                "complete_line_count": complete,
+            }
+
+        def valid() -> bool:
+            if not source.is_file() or not sidecar.is_file():
+                return False
+            try:
+                stored = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return False
+            if not isinstance(stored, dict):
+                return False
+            return stored == measure()
+
+        if valid():
+            stored = json.loads(sidecar.read_text(encoding="utf-8"))
+            return source, int(stored["records"]), int(stored["bytes"])  # type: ignore[arg-type]
+
+        # Partial / modified / inconsistent / missing -> regenerate.
+        for stale in (source, sidecar, source.with_suffix(".benchmark.json")):
+            if stale.exists():
+                stale.unlink()
+        module.generate_jsonl(source, size_mb)
+        actual = measure()
+        if int(actual["complete_line_count"]) <= 0:  # type: ignore[arg-type]
+            raise RuntimeError(f"JSONL input regenerated but empty: {source}")
+        sidecar.write_text(json.dumps(actual, indent=2), encoding="utf-8")
+        return source, int(actual["records"]), int(actual["bytes"])  # type: ignore[arg-type]
+
     def scenario_jsonl_conversion(self, mode: str) -> None:
         """In-process call into the legacy benchmark's conversion functions."""
 
@@ -310,28 +400,9 @@ class Runner:
 
         name = f"jsonl_conversion_{mode}"
         size_mb = 20
-        source = self.work_dir / "jsonl" / f"input_{mode}.jsonl"
-        meta = source.with_suffix(".benchmark.json")
-        records: int | None = None
-        if meta.is_file():
-            with contextlib.suppress(
-                OSError, json.JSONDecodeError, KeyError, TypeError, ValueError
-            ):
-                records = int(json.loads(meta.read_text(encoding="utf-8"))["records"])
-        # Reuse an existing input only when it is complete AND its sidecar
-        # confirms the record count; otherwise (re)generate it before measuring.
-        if not source.is_file() or records is None:
-            for stale in (source, meta):
-                if stale.exists():
-                    stale.unlink()
-            module.generate_jsonl(source, size_mb)
-        if not source.is_file():
-            raise RuntimeError(f"JSONL input could not be prepared at {source}")
-        if meta.is_file():
-            records = int(json.loads(meta.read_text(encoding="utf-8"))["records"])
-        if records is None or records <= 0:
-            raise RuntimeError(f"JSONL input metadata is missing a valid record count: {meta}")
-        input_bytes = source.stat().st_size
+        source, records, input_bytes = self._prepare_jsonl_input(
+            module, f"input_{mode}.jsonl", size_mb
+        )
 
         def make(out: Path):
             def run() -> None:

@@ -389,6 +389,17 @@ Classification recorded in persistent memory:
    captured immediately after the measured call, before the sampler is stopped:
    they include the active sampler's small overhead but not the cost of
    stopping/joining it.
+   **New metric contract (§13)**:
+   - `read_amplification` = `io_read_bytes_delta / input_bytes` and
+     `write_amplification` = `io_write_bytes_delta / output_bytes`, computed
+     from the measured psutil process I/O counters (page-cache aware, platform
+     dependent — a measured system ratio, never a logical read/write count).
+     `NOT_AVAILABLE` when the counters or the denominator are unavailable.
+   - `temporary_bytes_written` = logical size of the atomic `.partial` files at
+     the moment of `os.replace` publish, measured by intercepting `os.replace`
+     inside the worker subprocess only (no production code modified). A real
+     sum (0 when no temporary file was created); `NOT_AVAILABLE` with a reason
+     only when the platform forbids the read.
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
    worker invocation so a crash is contained. Runs an explicit warm-up (default
    1, excluded from results) followed by the measured repetitions; each
@@ -397,9 +408,10 @@ Classification recorded in persistent memory:
    final size of that directory (re-running an overwritten scenario never yields
    a zero). **Aggregation**: the median is computed only over successful
    measured samples; if ANY warm-up or measured repetition is FAILED the whole
-   scenario is FAILED, raw samples and errors are preserved, and the aggregate
-   is flagged `valid_baseline: false` (the Markdown never presents a partial
-   median as a comparable baseline).
+   scenario is FAILED, raw samples and errors are preserved, `warmups_succeeded`
+   / `warmups_failed` are recorded, and the aggregate is flagged
+   `valid_baseline: false` (the Markdown never presents a partial median as a
+   comparable baseline).
 - `benchmarks/run_benchmark.py` — controller: runs scenarios in fresh
    subprocesses (diagnostic log opened via a context manager) with a
    configurable per-scenario timeout (`> 0` enforced; `repetitions >= 1` and
@@ -407,22 +419,14 @@ Classification recorded in persistent memory:
    Python, OS, CPU, physical RAM via `psutil`, dependency versions, fixture
    sizes), writes JSON + Markdown **always** (even when scenarios fail),
    distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED` / `NOT_AVAILABLE`,
-   and exits non-zero when any scenario is `FAILED`. Aggregation is the
-   **median** of the successful measured repetitions
-   (`median_wall_seconds`, `median_cpu_seconds`, `median_records_per_second`);
-   all per-repetition samples are preserved in the JSON. **Full extends fast
-   without changing shared parameters**: the memo/deleted/encoding/reconstruction
-   scenarios shared by both profiles use identical parameters in fast and full;
-   the larger variants (`export_1m_records`, `memo_heavy_190k`,
-   `reconstruction_190k`, `jsonl_conversion_xlsx`) carry their own distinct
-   names and exist only in full.
-   **Full-profile timeout**: the full profile generates the 1,000,000-record
-   flat fixture and the 190,000-record memo-heavy fixture **before** measuring
-   (outside the measured window, but inside the per-scenario worker timeout);
-   on a slow machine these fixtures can take several minutes to generate, so a
-   full-profile run should use a generous `--timeout` (the default of 600 s
-   per scenario is intended to cover generation + measurement; raise it if a
-   first run times out while generating the 1M/190k fixtures).
+   and exits non-zero when any scenario is `FAILED`. **Baseline gate**:
+   `--baseline` refuses (non-zero, nothing copied) unless the run is the **full**
+   profile, `psutil` is available, no scenario FAILED, the full scenario set is
+   present, every `MEASURED` scenario has `valid_baseline: true`, all required
+   wall/CPU/throughput/output/peak-RSS (+ amplification/temporary where
+   applicable) metrics are present, the worktree was clean, and the exact commit
+   SHA is recorded. `psutil` is benchmark-only (extra `dbfbridge[benchmark]`),
+   not a runtime dependency.
 - `benchmarks/__init__.py` — package marker.
 - Diagnostic logs: `benchmark-data/logs/<profile>_<scenario>.log` (working
   directory; git-ignored). Reports: `benchmarks/results/` (git-ignored);
@@ -485,4 +489,15 @@ fixtures genuinely memo-free (no FPT), records **measured** active/deleted/
 total counts, keeps shared scenario parameters identical across fast/full,
 aggregates only successful samples (a FAILED scenario is never a valid
 baseline), captures wall/CPU before the sampler join, validates CLI arguments,
-and re-verifies with a fresh fast run.)
+and re-verifies with a fresh fast run. A fourth commit,
+`bench: make phase-0 baseline release-ready`, hardens the DBF fixture scan
+(strict raw-layout validation, `FixtureIntegrityError`), enforces the warm-up
+failure semantics, strictly re-validates JSONL inputs before reuse, adds the
+§13 metric contract (read/write amplification + `temporary_bytes_written`),
+and installs the `--baseline` gate.)
+
+**A versioned full baseline does NOT exist yet.**  The `--baseline` gate
+requires a full, clean, complete, `psutil`-enabled run and has not been
+satisfied; nothing has been copied into `benchmarks/baselines/`.  The full
+profile and the baseline recording remain explicitly blocked until the
+architect re-approves draft PR #1.

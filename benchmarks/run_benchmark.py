@@ -99,6 +99,17 @@ def physical_memory_bytes() -> int | None:
         return None
 
 
+def psutil_available() -> bool:
+    """True when the optional ``psutil`` benchmark dependency is importable."""
+
+    try:
+        import psutil  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def system_info() -> dict[str, object]:
     return {
         "python": platform.python_version(),
@@ -315,6 +326,78 @@ AGG_METRIC_COLUMNS = [
 ]
 
 
+def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
+    """Return the list of reasons a versioned baseline must be REJECTED.
+
+    An empty list means the run is eligible to be copied into
+    ``benchmarks/baselines/``.  A versioned baseline is only allowed from a
+    **full, clean, complete** run with ``psutil`` available.
+    """
+
+    reasons: list[str] = []
+    env = payload.get("environment", {})
+    scenarios = [
+        s for s in payload.get("scenarios", []) if s.get("status") != STATUS_NOT_IMPLEMENTED
+    ]
+
+    if env.get("profile") != "full":
+        reasons.append(f"profile is {env.get('profile')!r}; a baseline requires --profile full")
+    if not psutil_available():
+        reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
+    failed = [s for s in scenarios if s.get("status") == STATUS_FAILED]
+    if failed:
+        reasons.append(
+            f"{len(failed)} scenario(s) FAILED: " + ", ".join(s["scenario"] for s in failed)
+        )
+    expected_full = list(_scenario_names("full"))
+    have = {s["scenario"] for s in scenarios}
+    missing = [n for n in expected_full if n not in have]
+    if missing:
+        reasons.append(
+            f"{len(missing)} expected full-profile scenario(s) missing: " + ", ".join(missing)
+        )
+    invalid = [
+        s
+        for s in scenarios
+        if s.get("status") == STATUS_MEASURED
+        and not (s.get("aggregated") or {}).get("valid_baseline")
+    ]
+    if invalid:
+        reasons.append(
+            f"{len(invalid)} MEASURED scenario(s) without a valid baseline: "
+            + ", ".join(s["scenario"] for s in invalid)
+        )
+    required_sample_keys = (
+        "wall_seconds",
+        "cpu_seconds",
+        "records_per_second",
+        "output_bytes",
+        "peak_rss_bytes",
+    )
+    incomplete: list[str] = []
+    for s in scenarios:
+        if s.get("status") != STATUS_MEASURED:
+            continue
+        samples = s.get("samples") or []
+        if not any(
+            all(key in sample and sample.get(key) is not None for key in required_sample_keys)
+            for sample in samples
+        ):
+            incomplete.append(s["scenario"])
+    if incomplete:
+        reasons.append(
+            f"{len(incomplete)} MEASURED scenario(s) missing required wall/CPU/throughput/output/peak-RSS metrics: "
+            + ", ".join(incomplete)
+        )
+    worktree = env.get("git", {}).get("worktree_dirty", True)
+    if worktree:
+        reasons.append("worktree was dirty before the run; a baseline requires a clean worktree")
+    commit = str(env.get("git", {}).get("commit") or "")
+    if not commit or set(commit) == {"0"}:
+        reasons.append("could not record the exact commit SHA being benchmarked")
+    return reasons
+
+
 def _fmt(value: object, unit: str = "") -> str:
     if value is None:
         return "NOT_AVAILABLE"
@@ -521,8 +604,18 @@ def main(argv: list[str] | None = None) -> int:
     md_path = args.results_dir / f"phase-0-{args.profile}{suffix}.md"
     md_path.write_text(render_markdown(payload), encoding="utf-8")
 
+    # A versioned baseline is created ONLY when the full gate passes.
     baseline_note = ""
     if args.baseline:
+        gate_reasons = check_baseline_gate(payload)
+        if gate_reasons:
+            for reason in gate_reasons:
+                print(f"BASELINE REFUSED: {reason}", file=sys.stderr)
+            print(
+                "baseline NOT created; no files were copied into benchmarks/baselines/",
+                file=sys.stderr,
+            )
+            return 2
         baseline_dir = REPO_ROOT / "benchmarks" / "baselines"
         baseline_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(json_path, baseline_dir / json_path.name)

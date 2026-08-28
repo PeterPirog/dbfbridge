@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Bump whenever the content recipe changes; triggers safe regeneration.
-SPEC_VERSION = "5"
+SPEC_VERSION = "6"
 
 # Logical text with real Polish diacritics (representable in cp1250, cp852 and
 # Mazovia).  Used by the encoding fixtures so the forced-encoding code path is
@@ -77,34 +77,80 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def _counts(dbf_path: Path) -> tuple[int, int]:
-    """Return ``(active, deleted)`` record counts from the raw DBF layout.
+class FixtureIntegrityError(ValueError):
+    """A DBF file fails a raw-layout integrity check (truncated, bad markers)."""
+
+
+def _scan_dbf(dbf_path: Path) -> dict[str, int]:
+    """Strictly scan a DBF record area and return measured counts.
+
+    The scan is **strict**: it raises :class:`FixtureIntegrityError` when the
+    layout is inconsistent instead of silently guessing a count.  Rules:
+
+    - the header must be at least 32 bytes with a known DBF version byte;
+    - ``header_length`` must be plausible (>= 33, within the file size);
+    - ``record_length`` must be >= 2 (delete marker + at least one byte);
+    - every record in the declared record area is scanned: a record shorter
+      than ``record_length`` is rejected, and a delete marker that is neither
+      ``0x20`` (active) nor ``0x2A`` (deleted) is rejected;
+    - the number of scanned records must equal the header record count.
 
     Counting is done **without decoding any text field**, so it works for any
-    codepage (including the cp1250/cp852/Mazovia encoding fixtures).  The
-    physical record count is read from the header; the delete flag (first byte
-    of each record: 0x20 active / 0x2A deleted) is scanned directly.
+    codepage (including the cp1250/cp852/Mazovia encoding fixtures).
     """
 
     with dbf_path.open("rb") as infile:
         head = infile.read(32)
-        if len(head) < 32 or head[0] not in (0x02, 0x03, 0x30, 0x31, 0x83, 0x87):
-            raise ValueError(f"{dbf_path.name}: not a DBF file")
+        if len(head) < 32:
+            raise FixtureIntegrityError(f"{dbf_path.name}: header shorter than 32 bytes")
+        if head[0] not in (0x02, 0x03, 0x30, 0x31, 0x83, 0x87):
+            raise FixtureIntegrityError(
+                f"{dbf_path.name}: unknown DBF version byte 0x{head[0]:02x}"
+            )
         total = int.from_bytes(head[4:8], "little")
         header_len = int.from_bytes(head[8:10], "little")
         record_size = int.from_bytes(head[10:12], "little")
-        if record_size <= 1:
-            return 0, 0
+        if record_size < 2:
+            raise FixtureIntegrityError(f"{dbf_path.name}: implausible record_length {record_size}")
+        if header_len < 33:
+            raise FixtureIntegrityError(f"{dbf_path.name}: implausible header_length {header_len}")
+
+        size = infile.seek(0, 2)
+        if total > 0 and header_len + total * record_size > size:
+            raise FixtureIntegrityError(
+                f"{dbf_path.name}: record area truncated "
+                f"(need {header_len + total * record_size} bytes, file has {size})"
+            )
+
         infile.seek(header_len)  # record area starts after the field descriptors
+        active = 0
         deleted = 0
+        scanned = 0
         for _ in range(total):
             flag = infile.read(1)
             if not flag:
-                break
+                raise FixtureIntegrityError(
+                    f"{dbf_path.name}: truncated record area at record {scanned + 1}"
+                )
             if flag == b"*":
                 deleted += 1
-            infile.seek(record_size - 1, 1)
-    return total - deleted, deleted
+            elif flag == b" ":
+                active += 1
+            else:
+                raise FixtureIntegrityError(
+                    f"{dbf_path.name}: invalid delete marker 0x{flag[0]:02x} at record {scanned + 1}"
+                )
+            rest = infile.read(record_size - 1)
+            if len(rest) != record_size - 1:
+                raise FixtureIntegrityError(
+                    f"{dbf_path.name}: record {scanned + 1} shorter than record_length {record_size}"
+                )
+            scanned += 1
+        if scanned != total:
+            raise FixtureIntegrityError(
+                f"{dbf_path.name}: scanned {scanned} records but header declares {total}"
+            )
+    return {"active_records": active, "deleted_records": deleted, "total_records": active + deleted}
 
 
 def _write_meta(path: Path, meta: dict[str, object]) -> None:
@@ -119,10 +165,13 @@ def _write_meta(path: Path, meta: dict[str, object]) -> None:
 
 
 def _measured_counts(path: Path) -> dict[str, int]:
-    """Record counts measured from the file on disk (never an expectation)."""
+    """Record counts measured from the file on disk (never an expectation).
 
-    active, deleted = _counts(path)
-    return {"active_records": active, "deleted_records": deleted, "total_records": active + deleted}
+    Raises :class:`FixtureIntegrityError` when the file does not pass the
+    strict raw-layout scan.
+    """
+
+    return _scan_dbf(path)
 
 
 def _meta_path(path: Path) -> Path:
@@ -133,8 +182,14 @@ def _validate(path: Path, expected: dict[str, object]) -> bool:
     """Return True when the on-disk fixture matches *expected*.
 
     Checks sidecar presence, generator version, kind/encoding, DBF presence,
-    expected record/deleted counts (measured from the file), DBF (+FPT where
-    required) SHA-256, and FPT presence/absence.
+    DBF (+FPT where required) SHA-256, and FPT presence/absence.  The
+    **measured** counts (strict raw-layout scan) are compared directly against
+    the spec:
+
+    - ``total_records``  == expected ``records``;
+    - ``deleted_records`` == expected ``deleted``;
+    - ``active_records`` == expected ``records`` - expected ``deleted``;
+    - ``active_records + deleted_records == total_records``.
     """
 
     meta_file = _meta_path(path)
@@ -149,11 +204,22 @@ def _validate(path: Path, expected: dict[str, object]) -> bool:
             return False
     if meta.get("dbf_sha256") != _sha256(path):
         return False
-    # The sidecar counts must match the file's actual (measured) counts.
+    # The file must pass the strict scan, and the measured counts must match
+    # the specification (not merely the sidecar's claims).
     try:
         measured = _measured_counts(path)
-    except Exception:
+    except FixtureIntegrityError:
         return False
+    expected_records = int(expected.get("records", 0))  # type: ignore[arg-type]
+    expected_deleted = int(expected.get("deleted", 0))  # type: ignore[arg-type]
+    if (
+        measured["total_records"] != expected_records
+        or measured["deleted_records"] != expected_deleted
+        or measured["active_records"] != expected_records - expected_deleted
+        or measured["active_records"] + measured["deleted_records"] != measured["total_records"]
+    ):
+        return False
+    # The sidecar must record exactly what was measured (no drift).
     if any(meta.get(key) != value for key, value in measured.items()):
         return False
     fpt = path.with_suffix(".fpt")
@@ -175,7 +241,12 @@ def _ensure(
     expected: dict[str, object],
     generate,
 ) -> Path:
-    """Reuse a valid fixture, otherwise (re)generate it and write the sidecar."""
+    """Reuse a valid fixture, otherwise (re)generate it and write the sidecar.
+
+    After generation the fixture is **fully validated again**: a freshly
+    generated but inconsistent fixture raises :class:`FixtureIntegrityError`
+    instead of being returned as good.
+    """
 
     if _validate(path, expected):
         return path
@@ -186,6 +257,8 @@ def _ensure(
     meta = dict(expected)
     meta.update(_measured_counts(path))
     _write_meta(path, meta)
+    if not _validate(path, expected):
+        raise FixtureIntegrityError(f"{path.name}: freshly generated fixture failed validation")
     return path
 
 
@@ -374,11 +447,13 @@ def _write_minimal_dbf(
         outfile.flush()
 
 
-def generate_encoding(path: Path, encoding: str, *, records: int = 6) -> Path:
+def generate_encoding(path: Path, encoding: str) -> Path:
     """Dedicated fixture for a forced-encoding scenario.
 
     Stores ``POLISH_TEXT`` (real diacritics) as the raw bytes of *encoding*, so
     exporting with ``--encoding <encoding>`` yields the exact logical text.
+    The fixture holds exactly one record (the joined logical text); there is no
+    record-count parameter because the single-record recipe is fixed.
     """
 
     text = " ".join(POLISH_TEXT)
@@ -413,10 +488,12 @@ def fixture_manifest(fixture_dir: Path) -> dict[str, object]:
 __all__ = [
     "SPEC_VERSION",
     "POLISH_TEXT",
+    "FixtureIntegrityError",
     "generate_flat",
     "generate_memo_heavy",
     "generate_encoding",
     "fixture_manifest",
     "_sha256",
-    "_counts",
+    "_scan_dbf",
+    "_measured_counts",
 ]
