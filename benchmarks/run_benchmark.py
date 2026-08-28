@@ -36,6 +36,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -323,7 +324,44 @@ AGG_METRIC_COLUMNS = [
     ("median_source_mib_per_second", "median MiB/s"),
     ("max_peak_rss_bytes", "peak RSS (MiB)"),
     ("max_output_bytes", "output (MiB)"),
+    ("median_read_amplification", "median read amp"),
+    ("median_write_amplification", "median write amp"),
+    ("max_temporary_bytes_written", "max temporary written (MiB)"),
 ]
+
+# Aggregate columns rendered in MiB units.
+_MIB_COLUMNS = {"max_peak_rss_bytes", "max_output_bytes", "max_temporary_bytes_written"}
+
+
+def _sample_missing_metrics(sample: dict[str, Any]) -> list[str]:
+    """Return the names of required metrics missing from a single measured sample.
+
+    The requirement is per-sample and conditional on the sample's own
+    ``input_bytes`` / ``output_bytes`` (both are present in every sample).
+    """
+
+    missing: list[str] = []
+    for key in (
+        "wall_seconds",
+        "cpu_seconds",
+        "records_per_second",
+        "output_bytes",
+        "peak_rss_bytes",
+    ):
+        if sample.get(key) is None:
+            missing.append(key)
+    input_bytes = sample.get("input_bytes")
+    if input_bytes is not None and input_bytes > 0:
+        for key in ("source_mib_per_second", "read_amplification"):
+            if sample.get(key) is None:
+                missing.append(key)
+    output_bytes = sample.get("output_bytes")
+    if output_bytes is not None and output_bytes > 0 and sample.get("write_amplification") is None:
+        missing.append("write_amplification")
+    temp = sample.get("temporary_bytes_written")
+    if not isinstance(temp, int) or isinstance(temp, bool) or temp < 0:
+        missing.append("temporary_bytes_written")
+    return missing
 
 
 def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
@@ -331,70 +369,99 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
 
     An empty list means the run is eligible to be copied into
     ``benchmarks/baselines/``.  A versioned baseline is only allowed from a
-    **full, clean, complete** run with ``psutil`` available.
+    **full, clean, complete** run with ``psutil`` available.  For every
+    ``MEASURED`` scenario, **every** measured repetition must carry all the
+    required metrics — a single complete sample among incomplete ones is not
+    enough.
     """
 
     reasons: list[str] = []
     env = payload.get("environment", {})
-    scenarios = [
-        s for s in payload.get("scenarios", []) if s.get("status") != STATUS_NOT_IMPLEMENTED
-    ]
+    git = env.get("git", {})
+    all_scenarios = list(payload.get("scenarios", []))
+    measured = [s for s in all_scenarios if s.get("status") == STATUS_MEASURED]
+    not_implemented = [s for s in all_scenarios if s.get("status") == STATUS_NOT_IMPLEMENTED]
+    failed = [s for s in all_scenarios if s.get("status") == STATUS_FAILED]
 
     if env.get("profile") != "full":
         reasons.append(f"profile is {env.get('profile')!r}; a baseline requires --profile full")
     if not psutil_available():
         reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
-    failed = [s for s in scenarios if s.get("status") == STATUS_FAILED]
+
+    if env.get("warmup", 0) < 1:
+        reasons.append(f"warmup is {env.get('warmup')}; a baseline requires warmup >= 1")
+    if env.get("repetitions", 0) < 3:
+        reasons.append(f"repetitions is {env.get('repetitions')}; a baseline requires >= 3")
+
+    expected_full = list(_scenario_names("full"))
+    measured_names = [s["scenario"] for s in measured]
+    expected_set = set(expected_full)
+    have_set = set(measured_names)
+    missing = [n for n in expected_full if n not in have_set]
+    extra = sorted(have_set - expected_set)
+    duplicates = sorted({n for n in measured_names if measured_names.count(n) > 1})
+    if missing:
+        reasons.append(
+            f"{len(missing)} expected full-profile MEASURED scenario(s) missing: "
+            + ", ".join(missing)
+        )
+    if extra:
+        reasons.append(
+            "unexpected MEASURED scenario(s) not in the full profile: " + ", ".join(extra)
+        )
+    if duplicates:
+        reasons.append("duplicate scenario names in the run: " + ", ".join(duplicates))
+    if len(measured) != len(expected_full):
+        reasons.append(
+            f"expected exactly {len(expected_full)} MEASURED scenarios, found {len(measured)}"
+        )
+
+    expected_not_impl = {s["scenario"] for s in NOT_IMPLEMENTED}
+    have_not_impl = {s["scenario"] for s in not_implemented}
+    if have_not_impl != expected_not_impl:
+        reasons.append(
+            "NOT_IMPLEMENTED set mismatch; expected "
+            f"{sorted(expected_not_impl)}, found {sorted(have_not_impl)}"
+        )
+
     if failed:
         reasons.append(
             f"{len(failed)} scenario(s) FAILED: " + ", ".join(s["scenario"] for s in failed)
         )
-    expected_full = list(_scenario_names("full"))
-    have = {s["scenario"] for s in scenarios}
-    missing = [n for n in expected_full if n not in have]
-    if missing:
-        reasons.append(
-            f"{len(missing)} expected full-profile scenario(s) missing: " + ", ".join(missing)
-        )
+
     invalid = [
-        s
-        for s in scenarios
-        if s.get("status") == STATUS_MEASURED
-        and not (s.get("aggregated") or {}).get("valid_baseline")
+        s["scenario"] for s in measured if not (s.get("aggregated") or {}).get("valid_baseline")
     ]
     if invalid:
         reasons.append(
-            f"{len(invalid)} MEASURED scenario(s) without a valid baseline: "
-            + ", ".join(s["scenario"] for s in invalid)
+            f"{len(invalid)} MEASURED scenario(s) without a valid baseline: " + ", ".join(invalid)
         )
-    required_sample_keys = (
-        "wall_seconds",
-        "cpu_seconds",
-        "records_per_second",
-        "output_bytes",
-        "peak_rss_bytes",
-    )
+
+    # Per-sample metric completeness: EVERY measured repetition must be complete.
     incomplete: list[str] = []
-    for s in scenarios:
-        if s.get("status") != STATUS_MEASURED:
-            continue
+    for s in measured:
         samples = s.get("samples") or []
-        if not any(
-            all(key in sample and sample.get(key) is not None for key in required_sample_keys)
-            for sample in samples
-        ):
-            incomplete.append(s["scenario"])
+        if not samples:
+            incomplete.append(f"{s['scenario']} (no samples)")
+            continue
+        bad = [
+            f"rep{i + 1}:{','.join(_sample_missing_metrics(sample))}"
+            for i, sample in enumerate(samples)
+            if _sample_missing_metrics(sample)
+        ]
+        if bad:
+            incomplete.append(f"{s['scenario']} ({'; '.join(bad)})")
     if incomplete:
         reasons.append(
-            f"{len(incomplete)} MEASURED scenario(s) missing required wall/CPU/throughput/output/peak-RSS metrics: "
-            + ", ".join(incomplete)
+            f"{len(incomplete)} MEASURED scenario(s) with incomplete per-repetition metrics: "
+            + " | ".join(incomplete)
         )
-    worktree = env.get("git", {}).get("worktree_dirty", True)
-    if worktree:
+
+    commit = str(git.get("commit") or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+        reasons.append(f"commit SHA is not a full 40-hex value: {commit!r}")
+    if git.get("worktree_dirty", True):
         reasons.append("worktree was dirty before the run; a baseline requires a clean worktree")
-    commit = str(env.get("git", {}).get("commit") or "")
-    if not commit or set(commit) == {"0"}:
-        reasons.append("could not record the exact commit SHA being benchmarked")
     return reasons
 
 
@@ -456,7 +523,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             agg.get("valid_baseline", True)
         )
         cells = [
-            _fmt(agg.get(key), "MiB" if key in {"max_peak_rss_bytes", "max_output_bytes"} else "")
+            _fmt(agg.get(key), "MiB" if key in _MIB_COLUMNS else "")
             for key, _label in AGG_METRIC_COLUMNS
         ]
         # A FAILED scenario must never present its (partial) medians as a
@@ -484,8 +551,11 @@ def render_markdown(payload: dict[str, Any]) -> str:
         "- Peak RSS is the maximum of `psutil` samples taken on a background thread during the "
         "measured call (the sampler is always stopped/joined in `finally`). Without `psutil` it "
         "is `NOT_AVAILABLE`.",
-        "- `temporary_bytes` is `NOT_AVAILABLE`: the library's atomic `.partial` files cannot be "
-        "reliably attributed per operation from the outside, so it is never estimated.",
+        "- `temporary_bytes_written` is the logical size of the atomic `.partial` files "
+        "published by the measured call (the worker intercepts `os.replace` for that call "
+        "only); it is **0** when the operation created no temporary file and "
+        "`NOT_AVAILABLE` (with a reason) only if the platform forbids reading the "
+        "temporary file.",
         "- `NOT_IMPLEMENTED` scenarios are listed verbatim and are not estimated.",
     ]
     return "\n".join(lines) + "\n"

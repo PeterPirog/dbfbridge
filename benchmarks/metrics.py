@@ -154,27 +154,43 @@ def temporary_bytes_in(root: Path) -> int:
 class AtomicPublishTracker:
     """Benchmark-only interception of the atomic ``.partial -> final`` publish.
 
-    dbfbridge publishes every output file by writing ``<name>.partial``,
-    flushing/fsyncing, then calling ``os.replace(partial, final)``.  This
-    tracker temporarily replaces ``os.replace`` (in this worker subprocess only)
-    and, at the moment of publish, records the **logical size of the ``.partial``
-    file just before it becomes the final file**.  The sum over all publishes in
-    one measured call is the ``temporary_bytes_written`` metric.
+    dbfbridge publishes every output file by writing a sibling temporary file,
+    flushing/fsyncing, then calling ``os.replace(partial, final)``.  The
+    production conventions are:
 
-    - No production code is modified; the hook is restored in ``finally``.
-    - It is NOT an ``io_write_bytes - output_bytes`` guess: it measures the
-      actual temporary file contents at publish time.
-    - When the measured operation created no temporary file the total is 0
-      (a real zero, not an estimate).
-    - If the platform forbids reading the partial at that moment, the metric is
-      reported as ``None`` (NOT_AVAILABLE) and the reason is recorded.
+    - ``name.partial``                 (JSONL/CSV/JSON reports);
+    - ``.name.partial.dbf``            (reconstructed DBF);
+    - ``.name.partial.fpt``            (reconstructed FPT);
+    - ``.name.raw-layout.partial``     (raw-layout restoration).
+
+    So ``.partial`` is treated as a **name segment** (any of the above), not
+    just a suffix.  This tracker temporarily replaces ``os.replace`` (in this
+    worker subprocess only) and, for every publish whose *source* lies inside
+    the scenario's ``output_dir``, records the **logical size of the temporary
+    file**.  The sum over all successful publishes is the
+    ``temporary_bytes_written`` metric.
+
+    Rules:
+    - Only publishes inside ``output_dir`` count (a stray ``.partial`` elsewhere
+      is ignored).
+    - There is **no** deduplication: every successful ``os.replace`` is a
+      separate record, even if the same path is published again.
+    - The size is read **before** the replace, but added to the total and the
+      count only **after** the replace succeeds — a failed replace is not a
+      publish.
+    - The original ``os.replace`` is always restored in ``finally``.
+    - No production code is modified; this is NOT an
+      ``io_write_bytes - output_bytes`` guess.
+    - A real 0 when no temporary file was published; ``NOT_AVAILABLE`` (with a
+      reason) only if the platform forbids reading the temporary file.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir.resolve()
         self.total_bytes = 0
         self.publish_count = 0
         self.unavailable_reason: str | None = None
-        self._real_replace = None
+        self._real_replace: Callable[..., Any] | None = None
         self._active = False
 
     @property
@@ -183,24 +199,50 @@ class AtomicPublishTracker:
 
         return self.unavailable_reason is None
 
+    @staticmethod
+    def _is_partial(name: str) -> bool:
+        """True when the *name* (not the path) is one of dbfbridge's temporary
+        publish conventions.
+
+        ``.partial`` is treated as a **dot-delimited name segment**: the file
+        is a temporary publish file iff ``partial`` is a token of the
+        dot-split name AND the token is *not* the only token (a file literally
+        named ``partial`` is final output, not a temporary).  This matches all
+        production conventions and nothing else:
+
+        - ``name.partial``                (JSONL/CSV/JSON reports);
+        - ``.name.partial.dbf``           (reconstructed DBF);
+        - ``.name.partial.fpt``           (reconstructed FPT);
+        - ``.name.raw-layout.partial``    (raw-layout restoration).
+        """
+
+        tokens = name.split(".")
+        return "partial" in tokens and len(tokens) > 1
+
     def __enter__(self) -> AtomicPublishTracker:
         import os
 
         self._real_replace = os.replace
-        seen: set[Path] = set()
 
         def _tracked_replace(src, dst, *args, **kwargs):
             src_path = Path(src)
-            if src_path.name.endswith(".partial") and src_path not in seen:
+            inside = False
+            if self._is_partial(src_path.name):
+                with contextlib.suppress(OSError, ValueError):
+                    inside = src_path.resolve().is_relative_to(self.output_dir)
+            size: int | None = None
+            if inside:
                 try:
-                    self.total_bytes += src_path.stat().st_size
-                    self.publish_count += 1
+                    size = src_path.stat().st_size
                 except OSError as exc:
                     if self.unavailable_reason is None:
                         self.unavailable_reason = f"could not stat {src_path.name}: {exc}"
-            seen.add(src_path)
             assert self._real_replace is not None
-            return self._real_replace(src, dst, *args, **kwargs)
+            result = self._real_replace(src, dst, *args, **kwargs)
+            if inside and size is not None:
+                self.total_bytes += size
+                self.publish_count += 1
+            return result
 
         os.replace = _tracked_replace  # type: ignore[assignment]
         self._active = True
@@ -274,7 +316,7 @@ def run(
     before = process_snapshot()
     sampler = RssSampler()
     sampler.start()
-    tracker = AtomicPublishTracker()
+    tracker = AtomicPublishTracker(output_dir)
     tracker.__enter__()
     cpu_before = time.process_time()
     wall_before = time.perf_counter()
