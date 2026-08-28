@@ -370,34 +370,59 @@ Classification recorded in persistent memory:
 ## 13. Phase 0 benchmark infrastructure (new in this branch)
 
 - `benchmarks/fixtures.py` — deterministic DBF/FPT generators (flat table,
-  memo-heavy table, per-codepage encoding fixtures containing genuine Polish
-  diacritics stored as the target codepage's raw bytes). Every fixture is
-  written with a `<name>.dbf.meta.json` sidecar (generator version, parameters,
-  record/deleted counts, memo configuration, DBF/FPT presence, sizes, SHA-256);
-  an incomplete or non-matching fixture is regenerated **before** measurement.
+   memo-heavy table, per-codepage encoding fixtures containing genuine Polish
+   diacritics stored as the target codepage's raw bytes). The **flat fixtures
+   are genuinely memo-free** (no memo field, no FPT, `require_fpt=False`,
+   manifest `fpt_present=False`); memo data appears only in the dedicated
+   memo-heavy fixtures (DBF + FPT). Every fixture is
+   written with a `<name>.dbf.meta.json` sidecar (generator version, parameters,
+   expected record/deleted counts, **measured** active/deleted/total counts,
+   memo configuration, DBF/FPT presence, sizes, SHA-256); an incomplete or
+   non-matching fixture is regenerated **before** measurement.
 - `benchmarks/metrics.py` — measurement helpers (wall/CPU time, output bytes,
-  RSS via `psutil`, IO counters). All metrics are honest: unmeasured values are
-  `None` (rendered `NOT_AVAILABLE`). **Peak RSS** is the maximum of `psutil`
-  samples taken on a background thread during the measured call (sampling
-  interval recorded in the JSON); the sampler is always stopped/joined in
-  `finally`. Two before/after snapshots are not sufficient to establish a peak.
-  Without `psutil`, all RSS/IO metrics are `NOT_AVAILABLE`.
+   RSS via `psutil`, IO counters). All metrics are honest: unmeasured values are
+   `None` (rendered `NOT_AVAILABLE`). **Peak RSS** is the maximum of `psutil`
+   samples taken on a background thread during the measured call (sampling
+   interval recorded in the JSON); the sampler is always stopped/joined in
+   `finally`. Two before/after snapshots are not sufficient to establish a peak.
+   Without `psutil`, all RSS/IO metrics are `NOT_AVAILABLE`. Wall/CPU times are
+   captured immediately after the measured call, before the sampler is stopped:
+   they include the active sampler's small overhead but not the cost of
+   stopping/joining it.
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
-  worker invocation so a crash is contained. Runs an explicit warm-up (default
-  1, excluded from results) followed by the measured repetitions; each
-  execution writes into its own fresh `out/<scenario>/rep-<n>/` directory
-  prepared before the measured window, so `output_bytes` is the authoritative
-  final size of that directory (re-running an overwritten scenario never yields
-  a zero).
+   worker invocation so a crash is contained. Runs an explicit warm-up (default
+   1, excluded from results) followed by the measured repetitions; each
+   execution writes into its own fresh `out/<scenario>/rep-<n>/` directory
+   prepared before the measured window, so `output_bytes` is the authoritative
+   final size of that directory (re-running an overwritten scenario never yields
+   a zero). **Aggregation**: the median is computed only over successful
+   measured samples; if ANY warm-up or measured repetition is FAILED the whole
+   scenario is FAILED, raw samples and errors are preserved, and the aggregate
+   is flagged `valid_baseline: false` (the Markdown never presents a partial
+   median as a comparable baseline).
 - `benchmarks/run_benchmark.py` — controller: runs scenarios in fresh
-  subprocesses with a configurable per-scenario timeout, records environment
-  (git commit, worktree state, Python, OS, CPU, physical RAM via `psutil`,
-  dependency versions, fixture sizes), writes JSON + Markdown **always** (even
-  when scenarios fail), distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED`
-  / `NOT_AVAILABLE`, and exits non-zero when any scenario is `FAILED`.
-  Aggregation is the **median** of the measured repetitions
-  (`median_wall_seconds`, `median_cpu_seconds`, `median_records_per_second`);
-  all per-repetition samples are preserved in the JSON.
+   subprocesses (diagnostic log opened via a context manager) with a
+   configurable per-scenario timeout (`> 0` enforced; `repetitions >= 1` and
+   `warmup >= 0` enforced), records environment (git commit, worktree state,
+   Python, OS, CPU, physical RAM via `psutil`, dependency versions, fixture
+   sizes), writes JSON + Markdown **always** (even when scenarios fail),
+   distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED` / `NOT_AVAILABLE`,
+   and exits non-zero when any scenario is `FAILED`. Aggregation is the
+   **median** of the successful measured repetitions
+   (`median_wall_seconds`, `median_cpu_seconds`, `median_records_per_second`);
+   all per-repetition samples are preserved in the JSON. **Full extends fast
+   without changing shared parameters**: the memo/deleted/encoding/reconstruction
+   scenarios shared by both profiles use identical parameters in fast and full;
+   the larger variants (`export_1m_records`, `memo_heavy_190k`,
+   `reconstruction_190k`, `jsonl_conversion_xlsx`) carry their own distinct
+   names and exist only in full.
+   **Full-profile timeout**: the full profile generates the 1,000,000-record
+   flat fixture and the 190,000-record memo-heavy fixture **before** measuring
+   (outside the measured window, but inside the per-scenario worker timeout);
+   on a slow machine these fixtures can take several minutes to generate, so a
+   full-profile run should use a generous `--timeout` (the default of 600 s
+   per scenario is intended to cover generation + measurement; raise it if a
+   first run times out while generating the 1M/190k fixtures).
 - `benchmarks/__init__.py` — package marker.
 - Diagnostic logs: `benchmark-data/logs/<profile>_<scenario>.log` (working
   directory; git-ignored). Reports: `benchmarks/results/` (git-ignored);
@@ -447,11 +472,17 @@ report each time. `git diff --check` must be clean. The benchmark
 infrastructure tests (`tests/test_benchmark_infrastructure.py`) must pass.
 
 The Phase 0 commit is **not** created until this gate passes and the user
-reviews the diff. (Gate passed: 3 consecutive fast runs `EXIT=0`,
-14 `MEASURED` / 0 `FAILED` / 4 `NOT_IMPLEMENTED`; the first commit
+reviews the diff. (Gate passed: consecutive fast runs `EXIT=0`, **15
+`MEASURED` / 0 `FAILED` / 4 `NOT_IMPLEMENTED`**; the first commit
 `bench: add isolated phase-0 benchmark runner` was created and pushed on
 `bench/phase-0-baseline`. The follow-up commit
-`bench: correct phase-0 benchmark measurements` addresses the architectural
+`bench: correct phase-0 benchmark measurements` addressed the architectural
 review: warm-up/repetition measurement, per-repetition output directories,
 median aggregation, sampled peak RSS, timeout/FAILED handling, fixture
-manifests, and the RCA wording corrected per the review.)
+manifests, and the RCA wording corrected per the review. A third commit,
+`bench: harden phase-0 fixture and aggregation semantics`, makes the flat
+fixtures genuinely memo-free (no FPT), records **measured** active/deleted/
+total counts, keeps shared scenario parameters identical across fast/full,
+aggregates only successful samples (a FAILED scenario is never a valid
+baseline), captures wall/CPU before the sampler join, validates CLI arguments,
+and re-verifies with a fresh fast run.)

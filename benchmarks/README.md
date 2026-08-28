@@ -72,6 +72,13 @@ summary reports the **median** of the measured repetitions
 observed peak RSS and output size. The number of warm-ups and repetitions is
 recorded in the JSON (`environment.warmup`, `environment.repetitions`).
 
+- **Aggregation only over successful samples.** If **any** warm-up or measured
+  repetition is `FAILED`, the whole scenario is `FAILED`, the raw samples and
+  errors are preserved, and the aggregate is flagged `valid_baseline: false`.
+  The Markdown never presents a partial median of a `FAILED` scenario as a
+  comparable baseline (those rows are labelled `NOT A VALID BASELINE` /
+  `NOT_AVAILABLE`).
+
 - **Peak RSS** is the maximum of `psutil` samples taken on a background thread
   **during** the measured call (sampling interval recorded as
   `rss_sample_interval_seconds`; the sampler is always stopped/joined in
@@ -141,6 +148,25 @@ fixtures.generate_flat(Path("benchmark-data/large/large.dbf"), 1_000_000)  # 1M
 Or simply run the full profile once and the runner builds them for you into
 `benchmark-data/` (git-ignored).  Re-running a profile reuses any fixture that
 already exists on disk.
+
+**The flat fixtures (`generate_flat`) are genuinely memo-free**: they contain
+no memo field and create **no FPT** (`require_fpt=False`, manifest
+`fpt_present=False`).  Memo data appears only in the dedicated memo-heavy
+fixtures (`generate_memo_heavy`), which create DBF + FPT.  Fixture sidecars
+record the **measured** `active_records` / `deleted_records` / `total_records`
+counts and the validation requires them to match the file on disk, in addition
+to expected counts, sizes and SHA-256.
+
+## Profiles
+
+`fast` is the control profile (15 scenarios).  `full` **extends** `fast` with
+four additional, distinctly-named scenarios (`export_1m_records`,
+`memo_heavy_190k`, `reconstruction_190k`, `jsonl_conversion_xlsx`) and never
+changes the parameters of a scenario it shares with `fast` — a scenario name
+means the same thing in both profiles.  The full profile generates the 1,000,000-
+record flat fixture and the 190,000-record memo-heavy fixture before measuring;
+on a slow machine give it a generous `--timeout` (default 600 s per scenario) so
+fixture generation does not time out.
 
 ## Legacy JSONL conversion benchmark
 

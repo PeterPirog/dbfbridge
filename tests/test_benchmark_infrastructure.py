@@ -158,6 +158,44 @@ def test_reconstruction_names_are_distinct() -> None:
     assert not (fast & (full - fast))
 
 
+def test_shared_scenarios_identical_params_fast_vs_full(tmp_path: Path) -> None:
+    from benchmarks import worker
+
+    # A profile must never change the parameters of a scenario it shares with
+    # another profile. The scenario dispatch in `run_scenario` must be free of
+    # any `self.profile` dependency for shared scenarios: assert the recorded
+    # parameters are identical when the shared memo scenarios run on a fast
+    # runner and on a full runner.
+    fast = worker.Runner(Path.cwd(), "fast", tmp_path / "fast", repetitions=1, warmup=0)
+    full = worker.Runner(Path.cwd(), "full", tmp_path / "full", repetitions=1, warmup=0)
+
+    shared = ("memo_skip", "memo_null", "memo_inline")
+    for name in shared:
+        fast.results.clear()
+        fast.run_scenario(name)
+        full.results.clear()
+        full.run_scenario(name)
+        f_result = dict(fast.results[0])  # type: ignore[union-attr]
+        l_result = dict(full.results[0])  # type: ignore[union-attr]
+        f_params = dict(f_result["parameters"])  # type: ignore[arg-type]
+        l_params = dict(l_result["parameters"])  # type: ignore[arg-type]
+        assert f_params == l_params, (
+            f"shared scenario {name} must have identical parameters in fast and full"
+        )
+        # The shared memo scenarios use the SAME dedicated fixture spec (2000
+        # rows) in both profiles (never a profile-dependent size); the fixture
+        # *name* encodes that spec and must match.
+        assert fast.memo_heavy(2_000).name == full.memo_heavy(2_000).name == "memo2000.dbf"
+
+    # The full-only variant names are distinct from the shared ones.
+    assert full.memo_heavy(190_000).name == "memo190000.dbf"
+    assert full.memo_heavy(190_000).name != "memo2000.dbf"
+    # Flat / deleted scenarios resolve to the SAME fixture spec across profiles.
+    assert fast.deleted().name == full.deleted().name == "deleted.dbf"
+    assert fast.small().name == full.small().name == "small.dbf"
+    assert fast.medium().name == full.medium().name == "medium.dbf"
+
+
 def test_worker_crash_maps_to_failed_and_controller_exits_nonzero(tmp_path: Path) -> None:
     # A worker crash (non-zero exit) must map to FAILED for the scenario, the
     # report must still be written, and the controller must exit non-zero.
@@ -204,14 +242,61 @@ def test_worker_malformed_json_maps_to_failed(tmp_path: Path) -> None:
     assert scenario["status"] == "FAILED"
 
 
-def test_controller_continues_after_failed_scenario(tmp_path: Path) -> None:
-    # A failing worker on the first scenario must not stop the second scenario,
-    # whose result must still be MEASURED in the same report.
-    faulty = tmp_path / "faulty_worker.py"
-    faulty.write_text("import sys\nsys.exit(17)\n", encoding="utf-8")
-    import os
+def test_cli_rejects_invalid_arguments(tmp_path: Path) -> None:
+    base = [
+        sys.executable,
+        "-m",
+        "benchmarks.run_benchmark",
+        "--profile",
+        "fast",
+        "--work-dir",
+        str(tmp_path / "work"),
+        "--results-dir",
+        str(tmp_path / "results"),
+    ]
+    for extra, message in (
+        (["--repetitions", "0"], "repetitions"),
+        (["--warmup", "-1"], "warmup"),
+        (["--timeout", "0"], "timeout"),
+        (["--timeout", "-5"], "timeout"),
+    ):
+        completed = subprocess.run(
+            [*base, *extra],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert completed.returncode != 0, f"{message} must be rejected"
+        assert (
+            message in (completed.stderr or completed.stdout).lower()
+            or "error" in (completed.stderr or completed.stdout).lower()
+        )
 
-    base_env = dict(os.environ)
+
+def test_controller_continues_after_failed_scenario(tmp_path: Path) -> None:
+    # One controller run with TWO scenarios: the first must be FAILED (crashing
+    # worker) and the second must still run and be MEASURED, both in the SAME
+    # report — proving a failed scenario does not stop the rest of the run.
+    faulty = tmp_path / "faulty_worker.py"
+    real_worker = (REPO_ROOT / "benchmarks" / "worker.py").as_posix()
+    repo_root = REPO_ROOT.as_posix()
+    faulty.write_text(
+        f"""import sys
+import runpy
+sys.path.insert(0, {repo_root!r})
+args = sys.argv[1:]
+if "--scenario" in args:
+    name = args[args.index("--scenario") + 1]
+else:
+    name = ""
+if name == "encoding_cp1250":
+    sys.exit(17)
+runpy.run_path({real_worker!r}, run_name="__main__")
+""",
+        encoding="utf-8",
+    )
+    import os
 
     command = [
         sys.executable,
@@ -219,40 +304,30 @@ def test_controller_continues_after_failed_scenario(tmp_path: Path) -> None:
         "benchmarks.run_benchmark",
         *FAST,
         "--scenario",
-        "encoding_cp1250",
+        "encoding_cp1250,encoding_cp852",
         "--work-dir",
         str(tmp_path / "work"),
         "--results-dir",
         str(tmp_path / "results"),
     ]
-    # First run with the faulty worker: FAILED scenario, report written.
-    first = subprocess.run(
+    full_env = dict(os.environ, BENCHMARK_WORKER=str(faulty))
+    completed = subprocess.run(
         command,
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
-        timeout=300,
-        env=dict(base_env, BENCHMARK_WORKER=str(faulty)),
+        timeout=600,
+        env=full_env,
     )
-    assert first.returncode != 0
-    payload = _load_json(tmp_path / "results", "-encoding_cp1250")
-    failed = next(s for s in payload["scenarios"] if s["scenario"] == "encoding_cp1250")
-    assert failed["status"] == "FAILED"
-
-    # Second scenario with the healthy worker must still run and be MEASURED.
-    command[10] = "encoding_cp852"
-    second = subprocess.run(
-        command,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=base_env,
+    assert completed.returncode != 0, "controller must exit non-zero on FAILED"
+    payload = _load_json(tmp_path / "results", "-encoding_cp1250_encoding_cp852")
+    statuses = {s["scenario"]: s["status"] for s in payload["scenarios"]}
+    assert statuses["encoding_cp1250"] == "FAILED"
+    assert statuses["encoding_cp852"] == "MEASURED", (
+        "the scenario after a FAILED one must still run in the same controller invocation"
     )
-    assert second.returncode == 0, second.stderr
-    payload2 = _load_json(tmp_path / "results", "-encoding_cp852")
-    ok = next(s for s in payload2["scenarios"] if s["scenario"] == "encoding_cp852")
-    assert ok["status"] == "MEASURED"
+    # The report (JSON + Markdown) was written with both scenarios.
+    assert (tmp_path / "results" / "phase-0-fast-encoding_cp1250_encoding_cp852.md").is_file()
 
 
 def test_worker_timeout_maps_to_failed(tmp_path: Path) -> None:
@@ -406,6 +481,71 @@ def test_fixture_regeneration_when_inconsistent(tmp_path: Path) -> None:
         "require_fpt": False,
     }
     assert fixtures._validate(regenerated, expected)
+    # The sidecar carries MEASURED counts that match the file on disk.
+    assert new_meta["active_records"] == 100
+    assert new_meta["deleted_records"] == 0
+    assert new_meta["total_records"] == 100
+
+
+def test_flat_fixture_is_memo_free_and_memo_heavy_has_fpt(tmp_path: Path) -> None:
+    from benchmarks import fixtures
+
+    flat = fixtures.generate_flat(tmp_path / "flat" / "f.dbf", 50)
+    flat_fpt = flat.with_suffix(".fpt")
+    assert not flat_fpt.is_file(), "flat fixtures must not create an FPT"
+    flat_meta = json.loads(flat.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert flat_meta["fpt_present"] is False
+    assert flat_meta["require_fpt"] is False
+
+    memo = fixtures.generate_memo_heavy(tmp_path / "memo" / "m.dbf", 20)
+    memo_fpt = memo.with_suffix(".fpt")
+    assert memo_fpt.is_file(), "memo-heavy fixtures must create an FPT"
+    memo_meta = json.loads(memo.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    assert memo_meta["fpt_present"] is True
+    assert memo_meta["require_fpt"] is True
+    assert memo_meta["fpt_sha256"] == fixtures._sha256(memo_fpt)
+
+    # Both fixtures must validate against their respective specs (counts + FPT).
+    assert fixtures._validate(
+        flat,
+        {
+            "generator_version": fixtures.SPEC_VERSION,
+            "kind": "flat",
+            "records": 50,
+            "deleted": 0,
+            "deleted_fraction": 0.0,
+            "require_fpt": False,
+        },
+    )
+    assert fixtures._validate(
+        memo,
+        {
+            "generator_version": fixtures.SPEC_VERSION,
+            "kind": "memo",
+            "records": 20,
+            "deleted": 0,
+            "memo_chars": 4000,
+            "require_fpt": True,
+        },
+    )
+    # Cross-check: a flat fixture must NOT validate as memo-required and vice versa.
+    assert not fixtures._validate(flat, {"require_fpt": True})
+    assert not fixtures._validate(memo, {"require_fpt": False})
+
+
+def test_deleted_fraction_counts_are_exact(tmp_path: Path) -> None:
+    from benchmarks import fixtures
+
+    records = 1_000
+    path = fixtures.generate_flat(tmp_path / "flat" / "del.dbf", records, deleted_fraction=0.1)
+    meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+    # Exactly the expected active/deleted split, and a physical total.
+    assert meta["deleted_records"] == 100
+    assert meta["active_records"] == 900
+    assert meta["total_records"] == 1_000
+    # Independent re-measurement with dbfread must agree with the sidecar.
+    active, deleted = fixtures._counts(path)
+    assert (active, deleted) == (900, 100)
 
 
 def test_encoding_fixtures_contain_real_polish_diacritics(tmp_path: Path) -> None:
@@ -445,13 +585,26 @@ def test_aggregate_uses_median() -> None:
 
     samples = [
         {
+            "status": "MEASURED",
             "wall_seconds": 1.0,
             "cpu_seconds": 0.5,
             "records_per_second": 100.0,
             "output_bytes": 1000,
         },
-        {"wall_seconds": 3.0, "cpu_seconds": 2.0, "records_per_second": 33.0, "output_bytes": 2000},
-        {"wall_seconds": 2.0, "cpu_seconds": 1.0, "records_per_second": 50.0, "output_bytes": 1500},
+        {
+            "status": "MEASURED",
+            "wall_seconds": 3.0,
+            "cpu_seconds": 2.0,
+            "records_per_second": 33.0,
+            "output_bytes": 2000,
+        },
+        {
+            "status": "MEASURED",
+            "wall_seconds": 2.0,
+            "cpu_seconds": 1.0,
+            "records_per_second": 50.0,
+            "output_bytes": 1500,
+        },
     ]
     agg = worker.aggregate(samples)
     assert agg["median_wall_seconds"] == 2.0
@@ -459,3 +612,123 @@ def test_aggregate_uses_median() -> None:
     assert agg["median_records_per_second"] == 50.0
     assert agg["max_output_bytes"] == 2000
     assert agg["repetitions"] == 3
+    assert agg["repetitions_succeeded"] == 3
+    assert agg["repetitions_failed"] == 0
+    assert agg["valid_baseline"] is True
+
+
+def test_failed_sample_excluded_from_median() -> None:
+    from benchmarks import worker
+
+    samples = [
+        {"status": "MEASURED", "wall_seconds": 1.0, "output_bytes": 1000},
+        {"status": "FAILED", "wall_seconds": 999.0, "output_bytes": 999999, "error": "boom"},
+        {"status": "MEASURED", "wall_seconds": 2.0, "output_bytes": 1500},
+    ]
+    agg = worker.aggregate(samples)
+    # The failed sample must not participate in the median (median of 1.0 and
+    # 2.0 is 1.5; had the failed 999.0 been included it would be 2.0).
+    assert agg["median_wall_seconds"] == 1.5
+    assert agg["max_output_bytes"] == 1500
+    assert agg["repetitions"] == 3
+    assert agg["repetitions_succeeded"] == 2
+    assert agg["repetitions_failed"] == 1
+    assert agg["valid_baseline"] is False
+    # All failed -> no valid baseline and no medians at all.
+    agg_all_failed = worker.aggregate([s for s in samples if s["status"] == "FAILED"])
+    assert agg_all_failed["median_wall_seconds"] is None
+    assert agg_all_failed["valid_baseline"] is False
+
+
+def test_measure_failed_warmup_and_failed_repetition(tmp_path: Path) -> None:
+    from benchmarks import worker
+
+    calls = {"n": 0}
+
+    def flaky(out: Path):
+        def run() -> None:
+            calls["n"] += 1
+            # Warm-up run and repetition #2 fail; repetition #1 and #3 succeed.
+            if calls["n"] in {1, 3}:
+                raise RuntimeError("boom")
+
+        return run
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=3, warmup=1)
+    # 1 warmup + 3 reps = 4 calls; calls 1 (warmup) and 3 (rep 2) fail.
+    result = runner._measure(
+        "flaky",
+        "description",
+        flaky,
+        input_bytes=1,
+        input_records=1,
+    )
+    samples = list(result["samples"])  # type: ignore[union-attr]
+    warmup_samples = list(result["warmup_samples"])  # type: ignore[union-attr]
+    assert result["status"] == "FAILED", "any failed warm-up/repetition fails the scenario"
+    assert len(samples) == 3
+    assert len(warmup_samples) == 1
+    failed_samples = [s for s in samples + warmup_samples if s["status"] == "FAILED"]  # type: ignore[union-attr]
+    assert len(failed_samples) == 2
+    errors = list(result["errors"])  # type: ignore[union-attr,arg-type]
+    assert any("boom" in str(e) for e in errors)
+    agg = dict(result["aggregated"])  # type: ignore[arg-type]
+    assert agg["valid_baseline"] is False  # type: ignore[index]
+    assert agg["repetitions_failed"] >= 1  # type: ignore[index]
+
+
+def test_markdown_failed_scenario_not_presented_as_baseline(tmp_path: Path) -> None:
+    from benchmarks import run_benchmark
+
+    payload = {
+        "environment": {
+            "git": {"commit": "x", "origin_main": "x", "branch": "b", "worktree_dirty": False},
+            "system": {
+                "python": "3.14",
+                "os": "win",
+                "processor": "cpu",
+                "cpu_count": 1,
+                "physical_memory_bytes": 0,
+            },
+            "packages": {"psutil": "5.9"},
+            "profile": "fast",
+            "repetitions": 3,
+            "warmup": 1,
+        },
+        "scenarios": [
+            {
+                "scenario": "broken",
+                "status": "FAILED",
+                "reason": "worker exited 1",
+                "aggregated": {
+                    "repetitions": 3,
+                    "repetitions_succeeded": 2,
+                    "repetitions_failed": 1,
+                    "valid_baseline": False,
+                    "median_wall_seconds": 1.5,
+                    "median_cpu_seconds": 0.5,
+                    "median_records_per_second": 100.0,
+                    "median_source_mib_per_second": 1.0,
+                    "max_peak_rss_bytes": 1024,
+                    "max_output_bytes": 2048,
+                },
+            },
+            {
+                "scenario": "broken_no_agg",
+                "status": "FAILED",
+                "reason": "timeout",
+                "aggregated": {},
+            },
+        ],
+    }
+    md = run_benchmark.render_markdown(payload)
+    failed_rows = [
+        line
+        for line in md.splitlines()
+        if line.startswith("| `broken`") or line.startswith("| `broken_no_agg`")
+    ]
+    assert len(failed_rows) == 2
+    # No failed row may present its median as a plain, comparable number.
+    for row in failed_rows:
+        assert "NOT A VALID BASELINE" in row or "NOT_AVAILABLE" in row
+        assert " 1.5 " not in row and "0.5 " not in row

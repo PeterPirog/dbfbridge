@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Bump whenever the content recipe changes; triggers safe regeneration.
-SPEC_VERSION = "4"
+SPEC_VERSION = "5"
 
 # Logical text with real Polish diacritics (representable in cp1250, cp852 and
 # Mazovia).  Used by the encoding fixtures so the forced-encoding code path is
@@ -78,14 +78,33 @@ def _sha256(path: Path) -> str | None:
 
 
 def _counts(dbf_path: Path) -> tuple[int, int]:
-    """Return ``(active, deleted)`` record counts using dbfread (read-only)."""
+    """Return ``(active, deleted)`` record counts from the raw DBF layout.
 
-    from dbfread import DBF
+    Counting is done **without decoding any text field**, so it works for any
+    codepage (including the cp1250/cp852/Mazovia encoding fixtures).  The
+    physical record count is read from the header; the delete flag (first byte
+    of each record: 0x20 active / 0x2A deleted) is scanned directly.
+    """
 
-    table = DBF(str(dbf_path), load=False)
-    active = sum(1 for _ in table.records)
-    deleted = sum(1 for _ in table.deleted)
-    return active, deleted
+    with dbf_path.open("rb") as infile:
+        head = infile.read(32)
+        if len(head) < 32 or head[0] not in (0x02, 0x03, 0x30, 0x31, 0x83, 0x87):
+            raise ValueError(f"{dbf_path.name}: not a DBF file")
+        total = int.from_bytes(head[4:8], "little")
+        header_len = int.from_bytes(head[8:10], "little")
+        record_size = int.from_bytes(head[10:12], "little")
+        if record_size <= 1:
+            return 0, 0
+        infile.seek(header_len)  # record area starts after the field descriptors
+        deleted = 0
+        for _ in range(total):
+            flag = infile.read(1)
+            if not flag:
+                break
+            if flag == b"*":
+                deleted += 1
+            infile.seek(record_size - 1, 1)
+    return total - deleted, deleted
 
 
 def _write_meta(path: Path, meta: dict[str, object]) -> None:
@@ -99,6 +118,13 @@ def _write_meta(path: Path, meta: dict[str, object]) -> None:
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _measured_counts(path: Path) -> dict[str, int]:
+    """Record counts measured from the file on disk (never an expectation)."""
+
+    active, deleted = _counts(path)
+    return {"active_records": active, "deleted_records": deleted, "total_records": active + deleted}
+
+
 def _meta_path(path: Path) -> Path:
     return path.with_suffix(".meta.json")
 
@@ -107,7 +133,8 @@ def _validate(path: Path, expected: dict[str, object]) -> bool:
     """Return True when the on-disk fixture matches *expected*.
 
     Checks sidecar presence, generator version, kind/encoding, DBF presence,
-    expected record/deleted counts, and DBF (+FPT where required) SHA-256.
+    expected record/deleted counts (measured from the file), DBF (+FPT where
+    required) SHA-256, and FPT presence/absence.
     """
 
     meta_file = _meta_path(path)
@@ -122,9 +149,23 @@ def _validate(path: Path, expected: dict[str, object]) -> bool:
             return False
     if meta.get("dbf_sha256") != _sha256(path):
         return False
+    # The sidecar counts must match the file's actual (measured) counts.
+    try:
+        measured = _measured_counts(path)
+    except Exception:
+        return False
+    if any(meta.get(key) != value for key, value in measured.items()):
+        return False
+    fpt = path.with_suffix(".fpt")
     if expected.get("require_fpt"):
-        fpt = path.with_suffix(".fpt")
-        if not fpt.is_file() or meta.get("fpt_sha256") != _sha256(fpt):
+        if (
+            not fpt.is_file()
+            or not meta.get("fpt_present")
+            or meta.get("fpt_sha256") != _sha256(fpt)
+        ):
+            return False
+    else:
+        if fpt.is_file() or meta.get("fpt_present"):
             return False
     return True
 
@@ -142,7 +183,9 @@ def _ensure(
         if existing.is_file():
             existing.unlink()
     generate(path)
-    _write_meta(path, expected)
+    meta = dict(expected)
+    meta.update(_measured_counts(path))
+    _write_meta(path, meta)
     return path
 
 
@@ -159,7 +202,6 @@ def _flat_fields() -> list[tuple[str, str, int, int]]:
         ("AKTYWNY", "L", 1, 0),
         ("DATA", "D", 8, 0),
         ("DATA_CZAS", "T", 8, 0),
-        ("NOTATKA", "M", 0, 0),
     ]
 
 
@@ -215,7 +257,7 @@ def generate_flat(
     *,
     deleted_fraction: float = 0.0,
 ) -> Path:
-    """Wide, memo-free table exercising C/N/L/D/T/Y parsing (optional deleted)."""
+    """Wide, memo-free table (no memo field, no FPT) exercising C/N/L/D/T/Y parsing."""
 
     expected = {
         "generator_version": SPEC_VERSION,
@@ -315,7 +357,7 @@ def _write_minimal_dbf(
     header = struct.pack(
         "<BBBBLHH20x",
         0x03,  # dbf version (dBase III without memo)
-        now.year - 2000,
+        now.year - 1900,  # year byte: years since 1900
         now.month,
         now.day,
         1,  # numrecords
@@ -328,7 +370,7 @@ def _write_minimal_dbf(
     record = b" " + text.encode(encoding).ljust(field_length, b"\x20")
 
     with path.open("wb") as outfile:
-        outfile.write(header + field_desc + terminator + record)
+        outfile.write(header + field_desc + terminator + record + b"\x1a")
         outfile.flush()
 
 

@@ -24,6 +24,7 @@ The worker prints a single JSON payload to stdout:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import statistics
 import sys
@@ -52,18 +53,26 @@ def _median(values: list[float | None]) -> float | None:
 
 
 def aggregate(samples: list[dict[str, object]]) -> dict[str, object]:
-    """Aggregate measured-run samples into a documented median summary."""
+    """Aggregate the SUCCESSFUL measured-run samples into a documented median summary.
+
+    Failed samples never participate in the medians.  When nothing succeeded
+    the aggregate reports ``None`` medians together with ``repetitions_succeeded``
+    ``0``, so a FAILED scenario is never presented as a comparable baseline.
+    """
+
+    success = [s for s in samples if s.get("status") == "MEASURED"]
+    failed = len(samples) - len(success)
 
     def col(key: str) -> list[float | None]:
         out: list[float | None] = []
-        for s in samples:
+        for s in success:
             value = s.get(key)
             out.append(value if isinstance(value, (int, float)) else None)
         return out
 
     def maxcol(key: str) -> int | None:
         values: list[int] = []
-        for s in samples:
+        for s in success:
             value = s.get(key)
             if isinstance(value, int):
                 values.append(value)
@@ -74,6 +83,9 @@ def aggregate(samples: list[dict[str, object]]) -> dict[str, object]:
     return {
         "aggregation": AGGREGATION,
         "repetitions": len(samples),
+        "repetitions_succeeded": len(success),
+        "repetitions_failed": failed,
+        "valid_baseline": failed == 0 and len(success) > 0,
         "median_wall_seconds": wall,
         "median_cpu_seconds": cpu,
         "median_records_per_second": _median(col("records_per_second")),
@@ -125,8 +137,10 @@ class Runner:
         self.root = root
         self.profile = profile
         self.work_dir = work_dir
-        self.repetitions = max(1, repetitions)
-        self.warmup = max(0, warmup)
+        # The controller validates these values (repetitions >= 1, warmup >= 0);
+        # the worker must not silently clamp them so the report matches reality.
+        self.repetitions = repetitions
+        self.warmup = warmup
         self.fixture_dir = work_dir / "fixtures"
         self.results: list[dict[str, object]] = []
 
@@ -218,8 +232,15 @@ class Runner:
                 )
             )
 
-        status = "MEASURED" if all(s["status"] == "MEASURED" for s in measured) else "FAILED"
-        errors = [s.get("error") for s in measured if s.get("error")]
+        # ANY failed warm-up OR measured repetition fails the whole scenario;
+        # raw samples and errors are preserved, and the aggregate is flagged
+        # as not a valid baseline.
+        all_samples = warmup_samples + measured
+        errors: list[str] = []
+        for s in all_samples:
+            if s.get("error"):
+                errors.append(str(s.get("error")))
+        status = "MEASURED" if all(s["status"] == "MEASURED" for s in all_samples) else "FAILED"
         return {
             "scenario": name,
             "description": description,
@@ -290,12 +311,26 @@ class Runner:
         name = f"jsonl_conversion_{mode}"
         size_mb = 20
         source = self.work_dir / "jsonl" / f"input_{mode}.jsonl"
-        if not source.exists():
-            module.generate_jsonl(source, size_mb)
-        records = 0
         meta = source.with_suffix(".benchmark.json")
+        records: int | None = None
+        if meta.is_file():
+            with contextlib.suppress(
+                OSError, json.JSONDecodeError, KeyError, TypeError, ValueError
+            ):
+                records = int(json.loads(meta.read_text(encoding="utf-8"))["records"])
+        # Reuse an existing input only when it is complete AND its sidecar
+        # confirms the record count; otherwise (re)generate it before measuring.
+        if not source.is_file() or records is None:
+            for stale in (source, meta):
+                if stale.exists():
+                    stale.unlink()
+            module.generate_jsonl(source, size_mb)
+        if not source.is_file():
+            raise RuntimeError(f"JSONL input could not be prepared at {source}")
         if meta.is_file():
             records = int(json.loads(meta.read_text(encoding="utf-8"))["records"])
+        if records is None or records <= 0:
+            raise RuntimeError(f"JSONL input metadata is missing a valid record count: {meta}")
         input_bytes = source.stat().st_size
 
         def make(out: Path):
@@ -502,7 +537,8 @@ class Runner:
     # ------------------------------------------------------------------ dispatch
 
     def run_scenario(self, name: str) -> None:
-        memo_records = 2_000 if self.profile == "fast" else 4_000
+        # Shared scenarios must use IDENTICAL parameters in fast and full; only
+        # scenario *names* differ between profiles, never their parameters.
         if name == "jsonl_conversion_json":
             self.scenario_jsonl_conversion("json")
         elif name == "jsonl_conversion_csv":
@@ -532,8 +568,8 @@ class Runner:
             self.scenario_export(
                 name,
                 f"DBF -> JSONL memo={memo}",
-                self.memo_heavy(memo_records),
-                input_records=memo_records,
+                self.memo_heavy(2_000),
+                input_records=2_000,
                 memo=memo,  # type: ignore[arg-type]
             )
         elif name in {"deleted_skip", "deleted_include"}:
