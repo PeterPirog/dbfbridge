@@ -88,7 +88,8 @@ def _scan_dbf(dbf_path: Path) -> dict[str, int]:
     layout is inconsistent instead of silently guessing a count.  Rules:
 
     - the header must be at least 32 bytes with a known DBF version byte;
-    - ``header_length`` must be plausible (>= 33, within the file size);
+    - ``header_length`` must be plausible (>= 33) and, for **every** file
+      including ``total_records == 0``, must not exceed the file size;
     - ``record_length`` must be >= 2 (delete marker + at least one byte);
     - every record in the declared record area is scanned: a record shorter
       than ``record_length`` is rejected, and a delete marker that is neither
@@ -116,6 +117,12 @@ def _scan_dbf(dbf_path: Path) -> dict[str, int]:
             raise FixtureIntegrityError(f"{dbf_path.name}: implausible header_length {header_len}")
 
         size = infile.seek(0, 2)
+        # header_length must be plausible for EVERY file, including empty
+        # (total_records == 0) DBFs: it can never exceed the file size.
+        if header_len > size:
+            raise FixtureIntegrityError(
+                f"{dbf_path.name}: header_length {header_len} exceeds file size {size}"
+            )
         if total > 0 and header_len + total * record_size > size:
             raise FixtureIntegrityError(
                 f"{dbf_path.name}: record area truncated "

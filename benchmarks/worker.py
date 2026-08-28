@@ -316,7 +316,7 @@ class Runner:
     def _prepare_jsonl_input(self, module, name: str, size_mb: int) -> tuple[Path, int, int]:
         """Prepare (or strictly re-validate) the JSONL conversion input.
 
-        The Phase 0 sidecar ``<name>.jsonl.meta.json`` records:
+        The Phase 0 sidecar ``<name>.meta.json`` records:
 
         - ``generator`` / ``version`` (recipe identity);
         - ``records``;
@@ -324,18 +324,28 @@ class Runner:
         - ``sha256``;
         - ``complete_line_count``.
 
-        Before reuse **every** value is checked against the file on disk.  A
-        partial, modified, incomplete or inconsistent JSONL is deleted and
-        regenerated.  This happens OUTSIDE the measured window.
+        After (re)generation the generator's own legacy ``.benchmark.json``
+        sidecar is read and its ``records`` treated as the *expected* count.
+        The file is then strictly validated: expected records > 0, every
+        non-empty line is complete valid JSON (``invalid_line_count == 0``),
+        ``actual complete_line_count == expected records``, the Phase 0 sidecar
+        ``records == expected records``, and bytes/SHA-256 match the file.
+        A generator that does not honour its declared record count is rejected
+        (``ValueError``) — the invalid file is kept for diagnosis and no Phase 0
+        sidecar is written for it, so no blind regeneration loop can occur.
+        Reuse of an already-valid input never regenerates.
         """
 
         source = self.work_dir / "jsonl" / name
         sidecar = source.with_name(name + ".meta.json")
+        legacy = source.with_suffix(".benchmark.json")
 
-        def measure() -> dict[str, object]:
+        def analyze() -> dict[str, object]:
             sha = hashlib.sha256()
             size = 0
             complete = 0
+            invalid = 0
+            last_complete = False
             with source.open("rb") as infile:
                 while chunk := infile.read(1 << 20):
                     sha.update(chunk)
@@ -347,42 +357,94 @@ class Runner:
                     try:
                         json.loads(line)
                         complete += 1
+                        last_complete = True
                     except json.JSONDecodeError:
-                        pass
+                        invalid += 1
+                        last_complete = False
             return {
-                "generator": "benchmark_jsonl_conversion.generate_jsonl",
-                "version": JSONL_INPUT_VERSION,
-                "records": complete,
                 "bytes": size,
                 "sha256": sha.hexdigest(),
                 "complete_line_count": complete,
+                "invalid_line_count": invalid,
+                "ends_with_complete_line": last_complete,
             }
 
-        def valid() -> bool:
-            if not source.is_file() or not sidecar.is_file():
+        def expected_records() -> int | None:
+            if not legacy.is_file():
+                return None
+            try:
+                value = json.loads(legacy.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            rec = value.get("records") if isinstance(value, dict) else None
+            return rec if isinstance(rec, int) and not isinstance(rec, bool) else None
+
+        def build_sidecar(expected: int) -> dict[str, object]:
+            actual = analyze()
+            data: dict[str, object] = {
+                "generator": "benchmark_jsonl_conversion.generate_jsonl",
+                "version": JSONL_INPUT_VERSION,
+                "expected_records": expected,
+                "records": int(actual["complete_line_count"]),  # type: ignore[arg-type]
+                "bytes": int(actual["bytes"]),  # type: ignore[arg-type]
+                "sha256": actual["sha256"],
+                "complete_line_count": int(actual["complete_line_count"]),  # type: ignore[arg-type]
+                "invalid_line_count": int(actual["invalid_line_count"]),  # type: ignore[arg-type]
+            }
+            return data
+
+        def strict_ok(stored: dict[str, object]) -> bool:
+            expected = expected_records()
+            if expected is None or expected <= 0:
                 return False
+            if not stored.get("generator") or stored.get("version") != JSONL_INPUT_VERSION:
+                return False
+            if stored.get("expected_records") != expected or stored.get("records") != expected:
+                return False
+            if stored.get("complete_line_count") != expected:
+                return False
+            if stored.get("invalid_line_count") != 0:
+                return False
+            actual = analyze()
+            return (
+                stored.get("bytes") == actual["bytes"]
+                and stored.get("sha256") == actual["sha256"]
+                and int(stored["records"]) == int(actual["complete_line_count"])  # type: ignore[arg-type]
+            )
+
+        if sidecar.is_file():
             try:
                 stored = json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(stored, dict) and strict_ok(stored):
+                    return source, int(stored["records"]), int(stored["bytes"])  # type: ignore[arg-type]
             except (OSError, json.JSONDecodeError):
-                return False
-            if not isinstance(stored, dict):
-                return False
-            return stored == measure()
+                pass
 
-        if valid():
-            stored = json.loads(sidecar.read_text(encoding="utf-8"))
-            return source, int(stored["records"]), int(stored["bytes"])  # type: ignore[arg-type]
-
-        # Partial / modified / inconsistent / missing -> regenerate.
-        for stale in (source, sidecar, source.with_suffix(".benchmark.json")):
+        # Missing / stale / invalid / inconsistent -> (re)generate.  Reuse of a
+        # valid input is handled above, so this branch only ever runs for inputs
+        # that are genuinely not ready.
+        for stale in (source, sidecar, legacy):
             if stale.exists():
                 stale.unlink()
         module.generate_jsonl(source, size_mb)
-        actual = measure()
-        if int(actual["complete_line_count"]) <= 0:  # type: ignore[arg-type]
-            raise RuntimeError(f"JSONL input regenerated but empty: {source}")
-        sidecar.write_text(json.dumps(actual, indent=2), encoding="utf-8")
-        return source, int(actual["records"]), int(actual["bytes"])  # type: ignore[arg-type]
+
+        expected = expected_records()
+        actual = analyze()
+        if expected is None or expected <= 0:
+            raise ValueError(f"JSONL generator did not declare a positive record count: {legacy}")
+        if int(actual["invalid_line_count"]) != 0:  # type: ignore[arg-type]
+            raise ValueError(
+                f"JSONL generator produced {int(actual['invalid_line_count'])} invalid line(s); "  # type: ignore[arg-type]
+                f"refusing to use {source}"
+            )
+        if int(actual["complete_line_count"]) != expected:  # type: ignore[arg-type]
+            raise ValueError(
+                f"JSONL generator produced {int(actual['complete_line_count'])} complete "  # type: ignore[arg-type]
+                f"line(s) but declared {expected}; refusing to use {source}"
+            )
+        sidecar_data = build_sidecar(expected)
+        sidecar.write_text(json.dumps(sidecar_data, indent=2), encoding="utf-8")
+        return source, expected, int(sidecar_data["bytes"])  # type: ignore[arg-type]
 
     def scenario_jsonl_conversion(self, mode: str) -> None:
         """In-process call into the legacy benchmark's conversion functions."""

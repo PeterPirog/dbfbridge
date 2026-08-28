@@ -609,6 +609,22 @@ def test_fixture_scan_rejects_inconsistent_files(tmp_path: Path) -> None:
     with pytest.raises(fixtures.FixtureIntegrityError):
         fixtures._measured_counts(bad_marker)
 
+    # A zero-record DBF must still require header_length <= file size.
+    import struct as _struct
+
+    empty = tmp_path / "empty.dbf"
+    empty.write_bytes(_struct.pack("<BBBBLHH20x", 0x03, 20, 1, 1, 0, 33, 8) + b"\x0d")
+    assert fixtures._measured_counts(empty) == {
+        "active_records": 0,
+        "deleted_records": 0,
+        "total_records": 0,
+    }
+    # ...and a zero-record DBF whose header_length exceeds the file size fails.
+    empty_bad = tmp_path / "empty_bad.dbf"
+    empty_bad.write_bytes(_struct.pack("<BBBBLHH20x", 0x03, 20, 1, 1, 0, 4096, 8) + b"\x0d")
+    with pytest.raises(fixtures.FixtureIntegrityError):
+        fixtures._measured_counts(empty_bad)
+
     # Contradictory sidecar (claims a count the file does not hold) must fail.
     p.with_suffix(".meta.json").write_text(
         json.dumps(
@@ -761,26 +777,34 @@ def test_jsonl_input_reuse_and_regeneration(tmp_path: Path) -> None:
 
     runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=1, warmup=0)
 
-    class FakeModule:
+    class GoodModule:
+        """Honest generator: writes exactly 1000 valid lines AND declares 1000."""
+
         count = 0
 
         def generate_jsonl(self, path: Path, size_mb: int) -> int:
-            FakeModule.count += 1
+            GoodModule.count += 1
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("wb") as out:
                 for i in range(1000):
                     out.write(json.dumps({"id": i}).encode() + b"\n")
+            # The generator's own legacy sidecar declares the record count.
+            path.with_suffix(".benchmark.json").write_text(
+                json.dumps({"records": 1000}), encoding="utf-8"
+            )
             return 1000
 
     name = "input_json.jsonl"
-    # First preparation: no file -> generated, sidecar written.
-    source, records, size = runner._prepare_jsonl_input(FakeModule(), name, 20)
+    # First preparation: generated, declared==actual, sidecar written.
+    source, records, size = runner._prepare_jsonl_input(GoodModule(), name, 20)
     assert records == 1000
     assert size == source.stat().st_size
     sidecar = source.with_name(name + ".meta.json")
     stored = json.loads(sidecar.read_text(encoding="utf-8"))
-    assert FakeModule.count == 1
+    assert GoodModule.count == 1
     assert stored["records"] == 1000
+    assert stored["expected_records"] == 1000
+    assert stored["invalid_line_count"] == 0
     assert stored["bytes"] == size
     assert stored["sha256"]
     assert stored["complete_line_count"] == 1000
@@ -788,8 +812,8 @@ def test_jsonl_input_reuse_and_regeneration(tmp_path: Path) -> None:
     assert stored["version"]
 
     # A correct JSONL with a matching sidecar is reused (no regeneration).
-    source2, records2, size2 = runner._prepare_jsonl_input(FakeModule(), name, 20)
-    assert FakeModule.count == 1, "valid JSONL must be reused, not regenerated"
+    source2, records2, size2 = runner._prepare_jsonl_input(GoodModule(), name, 20)
+    assert GoodModule.count == 1, "valid JSONL must be reused, not regenerated"
     assert (source2, records2, size2) == (source, 1000, size)
 
     def corrupt(mutate: str) -> None:
@@ -797,115 +821,209 @@ def test_jsonl_input_reuse_and_regeneration(tmp_path: Path) -> None:
         if mutate == "truncated":
             del data[-len(json.dumps({"id": 999}).encode()) - 1 :]
         elif mutate == "sha256":
-            # Change exactly one byte (same size, different SHA256, line stays valid JSON).
+            # One byte flipped (same size, different SHA256, line still valid JSON).
             i = data.find(b'"id"')
-            data[i + 4] = ord(
-                "j"
-            )  # "id" -> "jd": size unchanged, line no longer a known schema key
+            data[i + 4] = ord("j")
         elif mutate == "bytes":
             data += b"garbage"
         source.write_bytes(bytes(data))
 
     # Truncated file with UNCHANGED sidecar -> regenerated.
     corrupt("truncated")
-    source3, records3, _ = runner._prepare_jsonl_input(FakeModule(), name, 20)
-    assert FakeModule.count == 2, "truncated JSONL must be regenerated"
+    source3, records3, _ = runner._prepare_jsonl_input(GoodModule(), name, 20)
+    assert GoodModule.count == 2, "truncated JSONL must be regenerated"
     assert records3 == 1000
 
     # Modified file (changed SHA256) with unchanged sidecar -> regenerated.
     corrupt("sha256")
-    runner._prepare_jsonl_input(FakeModule(), name, 20)
-    assert FakeModule.count == 3, "SHA256 mismatch must regenerate"
+    runner._prepare_jsonl_input(GoodModule(), name, 20)
+    assert GoodModule.count == 3, "SHA256 mismatch must regenerate"
 
     # Appended bytes (byte-count mismatch) -> regenerated.
     corrupt("bytes")
-    runner._prepare_jsonl_input(FakeModule(), name, 20)
-    assert FakeModule.count == 4, "byte-count mismatch must regenerate"
+    runner._prepare_jsonl_input(GoodModule(), name, 20)
+    assert GoodModule.count == 4, "byte-count mismatch must regenerate"
 
     # Inconsistent complete_line_count in the sidecar -> regenerated.
     stored = json.loads(sidecar.read_text(encoding="utf-8"))
     stored["complete_line_count"] = 999_999
     sidecar.write_text(json.dumps(stored), encoding="utf-8")
-    runner._prepare_jsonl_input(FakeModule(), name, 20)
-    assert FakeModule.count == 5, "inconsistent complete_line_count must regenerate"
+    runner._prepare_jsonl_input(GoodModule(), name, 20)
+    assert GoodModule.count == 5, "inconsistent complete_line_count must regenerate"
+
+
+class _BadJsonlModule:
+    """Generator that DECLARES 1000 records but does not honour it.
+
+    ``mode`` selects the fault:
+    - ``missing``   : 999 valid lines, 1 short;
+    - ``corrupt``   : 999 valid lines + 1 invalid JSON line;
+    - ``trailing``  : 999 complete lines + a truncated final record.
+    """
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.count = 0
+
+    def generate_jsonl(self, path: Path, size_mb: int) -> int:
+        self.count += 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as out:
+            for i in range(999):
+                out.write(json.dumps({"id": i}).encode() + b"\n")
+            if self.mode == "missing":
+                pass
+            elif self.mode == "corrupt":
+                out.write(b'{"id": 999, "broken": \n')
+            elif self.mode == "trailing":
+                out.write(b'{"id": 999, "na')
+            else:  # pragma: no cover
+                raise AssertionError(self.mode)
+        # The generator still DECLARES 1000 records.
+        path.with_suffix(".benchmark.json").write_text(
+            json.dumps({"records": 1000}), encoding="utf-8"
+        )
+        return 1000
+
+
+def test_jsonl_generator_faults_are_rejected(tmp_path: Path) -> None:
+    from benchmarks import worker
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=1, warmup=0)
+    for mode in ("missing", "corrupt", "trailing"):
+        name = f"input_{mode}.jsonl"
+        sidecar = (tmp_path / "jsonl" / name).with_name(name + ".meta.json")
+        mod = _BadJsonlModule(mode)
+        with pytest.raises(ValueError):
+            runner._prepare_jsonl_input(mod, name, 20)
+        # The invalid file is kept for diagnosis, but NO Phase 0 sidecar is
+        # written for it (so it can never be reused as a valid input).
+        assert not sidecar.is_file(), f"mode={mode} must not write a valid sidecar"
+
+
+def _full_gate_payload() -> dict:
+    from benchmarks import run_benchmark
+
+    full_names = list(run_benchmark._scenario_names("full"))
+    assert len(full_names) == 19
+    good_sha = "a" * 40
+    sample = {
+        "input_bytes": 1000,
+        "output_bytes": 2000,
+        "wall_seconds": 1.0,
+        "cpu_seconds": 0.5,
+        "records_per_second": 100.0,
+        "source_mib_per_second": 1.0,
+        "peak_rss_bytes": 2048,
+        "read_amplification": 2.0,
+        "write_amplification": 1.0,
+        "temporary_bytes_written": 0,
+    }
+    scenarios = [
+        {
+            "scenario": name,
+            "status": "MEASURED",
+            "aggregated": {"valid_baseline": True},
+            "samples": [dict(sample) for _ in range(3)],
+        }
+        for name in full_names
+    ]
+    scenarios += [
+        {"scenario": n, "status": "NOT_IMPLEMENTED"}
+        for n in ("direct_read_bounded", "field_projection", "memo_lazy", "raw_mode_none")
+    ]
+    return {
+        "environment": {
+            "profile": "full",
+            "warmup": 1,
+            "repetitions": 3,
+            "git": {"commit": good_sha, "worktree_dirty": False},
+        },
+        "scenarios": scenarios,
+    }
 
 
 def test_baseline_gate_rejects_incomplete_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     from benchmarks import run_benchmark
 
-    def make_payload(**overrides: object) -> dict:
-        scenario = {
-            "scenario": "s",
-            "status": "MEASURED",
-            "aggregated": {"valid_baseline": True},
-            "samples": [
-                {
-                    "wall_seconds": 1.0,
-                    "cpu_seconds": 0.5,
-                    "records_per_second": 100.0,
-                    "output_bytes": 1000,
-                    "peak_rss_bytes": 2048,
-                }
-            ],
-        }
-        payload = {
-            "environment": {
-                "profile": "full",
-                "git": {"commit": "a" * 40, "worktree_dirty": False},
-            },
-            "scenarios": [scenario],
-        }
-        payload.update(overrides)
-        return payload
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
 
     # A complete full-profile, clean, psutil-available run passes.
-    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
-    monkeypatch.setattr(run_benchmark, "_scenario_names", lambda p: ["s"])
-    assert run_benchmark.check_baseline_gate(make_payload()) == []
+    assert run_benchmark.check_baseline_gate(_full_gate_payload()) == []
 
     # fast profile is rejected.
-    assert any(
-        "full" in r
-        for r in run_benchmark.check_baseline_gate(
-            make_payload(
-                environment={
-                    "profile": "fast",
-                    "git": {"commit": "a" * 40, "worktree_dirty": False},
-                }
-            )
-        )
-    )
+    p = _full_gate_payload()
+    p["environment"]["profile"] = "fast"
+    assert any("full" in r for r in run_benchmark.check_baseline_gate(p))
 
     # psutil absent is rejected.
     monkeypatch.setattr(run_benchmark, "psutil_available", lambda: False)
-    assert any("psutil" in r for r in run_benchmark.check_baseline_gate(make_payload()))
+    assert any("psutil" in r for r in run_benchmark.check_baseline_gate(_full_gate_payload()))
     monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
 
+    # warmup < 1 / repetitions < 3 are rejected.
+    p = _full_gate_payload()
+    p["environment"]["warmup"] = 0
+    assert any("warmup" in r for r in run_benchmark.check_baseline_gate(p))
+    p = _full_gate_payload()
+    p["environment"]["repetitions"] = 2
+    assert any("repetitions" in r for r in run_benchmark.check_baseline_gate(p))
+
     # any FAILED is rejected.
-    payload = make_payload()
-    payload["scenarios"].append({"scenario": "bad", "status": "FAILED", "reason": "boom"})
-    assert any("FAILED" in r for r in run_benchmark.check_baseline_gate(payload))
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "bad", "status": "FAILED", "reason": "boom"})
+    assert any("FAILED" in r for r in run_benchmark.check_baseline_gate(p))
 
     # a MEASURED scenario without valid_baseline is rejected.
-    payload = make_payload()
-    payload["scenarios"][0]["aggregated"] = {"valid_baseline": False}
-    assert any("valid baseline" in r for r in run_benchmark.check_baseline_gate(payload))
+    p = _full_gate_payload()
+    p["scenarios"][0]["aggregated"] = {"valid_baseline": False}
+    assert any("valid baseline" in r for r in run_benchmark.check_baseline_gate(p))
 
-    # a MEASURED sample missing required metrics is rejected.
-    payload = make_payload()
-    del payload["scenarios"][0]["samples"][0]["peak_rss_bytes"]
-    payload["scenarios"][0]["samples"][0]["peak_rss_bytes"] = None
-    assert any("peak-RSS" in r for r in run_benchmark.check_baseline_gate(payload))
+    # duplicate scenario names are rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append(dict(p["scenarios"][0]))
+    assert any("duplicate" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # a NOT_IMPLEMENTED entry missing is rejected.
+    p = _full_gate_payload()
+    p["scenarios"] = [s for s in p["scenarios"] if s["scenario"] != "memo_lazy"]
+    assert any("NOT_IMPLEMENTED" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # a non-40-hex commit is rejected.
+    p = _full_gate_payload()
+    p["environment"]["git"]["commit"] = "abc123"
+    assert any("commit" in r for r in run_benchmark.check_baseline_gate(p))
 
     # dirty worktree is rejected.
-    payload = make_payload()
-    payload["environment"]["git"]["worktree_dirty"] = True
-    assert any("dirty" in r for r in run_benchmark.check_baseline_gate(payload))
+    p = _full_gate_payload()
+    p["environment"]["git"]["worktree_dirty"] = True
+    assert any("dirty" in r for r in run_benchmark.check_baseline_gate(p))
 
-    # an unclear commit is rejected.
-    payload = make_payload()
-    payload["environment"]["git"]["commit"] = ""
-    assert any("commit" in r for r in run_benchmark.check_baseline_gate(payload))
+
+def test_baseline_gate_requires_every_sample_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """First sample complete, second one lacking a metric -> must be rejected.
+
+    This is the regression the review called out: the gate must not pass on
+    "at least one complete sample"; EVERY measured repetition must be complete.
+    """
+
+    from benchmarks import run_benchmark
+
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+    for key in (
+        "peak_rss_bytes",
+        "read_amplification",
+        "write_amplification",
+        "temporary_bytes_written",
+    ):
+        p = _full_gate_payload()
+        scenario = p["scenarios"][0]
+        # Keep the first sample complete, break exactly the second one.
+        scenario["samples"][1] = {k: v for k, v in scenario["samples"][1].items() if k != key}
+        reasons = run_benchmark.check_baseline_gate(p)
+        assert any("per-repetition" in r for r in reasons), (
+            f"missing {key} in one of the samples must be rejected, got {reasons}"
+        )
 
 
 def test_amplification_formulas_and_edge_cases() -> None:
@@ -931,32 +1049,98 @@ def test_atomic_publish_tracker_captures_partial_sizes(tmp_path: Path) -> None:
 
     from benchmarks import metrics
 
-    # One .partial publish -> total equals its size.
-    target = tmp_path / "out.txt"
-    with metrics.AtomicPublishTracker() as t:
-        partial = target.with_name(target.name + ".partial")
-        partial.write_bytes(b"x" * 1234)
-        os.replace(partial, target)
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    def publish(partial_name: str, final_name: str, size: int) -> None:
+        p = outdir / partial_name
+        p.write_bytes(b"x" * size)
+        os.replace(p, outdir / final_name)
+
+    # name.partial -> counts.
+    with metrics.AtomicPublishTracker(outdir) as t:
+        publish("small.jsonl.partial", "small.jsonl", 1234)
     assert t.publish_count == 1
     assert t.total_bytes == 1234
-    assert t.measured
 
-    # Multiple publishes accumulate.
-    target2 = tmp_path / "out2.txt"
-    target3 = tmp_path / "out3.txt"
-    with metrics.AtomicPublishTracker() as t2:
-        for dest, size in ((target2, 100), (target3, 300)):
-            p = dest.with_name(dest.name + ".partial")
-            p.write_bytes(b"y" * size)
-            os.replace(p, dest)
-    assert t2.publish_count == 2
-    assert t2.total_bytes == 400
+    # .name.partial.dbf and .name.partial.fpt -> both count.
+    with metrics.AtomicPublishTracker(outdir) as t:
+        publish(".small.partial.dbf", "small.dbf", 100)
+        publish(".small.partial.fpt", "small.fpt", 50)
+    assert t.publish_count == 2
+    assert t.total_bytes == 150
 
-    # No .partial created -> real zero, not an estimate.
-    with metrics.AtomicPublishTracker() as t3:
-        (tmp_path / "plain.txt").write_bytes(b"z" * 10)
-    assert t3.publish_count == 0
-    assert t3.total_bytes == 0
+    # .name.raw-layout.partial -> counts.
+    with metrics.AtomicPublishTracker(outdir) as t:
+        publish(".small.raw-layout.partial", "small.dbf", 77)
+    assert t.publish_count == 1
+    assert t.total_bytes == 77
+
+    # Two publishes through the SAME path -> both count (no deduplication).
+    with metrics.AtomicPublishTracker(outdir) as t:
+        publish("dup.jsonl.partial", "dup.jsonl", 10)
+        publish("dup.jsonl.partial", "dup.jsonl", 20)
+    assert t.publish_count == 2
+    assert t.total_bytes == 30
+
+    # A .partial OUTSIDE output_dir is NOT counted.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    with metrics.AtomicPublishTracker(outdir) as t:
+        p = outside / "rogue.jsonl.partial"
+        p.write_bytes(b"r" * 55)
+        os.replace(p, outside / "rogue.jsonl")
+    assert t.publish_count == 0
+    assert t.total_bytes == 0
+
+    # A FAILED os.replace is not reported as a successful publish.
+    with metrics.AtomicPublishTracker(outdir) as t:
+        p = outdir / "will-fail.jsonl.partial"
+        p.write_bytes(b"b" * 12)
+        with pytest.raises(OSError):
+            os.replace(p, "/nonexistent/definitely/missing.jsonl")
+    assert t.publish_count == 0
+    assert t.total_bytes == 0
+
+    # os.replace is restored after the context block.
+    assert os.replace is not None
+    assert "AtomicPublishTracker" not in type(os.replace).__name__
+
+
+def test_reconstruction_temporary_bytes_include_dbf_and_fpt(tmp_path: Path) -> None:
+    """Integration: a reconstruction publishes DBF (and FPT when memo) and both
+    must appear in ``temporary_bytes_written`` (measured through the real
+    ``os.replace`` publish path in the worker's ``metrics.run``)."""
+
+    from benchmarks import metrics
+
+    out = tmp_path / "rebuilt"
+    out.mkdir()
+
+    def reconstruct() -> None:
+        # Emulate the production publish conventions (DBF + FPT).
+        for partial_name, final_name, size in (
+            (".small.partial.dbf", "small.dbf", 1000),
+            (".small.partial.fpt", "small.fpt", 400),
+            (".small.raw-layout.partial", "small.dbf", 1000),
+        ):
+            p = out / partial_name
+            p.write_bytes(b"q" * size)
+            import os
+
+            os.replace(p, out / final_name)
+
+    result = metrics.run(
+        reconstruct,
+        input_bytes=800,
+        input_records=10,
+        output_dir=out,
+    )
+    assert result["status"] == "MEASURED"
+    # 1000 (dbf) + 400 (fpt) + 1000 (raw-layout republish) = 2400.
+    assert result["temporary_bytes_written"] == 2400
+    assert result["temporary_publish_count"] == 3
+    assert result["write_amplification"] is not None
 
 
 def test_failed_sample_excluded_from_amplification_aggregate() -> None:
