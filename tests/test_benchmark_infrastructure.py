@@ -146,14 +146,18 @@ def test_reconstruction_names_are_distinct() -> None:
     assert "reconstruction_jsonl_to_dbf" in fast
     assert "reconstruction_190k" in full
     assert "reconstruction_190k" not in fast
+    assert "reconstruction_memo_190k" in full
+    assert "reconstruction_memo_190k" not in fast
     # The full profile extends the fast profile with distinct 190k names.
     assert "reconstruction_jsonl_to_dbf" in full
     assert full - fast == {
         "export_1m_records",
         "memo_heavy_190k",
         "reconstruction_190k",
+        "reconstruction_memo_190k",
         "jsonl_conversion_xlsx",
     }
+    assert len(full) == 20
     # No name may appear in both profiles.
     assert not (fast & (full - fast))
 
@@ -905,9 +909,10 @@ def _full_gate_payload() -> dict:
     from benchmarks import run_benchmark
 
     full_names = list(run_benchmark._scenario_names("full"))
-    assert len(full_names) == 19
+    assert len(full_names) == 20
     good_sha = "a" * 40
     sample = {
+        "status": "MEASURED",
         "input_bytes": 1000,
         "output_bytes": 2000,
         "wall_seconds": 1.0,
@@ -919,12 +924,25 @@ def _full_gate_payload() -> dict:
         "write_amplification": 1.0,
         "temporary_bytes_written": 0,
     }
+    memo_sample = {
+        **sample,
+        "output_dbf_bytes": 5_000,
+        "output_fpt_bytes": 9_000,
+        "fpt_mib_per_second": 0.5,
+        "temporary_publish_count": 2,
+        "temporary_bytes_written": 14_000,
+    }
+    warmup = {"status": "MEASURED"}
     scenarios = [
         {
             "scenario": name,
             "status": "MEASURED",
             "aggregated": {"valid_baseline": True},
-            "samples": [dict(sample) for _ in range(3)],
+            "samples": [
+                dict(memo_sample if name == "reconstruction_memo_190k" else sample)
+                for _ in range(3)
+            ],
+            "warmup_samples": [dict(warmup) for _ in range(1)],
         }
         for name in full_names
     ]
@@ -1021,9 +1039,133 @@ def test_baseline_gate_requires_every_sample_complete(monkeypatch: pytest.Monkey
         # Keep the first sample complete, break exactly the second one.
         scenario["samples"][1] = {k: v for k, v in scenario["samples"][1].items() if k != key}
         reasons = run_benchmark.check_baseline_gate(p)
-        assert any("per-repetition" in r for r in reasons), (
+        assert any("samples" in r or "warm" in r for r in reasons), (
             f"missing {key} in one of the samples must be rejected, got {reasons}"
         )
+
+
+def test_baseline_gate_strict_sample_and_warmup_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate must reject wrong sample/warm-up counts and any non-MEASURED
+    sample or warm-up, independent of ``aggregated.valid_baseline``."""
+
+    from benchmarks import run_benchmark
+
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+    p = _full_gate_payload()
+    scenario = p["scenarios"][0]
+    complete = dict(scenario["samples"][0])
+
+    # repetitions=3 but only ONE complete sample -> rejected.
+    scenario["samples"] = [complete]
+    assert run_benchmark.check_baseline_gate(p)
+
+    # repetitions=3 but FOUR samples -> rejected.
+    scenario["samples"] = [complete] * 4
+    assert run_benchmark.check_baseline_gate(p)
+
+    # one sample is FAILED -> rejected.
+    scenario["samples"] = [complete, complete, {**complete, "status": "FAILED"}]
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("FAILED" in r for r in reasons)
+
+    # warmup=1 but no warmup_samples -> rejected.
+    scenario["samples"] = [complete] * 3
+    del scenario["warmup_samples"]
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("warmup" in r for r in reasons)
+
+    # warmup=1 but TWO warmup_samples -> rejected.
+    scenario["warmup_samples"] = [{"status": "MEASURED"}] * 2
+    assert run_benchmark.check_baseline_gate(p)
+
+    # a warm-up sample FAILED -> rejected even if the aggregate looks valid.
+    scenario["warmup_samples"] = [{**complete, "status": "FAILED"}]
+    scenario["aggregated"] = {"valid_baseline": True}
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("warmup" in r for r in reasons)
+
+
+def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The report must be exactly the full contract: unique names, known
+    statuses only, no name across categories."""
+
+    from benchmarks import run_benchmark
+
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+
+    # duplicate NOT_IMPLEMENTED -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "memo_lazy", "status": "NOT_IMPLEMENTED"})
+    assert any("duplicate" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # duplicate FAILED -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"] += [
+        {"scenario": "roundtrip_quality", "status": "FAILED"},
+        {"scenario": "roundtrip_quality", "status": "FAILED"},
+    ]
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("duplicate" in r for r in reasons)
+    assert any("FAILED" in r for r in reasons)
+
+    # an unknown status -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "roundtrip_quality", "status": "SKIPPED"})
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("unknown" in r for r in reasons)
+    assert any("duplicate" in r for r in reasons)
+
+    # a name outside the full-profile contract -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "totally_new_idea", "status": "MEASURED"})
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("contract" in r for r in reasons)
+
+    # the same name in two status categories -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "export_1m_records", "status": "FAILED"})
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("duplicate" in r for r in reasons)
+    assert any("FAILED" in r for r in reasons)
+
+
+def test_baseline_gate_memo_scenario_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reconstruction_memo_190k must carry real DBF+FPT evidence per sample."""
+
+    from benchmarks import run_benchmark
+
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+
+    def memo_index() -> int:
+        p = _full_gate_payload()
+        for i, s in enumerate(p["scenarios"]):
+            if s["scenario"] == "reconstruction_memo_190k":
+                return i
+        raise AssertionError("reconstruction_memo_190k not in the full profile")
+
+    # a sample with FPT missing -> rejected.
+    p = _full_gate_payload()
+    s = p["scenarios"][memo_index()]
+    del s["samples"][0]["output_fpt_bytes"]
+    assert any("output_fpt_bytes" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # fewer than two temporary publishes -> rejected.
+    p = _full_gate_payload()
+    s = p["scenarios"][memo_index()]
+    s["samples"][0]["temporary_publish_count"] = 1
+    assert any("temporary_publish_count" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # temporary bytes below dbf+fpt -> rejected.
+    p = _full_gate_payload()
+    s = p["scenarios"][memo_index()]
+    s["samples"][0]["temporary_bytes_written"] = 10
+    assert any("temporary_bytes_written" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # zero fpt throughput -> rejected.
+    p = _full_gate_payload()
+    s = p["scenarios"][memo_index()]
+    s["samples"][0]["fpt_mib_per_second"] = 0.0
+    assert any("fpt_mib_per_second" in r for r in run_benchmark.check_baseline_gate(p))
 
 
 def test_amplification_formulas_and_edge_cases() -> None:
@@ -1107,40 +1249,71 @@ def test_atomic_publish_tracker_captures_partial_sizes(tmp_path: Path) -> None:
     assert "AtomicPublishTracker" not in type(os.replace).__name__
 
 
-def test_reconstruction_temporary_bytes_include_dbf_and_fpt(tmp_path: Path) -> None:
-    """Integration: a reconstruction publishes DBF (and FPT when memo) and both
-    must appear in ``temporary_bytes_written`` (measured through the real
-    ``os.replace`` publish path in the worker's ``metrics.run``)."""
+def test_reconstruction_memo_real_integration(tmp_path: Path) -> None:
+    """Real end-to-end integration (no production code mocked):
 
-    from benchmarks import metrics
+    a genuine memo-heavy DBF+FPT fixture is exported to JSONL outside the
+    measured window, then the public ``reconstruct_dbf`` runs inside
+    ``metrics.run``.  The result must carry real DBF **and** FPT outputs,
+    at least two temporary publishes (DBF + FPT) whose logical sizes cover
+    the final files, and leave no ``.partial`` behind.
+    """
 
-    out = tmp_path / "rebuilt"
+    from benchmarks import fixtures, metrics
+    from dbfbridge import export_dbf, reconstruct_dbf
+
+    src = fixtures.generate_memo_heavy(tmp_path / "src" / "memo.dbf", 15)
+    assert src.is_file() and src.with_suffix(".fpt").is_file()
+
+    # JSONL export OUTSIDE the measured window.
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    export_dbf(
+        str(src.parent),
+        str(export_dir),
+        formats=("jsonl",),
+        deleted="include",
+        memo="inline",
+        overwrite=True,
+    ).raise_for_errors()
+    input_bytes = sum(p.stat().st_size for p in export_dir.rglob("*") if p.is_file())
+
+    out = tmp_path / "out"
     out.mkdir()
 
-    def reconstruct() -> None:
-        # Emulate the production publish conventions (DBF + FPT).
-        for partial_name, final_name, size in (
-            (".small.partial.dbf", "small.dbf", 1000),
-            (".small.partial.fpt", "small.fpt", 400),
-            (".small.raw-layout.partial", "small.dbf", 1000),
-        ):
-            p = out / partial_name
-            p.write_bytes(b"q" * size)
-            import os
+    def run() -> None:
+        result = reconstruct_dbf(
+            str(export_dir),
+            str(out / "rebuilt"),
+            input_format="jsonl",
+            memo="inline",
+            overwrite=True,
+        )
+        result.raise_for_errors()
+        target = out / "rebuilt"
+        if target.exists():
+            for child in target.iterdir():
+                child.rename(out / child.name)
+            target.rmdir()
 
-            os.replace(p, out / final_name)
+    result = metrics.run(run, input_bytes=input_bytes, input_records=15, output_dir=out)
+    assert result["status"] == "MEASURED", result
 
-    result = metrics.run(
-        reconstruct,
-        input_bytes=800,
-        input_records=10,
-        output_dir=out,
+    dbfs = [p for p in out.rglob("*.dbf") if p.is_file()]
+    fpts = [p for p in out.rglob("*.fpt") if p.is_file()]
+    assert len(dbfs) == 1 and dbfs[0].stat().st_size > 0
+    assert len(fpts) == 1 and fpts[0].stat().st_size > 0
+    assert fixtures._measured_counts(dbfs[0])["total_records"] == 15
+
+    publish_count = result.get("temporary_publish_count")
+    temp_bytes = result.get("temporary_bytes_written")
+    assert isinstance(publish_count, int) and publish_count >= 2
+    assert isinstance(temp_bytes, int) and temp_bytes >= (
+        dbfs[0].stat().st_size + fpts[0].stat().st_size
     )
-    assert result["status"] == "MEASURED"
-    # 1000 (dbf) + 400 (fpt) + 1000 (raw-layout republish) = 2400.
-    assert result["temporary_bytes_written"] == 2400
-    assert result["temporary_publish_count"] == 3
-    assert result["write_amplification"] is not None
+    # No temporary artefacts may be left behind.
+    leftovers = [p for p in out.rglob("*") if p.is_file() and "partial" in p.name.split(".")]
+    assert not leftovers
 
 
 def test_failed_sample_excluded_from_amplification_aggregate() -> None:

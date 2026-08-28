@@ -364,21 +364,69 @@ def _sample_missing_metrics(sample: dict[str, Any]) -> list[str]:
     return missing
 
 
+def _memo_sample_missing_metrics(sample: dict[str, Any]) -> list[str]:
+    """Extra requirements for a ``reconstruction_memo_190k`` sample.
+
+    Only this scenario reconstructs a memo table, so only it must show real
+    DBF **and** FPT outputs: both non-empty, a positive FPT throughput, at
+    least two temporary publishes (DBF + FPT), and temporary bytes covering
+    the final DBF+FPT sizes.  Scenarios without an FPT are never asked for a
+    separate FPT throughput.
+    """
+
+    missing: list[str] = []
+    dbf = sample.get("output_dbf_bytes")
+    fpt = sample.get("output_fpt_bytes")
+    if not (isinstance(dbf, int) and not isinstance(dbf, bool) and dbf > 0):
+        missing.append("output_dbf_bytes")
+    if not (isinstance(fpt, int) and not isinstance(fpt, bool) and fpt > 0):
+        missing.append("output_fpt_bytes")
+    rate = sample.get("fpt_mib_per_second")
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool) or rate <= 0:
+        missing.append("fpt_mib_per_second")
+    count = sample.get("temporary_publish_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 2:
+        missing.append("temporary_publish_count")
+    # Only when both outputs are present can the sum be checked; otherwise the
+    # generic temporary_bytes_written check (int >= 0) still applies.
+    if isinstance(dbf, int) and isinstance(fpt, int) and dbf > 0 and fpt > 0:
+        temp = sample.get("temporary_bytes_written")
+        if not isinstance(temp, int) or isinstance(temp, bool) or temp < dbf + fpt:
+            missing.append("temporary_bytes_written")
+    return missing
+
+
+def _is_positive_int(value: Any, minimum: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
 def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     """Return the list of reasons a versioned baseline must be REJECTED.
 
     An empty list means the run is eligible to be copied into
     ``benchmarks/baselines/``.  A versioned baseline is only allowed from a
-    **full, clean, complete** run with ``psutil`` available.  For every
-    ``MEASURED`` scenario, **every** measured repetition must carry all the
-    required metrics — a single complete sample among incomplete ones is not
-    enough.
+    **full, clean, complete** run with ``psutil`` available:
+
+    - the report contains only ``MEASURED`` / ``FAILED`` / ``NOT_IMPLEMENTED``
+      entries, every scenario name exactly once, all names inside the full
+      profile contract (``reconstruction_memo_190k`` included);
+    - exactly the full-profile set of MEASURED scenarios (20), the exact
+      NOT_IMPLEMENTED set (4), zero FAILED;
+    - for every MEASURED scenario: ``len(samples) == environment["repetitions"]``
+      and **every** sample is ``MEASURED`` with all required metrics;
+      ``len(warmup_samples) == environment["warmup"]`` and **every** warm-up
+      sample is ``MEASURED`` — a missing/extra/FAILED warm-up rejects the
+      baseline independent of ``aggregated.valid_baseline``;
+    - ``reconstruction_memo_190k`` samples additionally require the real
+      DBF+FPT metrics (see :func:`_memo_sample_missing_metrics`).
     """
 
     reasons: list[str] = []
     env = payload.get("environment", {})
     git = env.get("git", {})
-    all_scenarios = list(payload.get("scenarios", []))
+    all_scenarios = [s for s in payload.get("scenarios", []) if isinstance(s, dict)]
+    statuses = [s.get("status") for s in all_scenarios]
+    names = [s.get("scenario") for s in all_scenarios]
     measured = [s for s in all_scenarios if s.get("status") == STATUS_MEASURED]
     not_implemented = [s for s in all_scenarios if s.get("status") == STATUS_NOT_IMPLEMENTED]
     failed = [s for s in all_scenarios if s.get("status") == STATUS_FAILED]
@@ -388,18 +436,32 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     if not psutil_available():
         reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
 
-    if env.get("warmup", 0) < 1:
-        reasons.append(f"warmup is {env.get('warmup')}; a baseline requires warmup >= 1")
-    if env.get("repetitions", 0) < 3:
-        reasons.append(f"repetitions is {env.get('repetitions')}; a baseline requires >= 3")
+    warmup_expected = env.get("warmup")
+    reps_expected = env.get("repetitions")
+    if not _is_positive_int(warmup_expected, 1):
+        reasons.append(f"warmup is {warmup_expected!r}; a baseline requires warmup >= 1")
+    if not _is_positive_int(reps_expected, 3):
+        reasons.append(f"repetitions is {reps_expected!r}; a baseline requires repetitions >= 3")
+
+    # ------------------------------------------------------------------ report shape
+    allowed = {STATUS_MEASURED, STATUS_FAILED, STATUS_NOT_IMPLEMENTED}
+    unknown = sorted(str(st) for st in statuses if st not in allowed)
+    if unknown:
+        reasons.append(f"unknown scenario status(es) in the report: {', '.join(map(str, unknown))}")
+    duplicates = sorted({str(n) for n in names if names.count(n) > 1})
+    if duplicates:
+        reasons.append("duplicate scenario names in the report: " + ", ".join(duplicates))
+    contract = set(_scenario_names("full")) | {e["scenario"] for e in NOT_IMPLEMENTED}
+    foreign = sorted({str(n) for n in names if n not in contract})
+    if foreign:
+        reasons.append("scenario name(s) outside the full-profile contract: " + ", ".join(foreign))
 
     expected_full = list(_scenario_names("full"))
     measured_names = [s["scenario"] for s in measured]
     expected_set = set(expected_full)
     have_set = set(measured_names)
     missing = [n for n in expected_full if n not in have_set]
-    extra = sorted(have_set - expected_set)
-    duplicates = sorted({n for n in measured_names if measured_names.count(n) > 1})
+    extra = sorted(str(n) for n in have_set - expected_set if n is not None)
     if missing:
         reasons.append(
             f"{len(missing)} expected full-profile MEASURED scenario(s) missing: "
@@ -409,8 +471,6 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
         reasons.append(
             "unexpected MEASURED scenario(s) not in the full profile: " + ", ".join(extra)
         )
-    if duplicates:
-        reasons.append("duplicate scenario names in the run: " + ", ".join(duplicates))
     if len(measured) != len(expected_full):
         reasons.append(
             f"expected exactly {len(expected_full)} MEASURED scenarios, found {len(measured)}"
@@ -437,23 +497,44 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
             f"{len(invalid)} MEASURED scenario(s) without a valid baseline: " + ", ".join(invalid)
         )
 
-    # Per-sample metric completeness: EVERY measured repetition must be complete.
+    # Per-scenario completeness: exact sample counts AND every sample complete.
     incomplete: list[str] = []
     for s in measured:
-        samples = s.get("samples") or []
-        if not samples:
-            incomplete.append(f"{s['scenario']} (no samples)")
-            continue
-        bad = [
-            f"rep{i + 1}:{','.join(_sample_missing_metrics(sample))}"
-            for i, sample in enumerate(samples)
-            if _sample_missing_metrics(sample)
-        ]
-        if bad:
-            incomplete.append(f"{s['scenario']} ({'; '.join(bad)})")
+        problems: list[str] = []
+        samples = s.get("samples")
+        if not isinstance(samples, list):
+            problems.append("no sample list")
+        else:
+            if _is_positive_int(reps_expected, 0) and len(samples) != reps_expected:
+                problems.append(
+                    f"{len(samples)} samples but the run declares {reps_expected} repetitions"
+                )
+            for i, sample in enumerate(samples, start=1):
+                if not isinstance(sample, dict) or sample.get("status") != STATUS_MEASURED:
+                    shown = sample.get("status") if isinstance(sample, dict) else "absent"
+                    problems.append(f"rep{i}: sample status is {shown!r}, expected MEASURED")
+                    continue
+                extra_missing = _sample_missing_metrics(sample)
+                if s.get("scenario") == "reconstruction_memo_190k":
+                    extra_missing += _memo_sample_missing_metrics(sample)
+                if extra_missing:
+                    problems.append(f"rep{i}: missing {','.join(extra_missing)}")
+        warmups = s.get("warmup_samples")
+        if not isinstance(warmups, list) or (
+            _is_positive_int(warmup_expected, 0) and len(warmups) != warmup_expected
+        ):
+            found = len(warmups) if isinstance(warmups, list) else "absent"
+            problems.append(f"warmup count mismatch: {found} != {warmup_expected}")
+        elif isinstance(warmups, list):
+            for i, warm in enumerate(warmups, start=1):
+                if not isinstance(warm, dict) or warm.get("status") != STATUS_MEASURED:
+                    shown = warm.get("status") if isinstance(warm, dict) else "absent"
+                    problems.append(f"warmup{i}: status is {shown!r}, expected MEASURED")
+        if problems:
+            incomplete.append(f"{s['scenario']} ({'; '.join(problems)})")
     if incomplete:
         reasons.append(
-            f"{len(incomplete)} MEASURED scenario(s) with incomplete per-repetition metrics: "
+            f"{len(incomplete)} MEASURED scenario(s) with incomplete samples or warm-ups: "
             + " | ".join(incomplete)
         )
 

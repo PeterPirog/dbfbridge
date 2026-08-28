@@ -138,6 +138,7 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
         "export_1m_records",
         "memo_heavy_190k",
         "reconstruction_190k",
+        "reconstruction_memo_190k",
         "jsonl_conversion_xlsx",
     )
 
@@ -640,6 +641,92 @@ class Runner:
             )
         )
 
+    def scenario_reconstruction_memo(self, name: str, source_dbf: Path, records: int) -> None:
+        """Memo-heavy reconstruction: a real JSONL -> DBF + FPT rebuild.
+
+        The JSONL input is prepared **outside** the measured window.  The
+        measured call is the public ``reconstruct_dbf``.  Each measured
+        repetition must produce a non-empty DBF **and** a non-empty FPT with
+        the expected record count; a missing/empty FPT fails the sample.
+        Per-sample extras for successful reps: ``output_dbf_bytes``,
+        ``output_fpt_bytes`` and ``fpt_mib_per_second``.
+        """
+
+        from dbfbridge import export_dbf, reconstruct_dbf
+
+        export_dir = self.work_dir / "out" / name / "export"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_dbf(
+            str(source_dbf.parent),
+            str(export_dir),
+            formats=("jsonl",),
+            deleted="include",
+            memo="inline",
+            overwrite=True,
+        ).raise_for_errors()
+        input_bytes = sum(p.stat().st_size for p in export_dir.rglob("*") if p.is_file())
+
+        def make(out: Path):
+            def run() -> None:
+                target = out / "rebuilt"
+                result = reconstruct_dbf(
+                    str(export_dir),
+                    str(target),
+                    input_format="jsonl",
+                    memo="inline",
+                    overwrite=True,
+                )
+                result.raise_for_errors()
+                # Flatten so the scenario's own output dir holds the artefacts.
+                if target.exists():
+                    for child in target.iterdir():
+                        child.rename(out / child.name)
+                    target.rmdir()
+                dbfs = [p for p in out.rglob("*.dbf") if p.is_file()]
+                fpts = [p for p in out.rglob("*.fpt") if p.is_file()]
+                if not dbfs or dbfs[0].stat().st_size == 0:
+                    raise RuntimeError("reconstructed DBF is missing or empty")
+                if not fpts or fpts[0].stat().st_size == 0:
+                    raise RuntimeError("reconstructed FPT is missing or empty")
+                counts = fixture_factory._measured_counts(dbfs[0])
+                if counts["total_records"] != records:
+                    raise RuntimeError(
+                        f"reconstructed DBF has {counts['total_records']} records, "
+                        f"expected {records}"
+                    )
+
+            return run
+
+        result = self._measure(
+            name,
+            f"JSONL -> DBF+FPT memo reconstruction ({records} records, memo=inline)",
+            make,
+            input_bytes=input_bytes,
+            input_records=records,
+        )
+        # Per-sample extras for MEASURED samples (the files are validated inside
+        # the measured call, so they exist for every successful repetition).
+        samples = result["samples"]
+        if isinstance(samples, list):
+            for i, sample in enumerate(samples, start=1):
+                if not isinstance(sample, dict) or sample.get("status") != STATUS_MEASURED:
+                    continue
+                rep_dir = self.work_dir / "out" / name / f"rep-{i}"
+                if not rep_dir.is_dir():
+                    continue
+                dbfs = [p for p in rep_dir.rglob("*.dbf") if p.is_file()]
+                fpts = [p for p in rep_dir.rglob("*.fpt") if p.is_file()]
+                dbf_bytes = dbfs[0].stat().st_size if dbfs else 0
+                fpt_bytes = fpts[0].stat().st_size if fpts else 0
+                sample["output_dbf_bytes"] = dbf_bytes
+                sample["output_fpt_bytes"] = fpt_bytes
+                wall = sample.get("wall_seconds")
+                if isinstance(wall, (int, float)) and not isinstance(wall, bool) and wall > 0:
+                    sample["fpt_mib_per_second"] = round((fpt_bytes / (1024 * 1024)) / wall, 6)
+                else:
+                    sample["fpt_mib_per_second"] = None
+        self.results.append(result)
+
     def scenario_roundtrip(self) -> None:
         name = "roundtrip_quality"
         from dbfbridge import check_conversion_quality
@@ -728,6 +815,10 @@ class Runner:
             self.scenario_reconstruction("reconstruction_jsonl_to_dbf", self.small(), 300)
         elif name == "reconstruction_190k":
             self.scenario_reconstruction("reconstruction_190k", self.medium(), 190_000)
+        elif name == "reconstruction_memo_190k":
+            self.scenario_reconstruction_memo(
+                "reconstruction_memo_190k", self.memo_heavy(190_000), 190_000
+            )
         elif name == "roundtrip_quality":
             self.scenario_roundtrip()
         elif name == "export_1m_records":
