@@ -47,8 +47,9 @@ python -m benchmarks.run_benchmark --profile fast --list
 # Per-scenario worker timeout (seconds); a timeout marks the scenario FAILED:
 python -m benchmarks.run_benchmark --profile fast --timeout 600
 
-# Also copy the report into benchmarks/baselines/ so it can be versioned:
-python -m benchmarks.run_benchmark --profile fast --baseline
+# Record a versioned baseline (FULL profile only; refused for fast/profiles,
+# missing psutil, any FAILED, an incomplete or dirty run — see "Baseline gate"):
+python -m benchmarks.run_benchmark --profile full --warmup 1 --repetitions 3 --baseline
 ```
 
 Every scenario runs in its **own worker subprocess** (`benchmarks/worker.py`),
@@ -74,10 +75,10 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
 
 - **Aggregation only over successful samples.** If **any** warm-up or measured
   repetition is `FAILED`, the whole scenario is `FAILED`, the raw samples and
-  errors are preserved, and the aggregate is flagged `valid_baseline: false`.
-  The Markdown never presents a partial median of a `FAILED` scenario as a
-  comparable baseline (those rows are labelled `NOT A VALID BASELINE` /
-  `NOT_AVAILABLE`).
+  errors are preserved, and the aggregate is flagged `valid_baseline: false`
+  (with `warmups_succeeded` / `warmups_failed` recorded).  The Markdown never
+  presents a partial median of a `FAILED` scenario as a comparable baseline
+  (those rows are labelled `NOT A VALID BASELINE` / `NOT_AVAILABLE`).
 
 - **Peak RSS** is the maximum of `psutil` samples taken on a background thread
   **during** the measured call (sampling interval recorded as
@@ -86,21 +87,58 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
 - **`output_bytes`** is the final, authoritative size of the scenario's own
   output directory — never a before/after diff on a shared directory, so
   re-running an overwritten scenario still reports the real (non-zero) size.
-- **`temporary_bytes`** is `NOT_AVAILABLE`: the library's atomic `.partial`
-  files cannot be reliably attributed per operation from the outside, so they
-  are never estimated.
+- **`temporary_bytes_written`** is the logical size of the atomic `.partial`
+  files **at the moment of `os.replace` publish**, measured by temporarily
+  intercepting `os.replace` inside the worker subprocess only (no production
+  code is modified).  It is a real sum of the temporary files that were
+  published; it is **0** when the operation created no temporary file, and
+  `NOT_AVAILABLE` (with a reason) only when the platform forbids reading the
+  partial at publish time.  It is explicitly **not** an
+  `io_write_bytes - output_bytes` guess.
+- **Read / write amplification** (`read_amplification` /
+  `write_amplification`) are defined as the measured **psutil process I/O
+  counter delta** divided by the logical `input_bytes` / `output_bytes`:
+  `io_read_bytes_delta / input_bytes` and `io_write_bytes_delta / output_bytes`.
+  These are **OS-level byte counters**: they are page-cache aware and
+  platform dependent (Windows reports bytes actually moved to/from the page
+  cache, Linux reports bytes passed to the kernel), so the ratio is a *measured
+  system ratio*, never a logical read/write count and never an estimate.  They
+  are `NOT_AVAILABLE` when the counters or the denominator are unavailable.
 - **Process I/O counters** (`io_*_delta`) are `psutil` process-level deltas
   around the measured call; they cover the worker process only.
 
+## Baseline gate (`--baseline`)
+
+Ordinary runs work without `psutil` and honestly report `NOT_AVAILABLE`.
+A **versioned baseline is a different class of artifact**: `--baseline` refuses
+to copy anything into `benchmarks/baselines/` (and exits non-zero) when any of
+the following is true:
+
+- the profile is not `full`;
+- `psutil` is unavailable;
+- any scenario is `FAILED`;
+- the run does not contain the full-profile scenario set;
+- any `MEASURED` scenario has `valid_baseline != true`;
+- any `MEASURED` sample lacks the required wall/CPU/throughput/output/peak-RSS
+  metrics (or the amplification/temporary metrics where applicable);
+- the worktree was dirty before the run;
+- the exact commit SHA could not be recorded.
+
+Only a **full, clean, complete, `psutil`-enabled** run may become a baseline.
+`psutil` is an optional, benchmark-only dependency (extra `dbfbridge[benchmark]`);
+it is **not** a runtime dependency of the library.
+
 ## Where results go
 
-- `benchmarks/results/` — **local, repeatable outputs; git-ignored.** Contains
-  the per-scenario diagnostic logs and the working JSON/Markdown reports.
-- `benchmarks/baselines/` — **the selected, versioned baseline.** When you run
-  with `--baseline`, the controller copies the JSON + Markdown report here so it
-  can be committed.  A versioned baseline must carry: git commit, worktree dirty
-  state, OS/CPU/Python, dependency versions, fixture sizes and the status of
-  every scenario — all of which the report already contains.
+- `benchmark-data/logs/` — **per-scenario diagnostic logs** (worker stdout/stderr;
+  git-ignored).
+- `benchmarks/results/` — **working reports from the last run(s); git-ignored.**
+- `benchmarks/baselines/` — **the selected, versioned baseline.** Created ONLY
+  when the `--baseline` gate (above) passes: a full, clean, complete,
+  `psutil`-enabled run.  Until then nothing is written here.  A versioned
+  baseline must carry: git commit, worktree state, OS/CPU/Python, dependency
+  versions, fixture sizes and the status of every scenario — all of which the
+  report already contains.
 - `benchmark-data/` — generated fixtures and outputs; **git-ignored** (regenerated
   on demand; never committed).
 
@@ -112,6 +150,10 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
 | `FAILED` | The scenario crashed or raised.  Reports the exit code and diagnostic log; **no metrics are invented.** |
 | `NOT_IMPLEMENTED` | The feature does not exist in `dbfbridge 0.1.0` (e.g. direct read, field projection, `memo="lazy"`, `raw_mode="none"`).  Listed verbatim, never simulated. |
 | `NOT_AVAILABLE` | The platform / optional dependency could not provide a specific metric (e.g. RSS without `psutil`).  Rendered `NOT_AVAILABLE` in Markdown, `null` in JSON.  Never fabricated. |
+
+Direct Read, field projection, `memo="lazy"` and the `raw_mode` split are
+**NOT_IMPLEMENTED** in `dbfbridge 0.1.0` and belong to Phase 1 / 0.2.0; they
+are listed verbatim and are never simulated.
 
 ## Measurement boundary
 

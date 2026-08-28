@@ -135,12 +135,10 @@ def directory_size_bytes(root: Path) -> int:
 
 
 def temporary_bytes_in(root: Path) -> int:
-    """Best-effort total size of ``*.partial*`` files under *root*.
+    """Best-effort total size of ``*.partial*`` files left under *root* (info only).
 
-    Used only to *report* temporary artefacts left behind by a run.  It is not
-    a reliable per-operation temporary-bytes counter, so callers should treat
-    it as informational and the true ``temporary_bytes`` metric is reported as
-    NOT_AVAILABLE unless a scenario can measure it directly.
+    This is NOT the ``temporary_bytes_written`` metric — it merely reports
+    temporary artefacts left behind by a run (there should be none).
     """
 
     if not root.is_dir():
@@ -151,6 +149,96 @@ def temporary_bytes_in(root: Path) -> int:
             with contextlib.suppress(OSError):
                 total += path.stat().st_size
     return total
+
+
+class AtomicPublishTracker:
+    """Benchmark-only interception of the atomic ``.partial -> final`` publish.
+
+    dbfbridge publishes every output file by writing ``<name>.partial``,
+    flushing/fsyncing, then calling ``os.replace(partial, final)``.  This
+    tracker temporarily replaces ``os.replace`` (in this worker subprocess only)
+    and, at the moment of publish, records the **logical size of the ``.partial``
+    file just before it becomes the final file**.  The sum over all publishes in
+    one measured call is the ``temporary_bytes_written`` metric.
+
+    - No production code is modified; the hook is restored in ``finally``.
+    - It is NOT an ``io_write_bytes - output_bytes`` guess: it measures the
+      actual temporary file contents at publish time.
+    - When the measured operation created no temporary file the total is 0
+      (a real zero, not an estimate).
+    - If the platform forbids reading the partial at that moment, the metric is
+      reported as ``None`` (NOT_AVAILABLE) and the reason is recorded.
+    """
+
+    def __init__(self) -> None:
+        self.total_bytes = 0
+        self.publish_count = 0
+        self.unavailable_reason: str | None = None
+        self._real_replace = None
+        self._active = False
+
+    @property
+    def measured(self) -> bool:
+        """True when no publish hit the NOT_AVAILABLE path (reason is ``None``)."""
+
+        return self.unavailable_reason is None
+
+    def __enter__(self) -> AtomicPublishTracker:
+        import os
+
+        self._real_replace = os.replace
+        seen: set[Path] = set()
+
+        def _tracked_replace(src, dst, *args, **kwargs):
+            src_path = Path(src)
+            if src_path.name.endswith(".partial") and src_path not in seen:
+                try:
+                    self.total_bytes += src_path.stat().st_size
+                    self.publish_count += 1
+                except OSError as exc:
+                    if self.unavailable_reason is None:
+                        self.unavailable_reason = f"could not stat {src_path.name}: {exc}"
+            seen.add(src_path)
+            assert self._real_replace is not None
+            return self._real_replace(src, dst, *args, **kwargs)
+
+        os.replace = _tracked_replace  # type: ignore[assignment]
+        self._active = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        import os
+
+        if self._real_replace is not None:
+            os.replace = self._real_replace  # type: ignore[assignment]
+            self._real_replace = None
+        self._active = False
+        return False
+
+
+def read_amplification(io_read_delta: int | None, input_bytes: int | None) -> float | None:
+    """``process I/O read bytes / input bytes``.
+
+    Computed from the **measured** psutil process I/O counter delta and the
+    source bytes.  These are OS-level byte counters (cache/page-cache aware,
+    platform dependent); the ratio is therefore a *measured system ratio*, not
+    a logical read-count.  ``None`` when either term is unavailable or the
+    denominator is zero.
+    """
+
+    if io_read_delta is None or not input_bytes:
+        return None
+    value = io_read_delta / input_bytes
+    return round(value, 4) if value < 1e12 else None
+
+
+def write_amplification(io_write_delta: int | None, output_bytes: int | None) -> float | None:
+    """``process I/O write bytes / output bytes`` (same semantics as read)."""
+
+    if io_write_delta is None or not output_bytes:
+        return None
+    value = io_write_delta / output_bytes
+    return round(value, 4) if value < 1e12 else None
 
 
 def run(
@@ -186,6 +274,8 @@ def run(
     before = process_snapshot()
     sampler = RssSampler()
     sampler.start()
+    tracker = AtomicPublishTracker()
+    tracker.__enter__()
     cpu_before = time.process_time()
     wall_before = time.perf_counter()
     status = STATUS_MEASURED
@@ -203,8 +293,10 @@ def run(
         wall = time.perf_counter() - wall_before
         cpu = time.process_time() - cpu_before
     finally:
-        # The sampler is always stopped and joined, even when the call raised.
+        # The sampler is always stopped and joined, and the os.replace hook is
+        # always restored, even when the call raised.
         sampler.stop()
+        tracker.__exit__(None, None, None)
 
     # Re-measure the scenario's own output directory (authoritative size).
     if output_dir.is_dir():
@@ -232,9 +324,6 @@ def run(
         ),
         # Authoritative output size for this scenario/rep.
         "output_bytes": output_bytes,
-        # temporary_bytes is NOT reliably measurable from the outside for the
-        # library's atomic writes; report None (NOT_AVAILABLE), never a guess.
-        "temporary_bytes": None,
     }
 
     # Peak RSS: a true sampled maximum (None -> NOT_AVAILABLE without psutil).
@@ -249,11 +338,15 @@ def run(
         result["rss_sample_interval_seconds"] = None
 
     if before is not None and after is not None:
-        result["io_read_bytes_delta"] = after["io_read_bytes"] - before["io_read_bytes"]
-        result["io_write_bytes_delta"] = after["io_write_bytes"] - before["io_write_bytes"]
+        io_read_delta = after["io_read_bytes"] - before["io_read_bytes"]
+        io_write_delta = after["io_write_bytes"] - before["io_write_bytes"]
+        result["io_read_bytes_delta"] = io_read_delta
+        result["io_write_bytes_delta"] = io_write_delta
         result["io_read_ops_delta"] = after["io_read_ops"] - before["io_read_ops"]
         result["io_write_ops_delta"] = after["io_write_ops"] - before["io_write_ops"]
     else:
+        io_read_delta = None
+        io_write_delta = None
         for key in (
             "io_read_bytes_delta",
             "io_write_bytes_delta",
@@ -261,6 +354,21 @@ def run(
             "io_write_ops_delta",
         ):
             result[key] = None
+
+    # Read/write amplification: measured process I/O counter deltas divided by
+    # the logical input/output bytes.  OS-level counters (page-cache aware,
+    # platform dependent); a measured ratio, not a logical read/write count.
+    result["read_amplification"] = read_amplification(io_read_delta, input_bytes)
+    result["write_amplification"] = write_amplification(io_write_delta, output_bytes)
+
+    # temporary_bytes_written: logical size of the atomic .partial files at
+    # publish time (measured by intercepting os.replace in this worker).
+    if tracker.unavailable_reason is not None:
+        result["temporary_bytes_written"] = None
+        result["temporary_bytes_written_reason"] = tracker.unavailable_reason
+    else:
+        result["temporary_bytes_written"] = tracker.total_bytes
+        result["temporary_publish_count"] = tracker.publish_count
 
     if error is not None:
         result["error"] = error

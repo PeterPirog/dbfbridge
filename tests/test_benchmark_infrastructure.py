@@ -394,7 +394,12 @@ def test_psutil_absent_degrades_to_not_available(
     assert result["rss_samples"] is None
     assert result["rss_sample_interval_seconds"] is None
     assert result["io_read_bytes_delta"] is None
-    assert result["temporary_bytes"] is None
+    # I/O-based amplification needs psutil counters -> NOT_AVAILABLE.
+    assert result["read_amplification"] is None
+    assert result["write_amplification"] is None
+    # temporary_bytes_written does NOT need psutil; a no-op call creates no
+    # .partial, so it is a real zero.
+    assert result["temporary_bytes_written"] == 0
 
 
 def test_metrics_run_sampler_stops_even_when_function_raises(tmp_path: Path) -> None:
@@ -533,6 +538,115 @@ def test_flat_fixture_is_memo_free_and_memo_heavy_has_fpt(tmp_path: Path) -> Non
     assert not fixtures._validate(memo, {"require_fpt": False})
 
 
+def test_fixture_scan_rejects_inconsistent_files(tmp_path: Path) -> None:
+    import struct
+
+    from benchmarks import fixtures
+
+    def _write_dbf(total: int, record: bytes) -> Path:
+        p = tmp_path / "bad.dbf"
+        # 32-byte header + one 0x0d terminator = 33-byte header, then records.
+        header = struct.pack(
+            "<BBBBLHH20x",
+            0x03,
+            20,
+            1,
+            1,
+            total,
+            33,
+            len(record),
+        )
+        p.write_bytes(header + b"\x0d" + record * total)
+        return p
+
+    # Correct active/deleted/total scan (well-formed file, mixed markers).
+    good = tmp_path / "good.dbf"
+    rec = b" " + b"abc"  # active marker + 3 payload bytes
+    rec_del = b"*" + b"abc"
+    good.write_bytes(
+        struct.pack("<BBBBLHH20x", 0x03, 20, 1, 1, 4, 33, len(rec))
+        + b"\x0d"
+        + rec
+        + rec_del
+        + rec
+        + rec_del
+    )
+    measured = fixtures._measured_counts(good)
+    assert measured == {"active_records": 2, "deleted_records": 2, "total_records": 4}
+
+    # Generator creating a DIFFERENT record count than expected must fail.
+    p = tmp_path / "wrong_count.dbf"
+    fixtures._write_minimal_dbf(p, "cp1250", "x")  # writes exactly 1 record
+    measured1 = fixtures._measured_counts(p)
+    good_meta = {
+        "generator_version": fixtures.SPEC_VERSION,
+        "records": 1,
+        "deleted": 0,
+        "require_fpt": False,
+        "dbf_sha256": fixtures._sha256(p),
+        "fpt_present": False,
+        **measured1,
+    }
+    p.with_suffix(".meta.json").write_text(json.dumps(good_meta), encoding="utf-8")
+    assert not fixtures._validate(p, {"records": 2, "deleted": 0, "require_fpt": False})
+    assert fixtures._validate(p, {"records": 1, "deleted": 0, "require_fpt": False})
+
+    # A file with a bad expected deleted count must fail.
+    assert not fixtures._validate(p, {"records": 1, "deleted": 1, "require_fpt": False})
+
+    # Truncated last record (file shorter than header_len + total * record_len).
+    rec = b" " + b"abc"  # active marker + 3 payload bytes
+    rec_del = b"*" + b"abc"
+    truncated = _write_dbf(4, rec + rec_del + rec + rec_del)
+    with truncated.open("r+b") as tf:
+        tf.seek(0, 2)
+        tf.truncate(tf.tell() - 4)
+    with pytest.raises(fixtures.FixtureIntegrityError):
+        fixtures._measured_counts(truncated)
+
+    # Invalid delete marker (neither 0x20 nor 0x2A).
+    bad_marker = _write_dbf(1, b"~" + b"abc")
+    with pytest.raises(fixtures.FixtureIntegrityError):
+        fixtures._measured_counts(bad_marker)
+
+    # Contradictory sidecar (claims a count the file does not hold) must fail.
+    p.with_suffix(".meta.json").write_text(
+        json.dumps(
+            {
+                "generator_version": fixtures.SPEC_VERSION,
+                "records": 3,
+                "deleted": 0,
+                "require_fpt": False,
+                "dbf_sha256": fixtures._sha256(p),
+                "fpt_present": False,
+                "active_records": 3,
+                "deleted_records": 0,
+                "total_records": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not fixtures._validate(p, {"records": 3, "deleted": 0, "require_fpt": False})
+
+    # A freshly generated but INCONSISTENT fixture must NOT be returned as good:
+    # simulate a generator that writes fewer records than the spec demands.
+    def broken_generate(path: Path) -> None:
+        fixtures._write_minimal_dbf(path, "cp1250", "x")  # 1 record
+
+    bad = tmp_path / "broken" / "broken.dbf"
+    with pytest.raises(fixtures.FixtureIntegrityError):
+        fixtures._ensure(
+            bad,
+            {
+                "generator_version": fixtures.SPEC_VERSION,
+                "records": 5,
+                "deleted": 0,
+                "require_fpt": False,
+            },
+            broken_generate,
+        )
+
+
 def test_deleted_fraction_counts_are_exact(tmp_path: Path) -> None:
     from benchmarks import fixtures
 
@@ -543,9 +657,11 @@ def test_deleted_fraction_counts_are_exact(tmp_path: Path) -> None:
     assert meta["deleted_records"] == 100
     assert meta["active_records"] == 900
     assert meta["total_records"] == 1_000
-    # Independent re-measurement with dbfread must agree with the sidecar.
-    active, deleted = fixtures._counts(path)
-    assert (active, deleted) == (900, 100)
+    # Independent re-measurement from the raw layout must agree with the sidecar.
+    measured = fixtures._measured_counts(path)
+    assert measured["active_records"] == 900
+    assert measured["deleted_records"] == 100
+    assert measured["total_records"] == 1_000
 
 
 def test_encoding_fixtures_contain_real_polish_diacritics(tmp_path: Path) -> None:
@@ -638,6 +754,296 @@ def test_failed_sample_excluded_from_median() -> None:
     agg_all_failed = worker.aggregate([s for s in samples if s["status"] == "FAILED"])
     assert agg_all_failed["median_wall_seconds"] is None
     assert agg_all_failed["valid_baseline"] is False
+
+
+def test_jsonl_input_reuse_and_regeneration(tmp_path: Path) -> None:
+    from benchmarks import worker
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=1, warmup=0)
+
+    class FakeModule:
+        count = 0
+
+        def generate_jsonl(self, path: Path, size_mb: int) -> int:
+            FakeModule.count += 1
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("wb") as out:
+                for i in range(1000):
+                    out.write(json.dumps({"id": i}).encode() + b"\n")
+            return 1000
+
+    name = "input_json.jsonl"
+    # First preparation: no file -> generated, sidecar written.
+    source, records, size = runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert records == 1000
+    assert size == source.stat().st_size
+    sidecar = source.with_name(name + ".meta.json")
+    stored = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert FakeModule.count == 1
+    assert stored["records"] == 1000
+    assert stored["bytes"] == size
+    assert stored["sha256"]
+    assert stored["complete_line_count"] == 1000
+    assert stored["generator"]
+    assert stored["version"]
+
+    # A correct JSONL with a matching sidecar is reused (no regeneration).
+    source2, records2, size2 = runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert FakeModule.count == 1, "valid JSONL must be reused, not regenerated"
+    assert (source2, records2, size2) == (source, 1000, size)
+
+    def corrupt(mutate: str) -> None:
+        data = bytearray(source.read_bytes())
+        if mutate == "truncated":
+            del data[-len(json.dumps({"id": 999}).encode()) - 1 :]
+        elif mutate == "sha256":
+            # Change exactly one byte (same size, different SHA256, line stays valid JSON).
+            i = data.find(b'"id"')
+            data[i + 4] = ord(
+                "j"
+            )  # "id" -> "jd": size unchanged, line no longer a known schema key
+        elif mutate == "bytes":
+            data += b"garbage"
+        source.write_bytes(bytes(data))
+
+    # Truncated file with UNCHANGED sidecar -> regenerated.
+    corrupt("truncated")
+    source3, records3, _ = runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert FakeModule.count == 2, "truncated JSONL must be regenerated"
+    assert records3 == 1000
+
+    # Modified file (changed SHA256) with unchanged sidecar -> regenerated.
+    corrupt("sha256")
+    runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert FakeModule.count == 3, "SHA256 mismatch must regenerate"
+
+    # Appended bytes (byte-count mismatch) -> regenerated.
+    corrupt("bytes")
+    runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert FakeModule.count == 4, "byte-count mismatch must regenerate"
+
+    # Inconsistent complete_line_count in the sidecar -> regenerated.
+    stored = json.loads(sidecar.read_text(encoding="utf-8"))
+    stored["complete_line_count"] = 999_999
+    sidecar.write_text(json.dumps(stored), encoding="utf-8")
+    runner._prepare_jsonl_input(FakeModule(), name, 20)
+    assert FakeModule.count == 5, "inconsistent complete_line_count must regenerate"
+
+
+def test_baseline_gate_rejects_incomplete_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from benchmarks import run_benchmark
+
+    def make_payload(**overrides: object) -> dict:
+        scenario = {
+            "scenario": "s",
+            "status": "MEASURED",
+            "aggregated": {"valid_baseline": True},
+            "samples": [
+                {
+                    "wall_seconds": 1.0,
+                    "cpu_seconds": 0.5,
+                    "records_per_second": 100.0,
+                    "output_bytes": 1000,
+                    "peak_rss_bytes": 2048,
+                }
+            ],
+        }
+        payload = {
+            "environment": {
+                "profile": "full",
+                "git": {"commit": "a" * 40, "worktree_dirty": False},
+            },
+            "scenarios": [scenario],
+        }
+        payload.update(overrides)
+        return payload
+
+    # A complete full-profile, clean, psutil-available run passes.
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+    monkeypatch.setattr(run_benchmark, "_scenario_names", lambda p: ["s"])
+    assert run_benchmark.check_baseline_gate(make_payload()) == []
+
+    # fast profile is rejected.
+    assert any(
+        "full" in r
+        for r in run_benchmark.check_baseline_gate(
+            make_payload(
+                environment={
+                    "profile": "fast",
+                    "git": {"commit": "a" * 40, "worktree_dirty": False},
+                }
+            )
+        )
+    )
+
+    # psutil absent is rejected.
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: False)
+    assert any("psutil" in r for r in run_benchmark.check_baseline_gate(make_payload()))
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+
+    # any FAILED is rejected.
+    payload = make_payload()
+    payload["scenarios"].append({"scenario": "bad", "status": "FAILED", "reason": "boom"})
+    assert any("FAILED" in r for r in run_benchmark.check_baseline_gate(payload))
+
+    # a MEASURED scenario without valid_baseline is rejected.
+    payload = make_payload()
+    payload["scenarios"][0]["aggregated"] = {"valid_baseline": False}
+    assert any("valid baseline" in r for r in run_benchmark.check_baseline_gate(payload))
+
+    # a MEASURED sample missing required metrics is rejected.
+    payload = make_payload()
+    del payload["scenarios"][0]["samples"][0]["peak_rss_bytes"]
+    payload["scenarios"][0]["samples"][0]["peak_rss_bytes"] = None
+    assert any("peak-RSS" in r for r in run_benchmark.check_baseline_gate(payload))
+
+    # dirty worktree is rejected.
+    payload = make_payload()
+    payload["environment"]["git"]["worktree_dirty"] = True
+    assert any("dirty" in r for r in run_benchmark.check_baseline_gate(payload))
+
+    # an unclear commit is rejected.
+    payload = make_payload()
+    payload["environment"]["git"]["commit"] = ""
+    assert any("commit" in r for r in run_benchmark.check_baseline_gate(payload))
+
+
+def test_amplification_formulas_and_edge_cases() -> None:
+    from benchmarks import metrics
+
+    # Correct formulas.
+    assert metrics.read_amplification(2_000, 1_000) == 2.0
+    assert metrics.write_amplification(5_000, 2_000) == 2.5
+    assert metrics.read_amplification(1_500, 1_000) == 1.5
+
+    # Zero / missing denominator -> None (never a fabricated value).
+    assert metrics.read_amplification(1_000, 0) is None
+    assert metrics.read_amplification(1_000, None) is None
+    assert metrics.read_amplification(None, 1_000) is None
+    assert metrics.write_amplification(1_000, 0) is None
+    assert metrics.write_amplification(None, 1_000) is None
+    # Zero numerator with a valid denominator is a real zero (no I/O).
+    assert metrics.read_amplification(0, 1_000) == 0.0
+
+
+def test_atomic_publish_tracker_captures_partial_sizes(tmp_path: Path) -> None:
+    import os
+
+    from benchmarks import metrics
+
+    # One .partial publish -> total equals its size.
+    target = tmp_path / "out.txt"
+    with metrics.AtomicPublishTracker() as t:
+        partial = target.with_name(target.name + ".partial")
+        partial.write_bytes(b"x" * 1234)
+        os.replace(partial, target)
+    assert t.publish_count == 1
+    assert t.total_bytes == 1234
+    assert t.measured
+
+    # Multiple publishes accumulate.
+    target2 = tmp_path / "out2.txt"
+    target3 = tmp_path / "out3.txt"
+    with metrics.AtomicPublishTracker() as t2:
+        for dest, size in ((target2, 100), (target3, 300)):
+            p = dest.with_name(dest.name + ".partial")
+            p.write_bytes(b"y" * size)
+            os.replace(p, dest)
+    assert t2.publish_count == 2
+    assert t2.total_bytes == 400
+
+    # No .partial created -> real zero, not an estimate.
+    with metrics.AtomicPublishTracker() as t3:
+        (tmp_path / "plain.txt").write_bytes(b"z" * 10)
+    assert t3.publish_count == 0
+    assert t3.total_bytes == 0
+
+
+def test_failed_sample_excluded_from_amplification_aggregate() -> None:
+    from benchmarks import worker
+
+    samples = [
+        {"status": "MEASURED", "read_amplification": 1.0, "write_amplification": 2.0},
+        {
+            "status": "FAILED",
+            "read_amplification": 99.0,
+            "write_amplification": 99.0,
+            "temporary_bytes_written": 999999,
+            "error": "boom",
+        },
+        {"status": "MEASURED", "read_amplification": 2.0, "write_amplification": 3.0},
+    ]
+    agg = worker.aggregate(samples)
+    # The failed sample (99.0 / 999999) must not appear in the aggregate;
+    # median of (1.0, 2.0) is 1.5 and of (2.0, 3.0) is 2.5.
+    assert agg["median_read_amplification"] == 1.5
+    assert agg["median_write_amplification"] == 2.5
+    assert agg["max_temporary_bytes_written"] is None  # only failed sample had it
+    assert agg["valid_baseline"] is False
+
+
+def test_measure_failed_warmup_alone_fails_scenario(tmp_path: Path) -> None:
+    """Warm-up FAILED + all measured reps MEASURED => scenario FAILED, no valid baseline.
+
+    Kept separate from the failed-measured-repetition test on purpose.
+    """
+    from benchmarks import run_benchmark, worker
+
+    calls = {"n": 0}
+
+    def warmup_only_breaks(out: Path):
+        def run() -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:  # the warm-up run
+                raise RuntimeError("warmup boom")
+
+        return run
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=3, warmup=1)
+    result = runner._measure(
+        "warmup_fails",
+        "description",
+        warmup_only_breaks,
+        input_bytes=1,
+        input_records=1,
+    )
+    assert result["status"] == "FAILED"
+    samples = list(result["samples"])  # type: ignore[union-attr]
+    warmup_samples = list(result["warmup_samples"])  # type: ignore[union-attr]
+    # All three measured repetitions still MEASURED and preserved.
+    assert len(samples) == 3
+    assert all(s["status"] == "MEASURED" for s in samples)
+    assert warmup_samples[0]["status"] == "FAILED"
+    assert any("warmup boom" in str(e) for e in result["errors"])  # type: ignore[arg-type]
+
+    agg = dict(result["aggregated"])  # type: ignore[arg-type]
+    assert agg["valid_baseline"] is False  # type: ignore[index]
+    assert agg["warmups_failed"] == 1  # type: ignore[index]
+    assert agg["warmups_succeeded"] == 0  # type: ignore[index]
+    assert agg["repetitions_succeeded"] == 3  # type: ignore[index]
+    assert agg["repetitions_failed"] == 0  # type: ignore[index]
+
+    # Markdown must not present this as a comparable baseline.
+    payload = {
+        "environment": {
+            "git": {"commit": "x", "origin_main": "x", "branch": "b", "worktree_dirty": False},
+            "system": {
+                "python": "3.14",
+                "os": "win",
+                "processor": "cpu",
+                "cpu_count": 1,
+                "physical_memory_bytes": 0,
+            },
+            "packages": {"psutil": "5.9"},
+            "profile": "fast",
+            "repetitions": 3,
+            "warmup": 1,
+        },
+        "scenarios": [dict(result)],
+    }
+    md = run_benchmark.render_markdown(payload)
+    row = next(line for line in md.splitlines() if line.startswith("| `warmup_fails`"))
+    assert "NOT A VALID BASELINE" in row or "NOT_AVAILABLE" in row
 
 
 def test_measure_failed_warmup_and_failed_repetition(tmp_path: Path) -> None:
