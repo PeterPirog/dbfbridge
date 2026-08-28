@@ -168,6 +168,12 @@ def run(
     scenario still reports the real output size (never a zero from a
     before/after diff on a shared directory).
 
+    Wall and CPU times are captured **immediately** after the measured call
+    returns (or raises), *before* the RSS sampler is stopped and joined — so
+    the reported times cover the measured call plus the small overhead of the
+    active sampler thread, but NOT the cost of stopping/joining it.  The
+    sampler is always stopped and joined in ``finally``.
+
     Values that the platform or the code path cannot provide stay ``None``;
     they are never estimated or invented.  A raised exception is reported as
     ``FAILED`` with the error text.
@@ -185,14 +191,20 @@ def run(
     status = STATUS_MEASURED
     error: str | None = None
     try:
-        function()
-    except Exception as exc:  # a measured failure is a result, not a crash
-        status = STATUS_FAILED
-        error = f"{type(exc).__name__}: {exc}"
+        try:
+            function()
+        except Exception as exc:  # a measured failure is a result, not a crash
+            status = STATUS_FAILED
+            error = f"{type(exc).__name__}: {exc}"
+        # Wall and CPU are captured IMMEDIATELY after the measured call ends
+        # (or raises), before the sampler is stopped and joined: the reported
+        # times include the tiny overhead of the active sampler thread but not
+        # the cost of stopping/joining it.
+        wall = time.perf_counter() - wall_before
+        cpu = time.process_time() - cpu_before
     finally:
+        # The sampler is always stopped and joined, even when the call raised.
         sampler.stop()
-    wall = time.perf_counter() - wall_before
-    cpu = time.process_time() - cpu_before
 
     # Re-measure the scenario's own output directory (authoritative size).
     if output_dir.is_dir():

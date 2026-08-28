@@ -187,14 +187,15 @@ def run_scenario(
         ]
 
     try:
-        proc = subprocess.run(
-            command,
-            cwd=str(REPO_ROOT),
-            env=env,
-            stdout=log_path.open("wb"),
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
+        with log_path.open("wb") as log_file:
+            proc = subprocess.run(
+                command,
+                cwd=str(REPO_ROOT),
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+            )
     except subprocess.TimeoutExpired as exc:
         tail = exc.output[-2000:].decode("utf-8", "replace") if exc.output else ""
         return _failed(
@@ -368,10 +369,20 @@ def render_markdown(payload: dict[str, Any]) -> str:
         failed_note = (
             f" — {scenario.get('reason', '')}" if scenario.get("status") == STATUS_FAILED else ""
         )
+        valid_baseline = (scenario.get("status") != STATUS_FAILED) and bool(
+            agg.get("valid_baseline", True)
+        )
         cells = [
             _fmt(agg.get(key), "MiB" if key in {"max_peak_rss_bytes", "max_output_bytes"} else "")
             for key, _label in AGG_METRIC_COLUMNS
         ]
+        # A FAILED scenario must never present its (partial) medians as a
+        # comparable baseline: when the aggregate is present but not valid,
+        # label every cell so the row cannot be misread as a success.
+        if not valid_baseline:
+            cells = [f"NOT A VALID BASELINE ({c})" for c in cells]
+        elif scenario.get("status") == STATUS_FAILED:
+            cells = ["NOT_AVAILABLE" for _ in cells]
         lines.append(
             f"| `{scenario['scenario']}` | {scenario['status']}{failed_note} | "
             + " | ".join(cells)
@@ -431,7 +442,10 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="Warm-up runs (excluded, >=0)",
     )
-    parser.add_argument("--scenario", help="Run a single scenario by name (see --list)")
+    parser.add_argument(
+        "--scenario",
+        help="Run one or more scenarios by comma-separated name (see --list)",
+    )
     parser.add_argument("--list", action="store_true", help="List scenario names and exit")
     parser.add_argument(
         "--timeout",
@@ -446,17 +460,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.repetitions < 1:
+        parser.error("--repetitions must be >= 1")
+    if args.warmup < 0:
+        parser.error("--warmup must be >= 0")
+    if args.timeout <= 0:
+        parser.error("--timeout must be > 0")
+
     scenario_names = _scenario_names(args.profile)
     if args.list:
         for name in scenario_names:
             print(name)
         return 0
-    if args.scenario and args.scenario not in scenario_names:
-        parser.error(f"unknown scenario {args.scenario!r}; use --list")
+    requested = [name.strip() for name in (args.scenario or "").split(",") if name.strip()]
+    for name in requested:
+        if name not in scenario_names:
+            parser.error(f"unknown scenario {name!r}; use --list")
 
     work_dir: Path = args.work_dir
     logs_dir = work_dir / "logs"
-    names = [args.scenario] if args.scenario else scenario_names
+    names = requested or scenario_names
 
     results: list[dict[str, Any]] = []
     for name in names:
@@ -492,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ALWAYS write reports, even if scenarios failed.
     args.results_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f"-{args.scenario}" if args.scenario else ""
+    suffix = f"-{'_'.join(requested)}" if requested else ""
     json_path = args.results_dir / f"phase-0-{args.profile}{suffix}.json"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path = args.results_dir / f"phase-0-{args.profile}{suffix}.md"
