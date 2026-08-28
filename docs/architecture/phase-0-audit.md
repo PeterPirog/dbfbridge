@@ -144,8 +144,8 @@ source artifacts plus one of the output. A `--no-validate` export drops pass #3.
 
 Hypothesis to be measured: pass #3 (re-parse) is a meaningful fraction of wall
 time for large tables; the Phase 0 baseline `export_jsonl_validate_on/off`
-pair measures this directly. (Confirmed in the Phase 0 results: validate-off is
-~10% faster on the 190k-record fixture.)
+pair measures this directly (the fast-profile result on the 190k-record fixture
+is a single-run observation, not a confirmed constant).
 
 For `check_conversion_quality` (quality.py:1-513) the pipeline is
 DBF → JSONL → DBF → JSONL again, i.e. **two full export passes** plus the
@@ -184,8 +184,9 @@ already writable and that no other process is mid-write to the same path. The
 
 Consequences:
 - JSONL output size ≈ 4/3 × (raw DBF record length) + serialized logical values.
-  For a wide table the Base64 share is ~70-90% of the JSONL bytes (measured
-  in `raw_record_metadata_default` baseline).
+  The actual Base64 share of the JSONL bytes is reported by the
+  `raw_record_metadata_default` scenario (`raw_base64_share_of_jsonl`); it is
+  data-dependent and is not asserted as a fixed range here.
 - The importer *requires* this key for byte-exact reconstruction
   (`importer/writer.py:224-260`, `restore_raw_layout`). Removing it from the
   default would break the documented `raw_dbf_match: true` guarantee.
@@ -310,9 +311,8 @@ intentionally not simulated.
 
 The first version of `benchmarks/metrics.py` sampled the process working set by
 calling `ctypes.windll.psapi.GetProcessMemoryInfo`. On this environment
-(CPython 3.14.0, Windows 11 x64) that call **deterministically corrupted the
-native heap** and the interpreter later crashed with `0xC0000005`
-(STATUS_ACCESS_VIOLATION) inside the C garbage collector, at an allocation site
+(CPython 3.14.0, Windows 11 x64) that call **reliably crashed the process**
+with `0xC0000005` (STATUS_ACCESS_VIOLATION) at a later allocation site
 unrelated to the call (the faulthandler originally pointed at
 `dbf.tables.append` / `importlib._bootstrap_external._compile_bytecode`, which
 is what made the first reproduction confusing).
@@ -325,27 +325,26 @@ A/B test with a minimal standalone reproducer (no dbfbridge / dbf / dbfread):
 - **Variant A** — the exact declaration the original runner used:
   `argtypes = [HANDLE, POINTER(PROCESS_MEMORY_COUNTERS)]` — **only two
   parameters**, omitting the mandatory third `DWORD cb` argument of
-  `GetProcessMemoryInfo`. On the x64 Windows calling convention that third
-  argument is delivered in `EDX`; with only two ctypes-supplied arguments EDX
-  is **uninitialised**, so `psapi!GetProcessMemoryInfo` computes an invalid
-  output size and overruns the caller's heap. **Crashes 5/5 with
-  `0xC0000005`.**
+  `GetProcessMemoryInfo`. **Crashes 5/5 with `0xC0000005`.**
 - **Variant B** — the complete, correct signature
   `BOOL GetProcessMemoryInfo(HANDLE, LPPROCESS_MEMORY_COUNTERS, DWORD cb)` with
   `cb = sizeof(struct)`. **Returns `BOOL = 1`, `GetLastError() = 0`, 5/5 OK.**
 
-Because variant B (correct ABI) does not crash and variant A (the original,
-incomplete declaration) does, the root cause is **the incomplete ctypes
-declaration in dbfbridge's benchmark code — not a CPython defect and not a
-`psapi` bug.** CPython is **not** implicated. The low-level mechanism is an
-uninitialised `EDX` / output-size overrun in the ctypes interop.
+The call violated the ABI by omitting the mandatory third `DWORD cb` argument.
+On Windows x64 the third argument is passed in `R8`/`R8D`; the callee received
+an undefined size value, which could lead to a write beyond the caller-supplied
+buffer and the later `0xC0000005`. The A/B test proves the FFI signature is
+faulty; the exact memory-corruption mechanism was **not** established with a
+debugger. CPython is not implicated (the correct-signature variant never
+crashed).
 
 Classification recorded in persistent memory:
 - **confirmed**: an unsafe/incorrect ctypes WinAPI declaration in dbfbridge's
   benchmark code (missing `DWORD cb`);
 - **not a CPython bug** (the earlier "CPython candidate" hypothesis is
   superseded);
-- the exact low-level mechanism is an uninitialised-`EDX` heap overrun.
+- the precise low-level corruption mechanism remains **unconfirmed** — it was
+  not debugged, and no stack/heap overflow is asserted.
 
 ### Fix applied (Phase 0)
 
@@ -371,25 +370,45 @@ Classification recorded in persistent memory:
 ## 13. Phase 0 benchmark infrastructure (new in this branch)
 
 - `benchmarks/fixtures.py` — deterministic DBF/FPT generators (flat table,
-  memo-heavy table) with a fixed seed and ASCII-safe Polish text so that
-  encoding scenarios compare code paths, not data.
+  memo-heavy table, per-codepage encoding fixtures containing genuine Polish
+  diacritics stored as the target codepage's raw bytes). Every fixture is
+  written with a `<name>.dbf.meta.json` sidecar (generator version, parameters,
+  record/deleted counts, memo configuration, DBF/FPT presence, sizes, SHA-256);
+  an incomplete or non-matching fixture is regenerated **before** measurement.
 - `benchmarks/metrics.py` — measurement helpers (wall/CPU time, output bytes,
-  RSS via `psutil`, IO counters, read/write amplification). All metrics are
-  honest: unmeasured values are `None` (rendered `NOT_AVAILABLE`).
+  RSS via `psutil`, IO counters). All metrics are honest: unmeasured values are
+  `None` (rendered `NOT_AVAILABLE`). **Peak RSS** is the maximum of `psutil`
+  samples taken on a background thread during the measured call (sampling
+  interval recorded in the JSON); the sampler is always stopped/joined in
+  `finally`. Two before/after snapshots are not sufficient to establish a peak.
+  Without `psutil`, all RSS/IO metrics are `NOT_AVAILABLE`.
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
-  worker invocation so a crash is contained.
+  worker invocation so a crash is contained. Runs an explicit warm-up (default
+  1, excluded from results) followed by the measured repetitions; each
+  execution writes into its own fresh `out/<scenario>/rep-<n>/` directory
+  prepared before the measured window, so `output_bytes` is the authoritative
+  final size of that directory (re-running an overwritten scenario never yields
+  a zero).
 - `benchmarks/run_benchmark.py` — controller: runs scenarios in fresh
-  subprocesses, records environment (git commit, worktree state, Python, OS,
-  CPU, physical RAM, dependency versions, fixture sizes), writes JSON +
-  Markdown, distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED` /
-  `NOT_AVAILABLE`.
+  subprocesses with a configurable per-scenario timeout, records environment
+  (git commit, worktree state, Python, OS, CPU, physical RAM via `psutil`,
+  dependency versions, fixture sizes), writes JSON + Markdown **always** (even
+  when scenarios fail), distinguishes `MEASURED` / `FAILED` / `NOT_IMPLEMENTED`
+  / `NOT_AVAILABLE`, and exits non-zero when any scenario is `FAILED`.
+  Aggregation is the **median** of the measured repetitions
+  (`median_wall_seconds`, `median_cpu_seconds`, `median_records_per_second`);
+  all per-repetition samples are preserved in the JSON.
 - `benchmarks/__init__.py` — package marker.
-- `benchmarks/results/phase-0-fast.{json,md}` and
-  `benchmarks/results/logs/*.log` — generated artifacts, **not committed**.
-  The `benchmarks/results/` directory is added to `.gitignore`.
+- Diagnostic logs: `benchmark-data/logs/<profile>_<scenario>.log` (working
+  directory; git-ignored). Reports: `benchmarks/results/` (git-ignored);
+  `benchmarks/baselines/` only when `--baseline` is passed (Phase 0 runs do
+  **not** create a versioned baseline).
 
-The existing `benchmarks/benchmark_jsonl_conversion.py` is unchanged and is
-still exercised by the `jsonl_conversion_existing` scenario.
+The existing `benchmarks/benchmark_jsonl_conversion.py` is unchanged and its
+conversion functions are imported and called **in the worker process** by the
+`jsonl_conversion_json` / `jsonl_conversion_csv` scenarios (records/s from
+`<input>.benchmark.json`). XLSX conversion is measured only in the full
+profile (`jsonl_conversion_xlsx`) because it is much slower.
 
 ## 14. Bottlenecks — hypotheses to be confirmed by the baseline
 
@@ -406,7 +425,7 @@ confirm or refute it. They are not stated as facts until the corresponding
 | H5 | Forced encoding (cp852 / mazovia) is ~equally fast as cp1250 when no fallback is triggered. | `encoding_cp1250` / `encoding_cp852` / `encoding_mazovia` |
 | H6 | Reconstruction (JSONL → DBF) is dominated by the `dbf.Table.append` loop, not by the JSONL parse. | `reconstruction_jsonl_to_dbf` CPU vs. wall |
 | H7 | The `check_conversion_quality` round-trip is ~2× a single export (it does export + reconstruct + re-export). | `roundtrip_quality` wall |
-| H8 | Polars `scan_ndjson`/`sink_csv` is faster than the `orjson`-based fallback for CSV. (Already noted in `benchmarks/README.md`; not re-measured in Phase 0.) | `jsonl_conversion_existing` (CSV sub-mode) |
+| H8 | Polars `scan_ndjson`/`sink_csv` is faster than the `orjson`-based fallback for CSV. Not measured by the Phase 0 scenarios: `jsonl_conversion_csv` times the legacy CSV path as a whole, so this remains a hypothesis until a dedicated A/B scenario is added. | (none in Phase 0) |
 
 ## 15. Security / safety invariants (unchanged in Phase 0)
 
@@ -428,4 +447,11 @@ report each time. `git diff --check` must be clean. The benchmark
 infrastructure tests (`tests/test_benchmark_infrastructure.py`) must pass.
 
 The Phase 0 commit is **not** created until this gate passes and the user
-reviews the diff.
+reviews the diff. (Gate passed: 3 consecutive fast runs `EXIT=0`,
+14 `MEASURED` / 0 `FAILED` / 4 `NOT_IMPLEMENTED`; the first commit
+`bench: add isolated phase-0 benchmark runner` was created and pushed on
+`bench/phase-0-baseline`. The follow-up commit
+`bench: correct phase-0 benchmark measurements` addresses the architectural
+review: warm-up/repetition measurement, per-repetition output directories,
+median aggregation, sampled peak RSS, timeout/FAILED handling, fixture
+manifests, and the RCA wording corrected per the review.)
