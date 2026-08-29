@@ -494,8 +494,9 @@ Classification recorded in persistent memory:
 - `benchmarks/__init__.py` — package marker.
 - Diagnostic logs: `benchmark-data/logs/<profile>_<scenario>.log` (working
   directory; git-ignored). Reports: `benchmarks/results/` (git-ignored);
-  `benchmarks/baselines/` only when `--baseline` is passed (Phase 0 runs do
-  **not** create a versioned baseline).
+  `benchmarks/baselines/` only when `--baseline` passes its full release gate.
+  The accepted Phase 0 JSON/Markdown pair is now versioned there; ordinary and
+  failed runs still cannot write a baseline.
 
 The existing `benchmarks/benchmark_jsonl_conversion.py` is unchanged and its
 conversion functions are imported and called **in the worker process** by the
@@ -503,22 +504,22 @@ conversion functions are imported and called **in the worker process** by the
 `<input>.benchmark.json`). XLSX conversion is measured only in the full
 profile (`jsonl_conversion_xlsx`) because it is much slower.
 
-## 14. Bottlenecks — hypotheses to be confirmed by the baseline
+## 14. Baseline findings and remaining hypotheses
 
-These are **hypotheses**, each tagged with the Phase 0 scenario that will
-confirm or refute it. They are not stated as facts until the corresponding
-`benchmarks/results/phase-0-full.md` row is read.
+The accepted `benchmarks/baselines/phase-0-full.json` now provides the measured
+BEFORE evidence. Results below are specific to the recorded Windows hosted
+runner; they guide Phase 1 work but are not universal hardware claims.
 
-| # | Hypothesis | Confirming scenario |
+| # | Phase 0 result | Evidence / decision |
 |---|---|---|
-| H1 | Output re-parse (`validate=True`) is ~10-30% of export wall time on 190k rows. | `export_jsonl_validate_on` vs `export_jsonl_validate_off` |
-| H2 | `base64.b64encode` of the raw record is a non-trivial CPU cost per record. | `export_1m_records` (full) CPU time vs `records/s` |
-| H3 | Memo `inline` is materially slower than `skip`/`null` on a memo-heavy table. | `memo_skip` / `memo_null` / `memo_inline` |
-| H4 | `deleted=include` is faster than `deleted=skip` on tables with many deleted rows (single pass vs. `len(table.deleted)` materialization). | `deleted_skip` vs `deleted_include` |
-| H5 | Forced encoding (cp852 / mazovia) is ~equally fast as cp1250 when no fallback is triggered. | `encoding_cp1250` / `encoding_cp852` / `encoding_mazovia` |
-| H6 | Reconstruction (JSONL → DBF) is dominated by the `dbf.Table.append` loop, not by the JSONL parse. | `reconstruction_jsonl_to_dbf` CPU vs. wall |
-| H7 | The `check_conversion_quality` round-trip is ~2× a single export (it does export + reconstruct + re-export). | `roundtrip_quality` wall |
-| H8 | Polars `scan_ndjson`/`sink_csv` is faster than the `orjson`-based fallback for CSV. Not measured by the Phase 0 scenarios: `jsonl_conversion_csv` times the legacy CSV path as a whole, so this remains a hypothesis until a dedicated A/B scenario is added. | (none in Phase 0) |
+| H1 | **Confirmed, larger than estimated.** Validation increases median 190k export wall time from 7.875 s to 11.421 s (about 45%). | `export_jsonl_validate_off` vs `export_jsonl_validate_on`; direct read must not inherit migration re-validation by default. |
+| H2 | **The aggregate cost is confirmed; the individual base64 share is not isolated.** The 1M export takes 48.162 s wall / 47.859 s CPU at 20,763 records/s. | Keep raw metadata optional and add an explicit `raw_mode="none"` AFTER scenario before attributing the delta to base64 alone. |
+| H3 | **Confirmed.** Memo inline is 0.222 s / 9,027 records/s versus about 0.092 s / 21.7k–22.0k records/s for skip/null. | Implement lazy/skip semantics in Direct Read Core; never read FPT payloads unless requested. |
+| H4 | **Refuted on this fixture.** Include (0.061 s) is slightly slower than skip (0.059 s); the difference is small. | Preserve one-pass deleted filtering, but do not claim a performance win from include semantics. |
+| H5 | **Confirmed within fixture resolution.** cp1250/cp852/Mazovia are all about 0.011 s for the encoding fixture. | Preserve correctness tests; no codepage-specific optimization is justified. |
+| H6 | **Consistent with the hypothesis but not isolated.** Flat 190k reconstruction takes 45.990 s wall / 45.625 s CPU. | Do not rewrite the writer in Phase 1; direct READ is the prioritized bottleneck. |
+| H7 | **Not a clean 2× comparison.** The bounded round-trip scenario is 0.141 s, but it performs a different operation set/output than one export. | Retain diagnostics and avoid using this row as a single-export multiplier. |
+| H8 | **Still unmeasured as an A/B.** The current CSV row measures the legacy conversion path as a whole. | Add a dedicated backend A/B only if Phase 3 backend work needs it. |
 
 ## 15. Security / safety invariants (unchanged in Phase 0)
 
@@ -539,8 +540,8 @@ to be `MEASURED`, no `FAILED`, no `0xC0000005`, and a complete JSON + Markdown
 report each time. `git diff --check` must be clean. The benchmark
 infrastructure tests (`tests/test_benchmark_infrastructure.py`) must pass.
 
-The Phase 0 commit is **not** created until this gate passes and the user
-reviews the diff. (Gate passed: consecutive fast runs `EXIT=0`, **15
+The Phase 0 branch is finalized only after this gate passes and the resulting
+artifacts are reviewed. (Gate passed: consecutive fast runs `EXIT=0`, **15
 `MEASURED` / 0 `FAILED` / 4 `NOT_IMPLEMENTED`**; the first commit
 `bench: add isolated phase-0 benchmark runner` was created and pushed on
 `bench/phase-0-baseline`. The follow-up commit
@@ -595,8 +596,13 @@ test that could select `migration_report.jsonl` instead of the table data.
 Reconstruction preparation is also cleaned on every run so stale exports cannot
 silently change the measured table set.)
 
-**A versioned full baseline does NOT exist yet.**  The `--baseline` gate
-requires a full, clean, complete, `psutil`-enabled run and has not been
-satisfied; nothing has been copied into `benchmarks/baselines/`.  The full
-profile and the baseline recording remain explicitly blocked until the
-architect re-approves draft PR #1.
+**The versioned full Phase 0 baseline now exists.** It was produced from clean
+commit `542961981e0062cdc977d1b7a4eec721e1f16fd4` on Windows Server 2025,
+AMD64, Python 3.12.10 with `psutil` 7.2.2. The release gate independently
+accepted exactly **20 `MEASURED` / 4 `NOT_IMPLEMENTED` / 0 `FAILED`**, with one
+successful warm-up and three successful measured repetitions for each
+executable scenario. All 60 measured samples contain peak RSS and report zero
+remaining temporary files and bytes. The authoritative files are
+`benchmarks/baselines/phase-0-full.json` and
+`benchmarks/baselines/phase-0-full.md`; they are the BEFORE reference for the
+Direct Read Core work.
