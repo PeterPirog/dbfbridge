@@ -370,6 +370,10 @@ def _sample_missing_metrics(sample: dict[str, Any]) -> list[str]:
     temp = sample.get("temporary_bytes_written")
     if not isinstance(temp, int) or isinstance(temp, bool) or temp < 0:
         missing.append("temporary_bytes_written")
+    for key in ("temporary_files_left", "temporary_bytes_left"):
+        value = sample.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+            missing.append(f"{key}=0")
     return missing
 
 
@@ -422,7 +426,8 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     - exactly the full-profile set of MEASURED scenarios (20), the exact
       NOT_IMPLEMENTED set (4), zero FAILED;
     - for every MEASURED scenario: ``len(samples) == environment["repetitions"]``
-      and **every** sample is ``MEASURED`` with all required metrics;
+      and **every** sample is ``MEASURED`` with all required metrics and zero
+      remaining atomic-write temporary files;
       ``len(warmup_samples) == environment["warmup"]`` and **every** warm-up
       sample is ``MEASURED`` — a missing/extra/FAILED warm-up rejects the
       baseline independent of ``aggregated.valid_baseline``;
@@ -661,8 +666,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
         "",
         "- Each scenario runs in its own worker subprocess with a configurable timeout; one "
         "failed/timed-out scenario is `FAILED` and does not affect the others.",
-        "- Warm-up runs are excluded from the reported samples; each measured repetition writes "
-        "into its own fresh `out/<scenario>/rep-<n>/` directory (no inherited output).",
+        "- Warm-up runs are excluded from aggregates; every warm-up and repetition writes into "
+        "a fresh isolated directory and uses the same post-validation after the timed call.",
         "- `output_bytes` is the authoritative final size of the scenario's own output directory, "
         "so re-running an overwritten scenario still reports the real size (never a zero diff).",
         "- Peak RSS is the maximum of `psutil` samples taken on a background thread during the "
@@ -673,6 +678,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
         "only); it is **0** when the operation created no temporary file and "
         "`NOT_AVAILABLE` (with a reason) only if the platform forbids reading the "
         "temporary file.",
+        "- `temporary_files_left` and `temporary_bytes_left` are checked after timing and must "
+        "both be zero; atomic-write residue fails the sample and baseline gate.",
         "- `NOT_IMPLEMENTED` scenarios are listed verbatim and are not estimated.",
     ]
     return "\n".join(lines) + "\n"

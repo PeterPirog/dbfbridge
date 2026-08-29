@@ -431,6 +431,45 @@ def test_metrics_run_sampler_stops_even_when_function_raises(tmp_path: Path) -> 
     assert not leaked, f"sampler thread leaked after failed run: {leaked}"
 
 
+def test_metrics_run_fails_sample_when_atomic_temporary_file_remains(tmp_path: Path) -> None:
+    import benchmarks.metrics as metrics
+
+    def leave_partial() -> None:
+        (tmp_path / "table.jsonl.partial").write_bytes(b"incomplete")
+
+    result = metrics.run(
+        leave_partial,
+        input_bytes=1,
+        input_records=1,
+        output_dir=tmp_path,
+    )
+    assert result["status"] == "FAILED"
+    assert result["temporary_files_left"] == 1
+    assert result["temporary_bytes_left"] == len(b"incomplete")
+    assert "atomic publish left 1 temporary file" in str(result["error"])
+
+
+def test_rss_sampler_process_lookup_failure_is_not_a_thread_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restricted/short-lived processes produce NOT_AVAILABLE, not a traceback."""
+
+    import benchmarks.metrics as metrics
+
+    class UnavailablePsutil:
+        @staticmethod
+        def Process():
+            raise RuntimeError("process disappeared")
+
+    monkeypatch.setattr(metrics, "_psutil", lambda: UnavailablePsutil)
+    sampler = metrics.RssSampler()
+    sampler.start()
+    sampler.stop()
+    assert sampler.sample_count == 0
+    assert sampler.peak_bytes is None
+    assert "process disappeared" in str(sampler.unavailable_reason)
+
+
 def test_no_executable_ctypes_winapi_in_benchmarks() -> None:
     for path in sorted((REPO_ROOT / "benchmarks").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -711,7 +750,10 @@ def test_encoding_fixtures_contain_real_polish_diacritics(tmp_path: Path) -> Non
             decode_errors="strict",
             overwrite=True,
         ).raise_for_errors()
-        jsonl = next(iter(out.glob("*.jsonl")))
+        # Select the table artifact explicitly: migration_report.jsonl is a
+        # second valid JSONL file and directory iteration order is not a
+        # portable way to distinguish them.
+        jsonl = out / f"{path.stem}.jsonl"
         record = json.loads(jsonl.read_text(encoding="utf-8").splitlines()[0])
         assert "Żółw" in record["TEKST"], f"{codec} export must keep the logical text"
 
@@ -923,6 +965,8 @@ def _full_gate_payload() -> dict:
         "read_amplification": 2.0,
         "write_amplification": 1.0,
         "temporary_bytes_written": 0,
+        "temporary_files_left": 0,
+        "temporary_bytes_left": 0,
     }
     memo_sample = {
         **sample,
@@ -1056,6 +1100,8 @@ def test_baseline_gate_requires_every_sample_complete(monkeypatch: pytest.Monkey
         "read_amplification",
         "write_amplification",
         "temporary_bytes_written",
+        "temporary_files_left",
+        "temporary_bytes_left",
     ):
         p = _full_gate_payload()
         scenario = p["scenarios"][0]
@@ -1283,15 +1329,246 @@ def _make_memo_runner(work: Path, *, repetitions: int = 2, warmup: int = 1):
     return runner, src
 
 
+def test_measure_post_validates_warmups_and_repetitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every successful sample is post-validated after metrics.run returns."""
+
+    import time
+
+    from benchmarks import worker
+
+    events: list[tuple[str, bool]] = []
+
+    def fake_metrics_run(function, *, warmup: bool, **_kwargs):
+        events.append(("metrics-start", warmup))
+        function()
+        events.append(("metrics-return", warmup))
+        return {
+            "status": "MEASURED",
+            "warmup": warmup,
+            "wall_seconds": 1.25,
+            "cpu_seconds": 0.5,
+        }
+
+    def post_validate(_out: Path, sample: dict[str, object]) -> None:
+        events.append(("post-validate", bool(sample["warmup"])))
+        time.sleep(0.01)
+        sample["validated"] = True
+
+    monkeypatch.setattr(worker.bench_metrics, "run", fake_metrics_run)
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=2, warmup=2)
+    result = runner._measure(
+        "ordered",
+        "description",
+        lambda _out: lambda: None,
+        input_bytes=1,
+        input_records=1,
+        post_validate=post_validate,
+    )
+
+    assert events == [
+        ("metrics-start", True),
+        ("metrics-return", True),
+        ("post-validate", True),
+        ("metrics-start", True),
+        ("metrics-return", True),
+        ("post-validate", True),
+        ("metrics-start", False),
+        ("metrics-return", False),
+        ("post-validate", False),
+        ("metrics-start", False),
+        ("metrics-return", False),
+        ("post-validate", False),
+    ]
+    all_samples = list(result["warmup_samples"]) + list(result["samples"])  # type: ignore[arg-type]
+    assert all(sample["validated"] is True for sample in all_samples)
+    assert all(sample["wall_seconds"] == 1.25 for sample in all_samples)
+    assert all(sample["cpu_seconds"] == 0.5 for sample in all_samples)
+    assert all(float(sample["post_validation_seconds"]) >= 0.005 for sample in all_samples)
+    assert result["status"] == "MEASURED"
+
+
+def test_post_validation_failure_on_warmup_invalidates_scenario(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A warm-up artifact failure cannot be hidden by successful repetitions."""
+
+    from benchmarks import worker
+
+    def fake_metrics_run(function, *, warmup: bool, **_kwargs):
+        function()
+        return {
+            "status": "MEASURED",
+            "warmup": warmup,
+            "wall_seconds": 0.25,
+            "cpu_seconds": 0.1,
+        }
+
+    def post_validate(_out: Path, sample: dict[str, object]) -> None:
+        if sample["warmup"] is True:
+            raise RuntimeError("warm-up artifact is invalid")
+
+    monkeypatch.setattr(worker.bench_metrics, "run", fake_metrics_run)
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=2, warmup=1)
+    result = runner._measure(
+        "warmup-post-validation-fails",
+        "description",
+        lambda _out: lambda: None,
+        input_bytes=1,
+        input_records=1,
+        post_validate=post_validate,
+    )
+
+    warmups = list(result["warmup_samples"])  # type: ignore[arg-type]
+    measured = list(result["samples"])  # type: ignore[arg-type]
+    assert warmups[0]["status"] == "FAILED"
+    assert "warm-up artifact is invalid" in str(warmups[0]["error"])
+    assert warmups[0]["wall_seconds"] == 0.25
+    assert all(sample["status"] == "MEASURED" for sample in measured)
+    assert result["status"] == "FAILED"
+    assert result["aggregated"]["valid_baseline"] is False  # type: ignore[index]
+
+
+def test_reconstruction_post_validation_is_outside_measured_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flat reconstruction times only public reconstruct_dbf, then validates."""
+
+    from benchmarks import fixtures, worker
+
+    source = fixtures.generate_flat(tmp_path / "source" / "flat.dbf", 15)
+    # A neighbouring table must never leak into this single-table scenario.
+    fixtures.generate_flat(source.parent / "unrelated.dbf", 7)
+    events: list[tuple[str, bool]] = []
+    real_metrics_run = worker.bench_metrics.run
+    real_counts = worker.fixture_factory._measured_counts
+
+    def observed_metrics_run(function, **kwargs):
+        warmup = bool(kwargs["warmup"])
+        events.append(("metrics-start", warmup))
+        result = real_metrics_run(function, **kwargs)
+        events.append(("metrics-return", warmup))
+        return result
+
+    def observed_counts(path: Path):
+        events.append(("post-validation-count", "warmup" in str(path)))
+        return real_counts(path)
+
+    monkeypatch.setattr(worker.bench_metrics, "run", observed_metrics_run)
+    monkeypatch.setattr(worker.fixture_factory, "_measured_counts", observed_counts)
+
+    run_dir = tmp_path / "run"
+    stale_export = run_dir / "out" / "reconstruction_jsonl_to_dbf" / "export" / "stale.jsonl"
+    stale_export.parent.mkdir(parents=True)
+    stale_export.write_text('{"stale": true}\n', encoding="utf-8")
+
+    runner = worker.Runner(Path.cwd(), "fast", run_dir, repetitions=1, warmup=1)
+    runner.scenario_reconstruction("reconstruction_jsonl_to_dbf", source, 15)
+    result = runner.results[-1]
+    assert result["status"] == "MEASURED", result
+    assert not stale_export.exists(), "preparation must remove stale artifacts from earlier runs"
+    assert events == [
+        ("metrics-start", True),
+        ("metrics-return", True),
+        ("post-validation-count", True),
+        ("metrics-start", False),
+        ("metrics-return", False),
+        ("post-validation-count", False),
+    ]
+
+    for rep in ("warmup-1", "rep-1"):
+        out = tmp_path / "run" / "out" / "reconstruction_jsonl_to_dbf" / rep
+        dbfs = list(out.rglob("*.dbf"))
+        assert len(dbfs) == 1 and dbfs[0].stat().st_size > 0
+        assert not list(out.rglob("*.fpt"))
+        assert not [
+            path for path in out.rglob("*") if path.is_file() and "partial" in path.name.split(".")
+        ]
+
+
+def test_export_scenario_uses_only_requested_table_and_companion_fpt(tmp_path: Path) -> None:
+    from benchmarks import fixtures, worker
+
+    source_dir = tmp_path / "source"
+    selected = fixtures.generate_flat(source_dir / "selected.dbf", 3)
+    fixtures.generate_flat(source_dir / "unrelated.dbf", 9)
+    memo = fixtures.generate_memo_heavy(source_dir / "memo.dbf", 4)
+    memo_fpt = memo.with_suffix(".fpt")
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path / "run", repetitions=1, warmup=1)
+    assert runner._source_bytes(selected) == selected.stat().st_size
+    assert runner._source_bytes(memo) == memo.stat().st_size + memo_fpt.stat().st_size
+    all_table_bytes = sum(
+        path.stat().st_size
+        for path in source_dir.iterdir()
+        if path.suffix.casefold() in {".dbf", ".fpt"}
+    )
+    assert runner._source_bytes(selected) < all_table_bytes
+    assert runner._source_bytes(memo) < all_table_bytes
+
+    runner.scenario_export(
+        "single-table-export",
+        "single-table export",
+        selected,
+        input_records=3,
+    )
+    result = runner.results[-1]
+    assert result["status"] == "MEASURED", result
+    all_samples = list(result["warmup_samples"]) + list(result["samples"])  # type: ignore[arg-type]
+    assert all(sample["input_bytes"] == selected.stat().st_size for sample in all_samples)
+    for rep in ("warmup-1", "rep-1"):
+        out = tmp_path / "run" / "out" / "single-table-export" / rep
+        data_files = sorted(
+            path.name for path in out.glob("*.jsonl") if path.stem != "migration_report"
+        )
+        assert data_files == ["selected.jsonl"]
+
+
+def test_memo_free_reconstruction_rejects_unexpected_fpt(tmp_path: Path) -> None:
+    from benchmarks import fixtures, worker
+
+    out = tmp_path / "out"
+    dbf_path = fixtures.generate_flat(out / "rebuilt" / "flat.dbf", 3)
+    dbf_path.with_suffix(".fpt").write_bytes(b"unexpected memo")
+    with pytest.raises(RuntimeError, match="unexpected FPT"):
+        worker._validate_reconstruction_output(
+            out,
+            expected_records=3,
+            require_fpt=False,
+        )
+
+
+def test_flat_reconstruction_count_mismatch_fails_warmup_and_repetition(tmp_path: Path) -> None:
+    from benchmarks import fixtures, worker
+
+    source = fixtures.generate_flat(tmp_path / "source" / "flat.dbf", 3)
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path / "run", repetitions=1, warmup=1)
+    runner.scenario_reconstruction("reconstruction_jsonl_to_dbf", source, 4)
+    result = runner.results[-1]
+    assert result["status"] == "FAILED"
+    assert result["aggregated"]["valid_baseline"] is False  # type: ignore[index]
+    all_samples = list(result["warmup_samples"]) + list(result["samples"])  # type: ignore[arg-type]
+    assert all(sample["status"] == "FAILED" for sample in all_samples)
+    assert all("has 3 records, expected 4" in str(sample["error"]) for sample in all_samples)
+
+
 def test_reconstruction_memo_post_validate_outside_measured_window(tmp_path: Path) -> None:
-    """The measured callable is only reconstruct_dbf; post-validation (flatten,
-    counts, stat, artifact checks, per-sample extras) runs outside the
-    wall/CPU window and is attached to the sample afterwards."""
+    """The measured callable is only reconstruct_dbf; counts, stat, artifact
+    checks and per-sample extras run outside the wall/CPU window."""
 
     runner, src = _make_memo_runner(tmp_path)
     runner.scenario_reconstruction_memo("reconstruction_memo_190k", src, 15)
     result = runner.results[-1]
     assert result["status"] == "MEASURED", result
+    warmups_raw = result.get("warmup_samples")
+    assert isinstance(warmups_raw, list) and len(warmups_raw) == 1
+    assert warmups_raw[0]["status"] == "MEASURED"
+    assert warmups_raw[0]["output_dbf_bytes"] > 0
+    assert warmups_raw[0]["output_fpt_bytes"] > 0
     samples_raw = result.get("samples")
     assert isinstance(samples_raw, list)
     assert len(samples_raw) == 2
@@ -1301,7 +1578,7 @@ def test_reconstruction_memo_post_validate_outside_measured_window(tmp_path: Pat
         assert sample["output_dbf_bytes"] > 0
         assert sample["output_fpt_bytes"] > 0
         assert sample["fpt_mib_per_second"] > 0
-        # output_bytes is authoritative after the artefacts are flattened in.
+        # output_bytes is authoritative for the isolated recursive output tree.
         assert sample["output_bytes"] >= sample["output_dbf_bytes"] + sample["output_fpt_bytes"]
     agg = result.get("aggregated")
     assert isinstance(agg, dict)
@@ -1325,7 +1602,9 @@ def test_reconstruction_memo_post_validate_failure_fails_sample(tmp_path: Path) 
     assert agg["valid_baseline"] is False
     samples_raw = result.get("samples")
     assert isinstance(samples_raw, list)
-    for sample in samples_raw:
+    warmups_raw = result.get("warmup_samples")
+    assert isinstance(warmups_raw, list)
+    for sample in warmups_raw + samples_raw:
         assert isinstance(sample, dict)
         assert sample["status"] == "FAILED"
         assert "post-validation failed" in str(sample.get("error", ""))

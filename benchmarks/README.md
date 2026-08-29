@@ -61,7 +61,9 @@ log) and does not take down the controller or the other scenarios.
 For each scenario the worker performs:
 
 1. **Warm-up runs** (`--warmup`, default 1). These are excluded from the
-   reported results; they only stabilise caches/page state.
+   reported aggregates; they stabilise caches/page state and are subjected to
+   the same artifact post-validation as measured repetitions. Each uses a
+   fresh `out/<scenario>/warmup-<n>/` directory.
 2. **Measured repetitions** (`--repetitions`, default 3). Each execution is a
    separate sample written into its own fresh `out/<scenario>/rep-<n>/`
    directory, prepared **before** the measured window starts.
@@ -79,14 +81,28 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
   (with `warmups_succeeded` / `warmups_failed` recorded).  The Markdown never
   presents a partial median of a `FAILED` scenario as a comparable baseline
   (those rows are labelled `NOT A VALID BASELINE` / `NOT_AVAILABLE`).
+- **Artifact validation uses identical semantics for warm-ups and measured
+  repetitions.** It runs after `metrics.run()` has closed the wall/CPU window.
+  Its diagnostic `post_validation_seconds` is never folded into reconstruction
+  throughput. A validation failure preserves the measured times but marks the
+  sample, and therefore the scenario, `FAILED`.
 
 - **Peak RSS** is the maximum of `psutil` samples taken on a background thread
   **during** the measured call (sampling interval recorded as
   `rss_sample_interval_seconds`; the sampler is always stopped/joined in
-  `finally`). Without `psutil` it is `NOT_AVAILABLE`.
+  `finally`). Without `psutil`, or if the current process cannot be sampled, it
+  is `NOT_AVAILABLE` with a diagnostic reason rather than a sampler-thread
+  failure.
 - **`output_bytes`** is the final, authoritative size of the scenario's own
   output directory — never a before/after diff on a shared directory, so
   re-running an overwritten scenario still reports the real (non-zero) size.
+- **Single-table source isolation.** DBF scenarios pass the exact fixture file
+  to the public API, never its shared fixture directory. `input_bytes` is the
+  selected DBF plus only its same-stem FPT, when present. Neighbouring small,
+  medium, deleted or memo fixtures therefore cannot leak into a scenario or
+  inflate its throughput denominator. Reconstruction input directories are
+  deleted and rebuilt before preparation, so stale JSONL/schema artifacts from
+  an earlier run cannot add tables to a later reconstruction.
 - **`temporary_bytes_written`** is the logical size of the atomic `.partial`
   files **at the moment of `os.replace` publish**, measured by temporarily
   intercepting `os.replace` inside the worker subprocess only (no production
@@ -95,6 +111,10 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
   `NOT_AVAILABLE` (with a reason) only when the platform forbids reading the
   partial at publish time.  It is explicitly **not** an
   `io_write_bytes - output_bytes` guess.
+- **Atomic-write residue** (`temporary_files_left` / `temporary_bytes_left`) is
+  checked after the measured window for every warm-up and repetition. Both must
+  be zero. Any remaining `.partial` name segment changes the sample and scenario
+  to `FAILED`; a versioned baseline cannot accept it.
 - **Read / write amplification** (`read_amplification` /
   `write_amplification`) are defined as the measured **psutil process I/O
   counter delta** divided by the logical `input_bytes` / `output_bytes`:
@@ -117,14 +137,14 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
     measured FPT publish throughput. Scenarios without an FPT (flat
     `reconstruction_190k`, `reconstruction_jsonl_to_dbf`, ...) are **never**
     given a separate FPT throughput — there is no FPT to attribute.
-  - **Measurement boundary**: the measured callable for
-    `reconstruction_memo_190k` is **only the public `reconstruct_dbf`** call.
-    Flattening the rebuilt tree, the DBF/FPT `stat`, the record-count check,
-    the artifact validation and the per-sample extras above all run in a
-    `post_validate` step **after** the wall/CPU window has closed, so they
-    can never inflate the measured times. A post-validation failure (missing
-    or empty FPT, record-count mismatch) fails the *sample* — the measured
-    times are preserved, the scenario becomes `FAILED`.
+  - **Measurement boundary**: every reconstruction scenario measures **only
+    the public `reconstruct_dbf` call**. DBF/FPT discovery and `stat`, physical
+    record-count checks, artifact validation and the per-sample extras above
+    all run in `post_validate` after the wall/CPU window has closed. Output
+    trees remain isolated and are counted recursively, so no flattening or
+    renaming is necessary. Post-validation runs for warm-ups and measured
+    repetitions; a failure preserves measured times but fails the sample and
+    scenario.
 - **Memo reconstruction aggregates** (rendered as Markdown columns):
   `max_output_dbf_bytes` (max DBF MiB), `max_output_fpt_bytes` (max FPT MiB)
   and `median_fpt_mib_per_second` (median FPT MiB/s) over the successful
@@ -156,7 +176,8 @@ the following is true:
   samples, or any warm-up sample is not `MEASURED` (a missing, extra or
   `FAILED` warm-up rejects the baseline regardless of `valid_baseline`);
 - any `MEASURED` sample lacks the required wall/CPU/throughput/output/peak-RSS
-  metrics (or the amplification/temporary metrics where applicable);
+  metrics (or the amplification/temporary metrics where applicable), or reports
+  non-zero `temporary_files_left` / `temporary_bytes_left`;
 - a `reconstruction_memo_190k` sample lacks `output_dbf_bytes > 0`,
   `output_fpt_bytes > 0`, `fpt_mib_per_second > 0`,
   `temporary_publish_count >= 2`, or
@@ -201,11 +222,13 @@ are listed verbatim and are never simulated.
 - **Fixture generation is excluded** from measured time.  `fixtures.py` builds
   the DBF/FPT files up front; the measured wall/CPU clock starts only inside the
   `metrics.run()` wrapper around the target `dbfbridge` call.
-- **Post-validation is excluded** from measured time.  For
-  `reconstruction_memo_190k` the measured callable is *only* `reconstruct_dbf`;
-  flattening the rebuilt tree, the DBF/FPT `stat`, the record-count check and
-  the artifact validation run in a `post_validate` step after the window closes
-  (see "Memo reconstruction extras" above).
+- **Post-validation is excluded** from measured time. For
+  `reconstruction_jsonl_to_dbf`, `reconstruction_190k` and
+  `reconstruction_memo_190k`, the measured callable is only
+  `reconstruct_dbf(...).raise_for_errors()`. Artifact discovery, DBF/FPT size
+  checks, physical record counting and temporary-file checks run afterwards
+  for every warm-up and measured repetition. Memo-free reconstruction also
+  rejects any unexpected FPT.
 - **Worker startup is NOT in the measured window.**  Each scenario is its own
   subprocess; `metrics.run()` begins timing *after* the process has imported and
   is inside the target call.  Python interpreter startup, imports, and fixture
@@ -256,13 +279,16 @@ thing in both profiles. A complete full run therefore reports exactly
 **20 `MEASURED`** + 4 `NOT_IMPLEMENTED` (+ 0 `FAILED`).
 
 - `reconstruction_190k` is the **flat / memo-free** reconstruction: 190,000
-  records, no memo field, **no FPT** is produced.
+  records, no memo field, **no FPT** is produced. The fast
+  `reconstruction_jsonl_to_dbf` scenario uses the same measurement and
+  post-validation contract on its smaller fixture.
 - `reconstruction_memo_190k` is the **real DBF+FPT reconstruction**: the
   190,000-record memo-heavy fixture is exported to JSONL *outside* the measured
   window, then the public `reconstruct_dbf` runs *inside* it and must produce a
   non-empty DBF **and** a non-empty FPT with the expected record count. It is
   the only scenario that reports `output_dbf_bytes`, `output_fpt_bytes` and
-  `fpt_mib_per_second` (see "Measurement method").
+  `fpt_mib_per_second` (see "Measurement method"). The artifact checks run for
+  warm-ups as well as measured repetitions.
 
 The full profile generates the 1,000,000-record flat fixture and the
 190,000-record memo-heavy fixture before measuring; on a slow machine give it a

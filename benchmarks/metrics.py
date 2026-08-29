@@ -13,7 +13,8 @@ Measurement model
   background thread while the measured callable runs, and reporting the maximum
   sample together with the sampling rate.  The sampler is always stopped and
   joined in a ``finally`` block, including when the callable raises.  If
-  ``psutil`` is unavailable, peak RSS is ``None`` (NOT_AVAILABLE).
+  ``psutil`` or the current process is unavailable, peak RSS is ``None`` with
+  a diagnostic reason (NOT_AVAILABLE), never an unhandled thread exception.
 - Physical memory for the environment report uses ``psutil.virtual_memory()``;
   without ``psutil`` it is ``None`` (NOT_AVAILABLE).
 - There is **no** direct Windows API (ctypes) usage anywhere in this module or
@@ -92,6 +93,7 @@ class RssSampler:
         self._samples: list[int] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.unavailable_reason: str | None = None
 
     @property
     def sample_count(self) -> int:
@@ -104,15 +106,25 @@ class RssSampler:
     def _loop(self) -> None:
         psutil = _psutil()
         if psutil is None:
+            self.unavailable_reason = "psutil is not installed"
             return
-        process = psutil.Process()
+        try:
+            process = psutil.Process()
+        except Exception as exc:
+            # Process discovery can fail in short-lived subprocesses and
+            # restricted containers.  Missing RSS is an explicit
+            # NOT_AVAILABLE metric, never an unhandled sampler-thread error.
+            self.unavailable_reason = f"could not open current process: {type(exc).__name__}: {exc}"
+            return
         while not self._stop.is_set():
             try:
                 rss = int(process.memory_info().rss)
-            except Exception:
-                rss = None
-            if rss is not None:
-                self._samples.append(rss)
+            except Exception as exc:
+                self.unavailable_reason = (
+                    f"could not sample current process: {type(exc).__name__}: {exc}"
+                )
+                return
+            self._samples.append(rss)
             self._stop.wait(self.interval)
 
     def start(self) -> None:
@@ -141,14 +153,21 @@ def temporary_bytes_in(root: Path) -> int:
     temporary artefacts left behind by a run (there should be none).
     """
 
-    if not root.is_dir():
-        return 0
     total = 0
-    for path in root.rglob("*"):
-        if path.is_file() and ".partial" in path.name:
-            with contextlib.suppress(OSError):
-                total += path.stat().st_size
+    for path in temporary_files_in(root):
+        with contextlib.suppress(OSError):
+            total += path.stat().st_size
     return total
+
+
+def temporary_files_in(root: Path) -> list[Path]:
+    """Return atomic-write temporary artifacts still present under *root*."""
+
+    if not root.is_dir():
+        return []
+    return [
+        path for path in root.rglob("*") if path.is_file() and "partial" in path.name.split(".")
+    ]
 
 
 class AtomicPublishTracker:
@@ -344,6 +363,18 @@ def run(
     if output_dir.is_dir():
         output_bytes = directory_size_bytes(output_dir)
 
+    # Atomic-publish integrity is checked after the measured window. A
+    # successful operation may not leave any .partial name segment behind.
+    temporary_files_left = temporary_files_in(output_dir)
+    temporary_bytes_left = temporary_bytes_in(output_dir)
+    if temporary_files_left:
+        status = STATUS_FAILED
+        leftover_error = (
+            f"atomic publish left {len(temporary_files_left)} temporary file(s) "
+            f"({temporary_bytes_left} bytes)"
+        )
+        error = f"{error}; {leftover_error}" if error else leftover_error
+
     after = process_snapshot()
 
     def finite(value: float) -> float | None:
@@ -366,6 +397,8 @@ def run(
         ),
         # Authoritative output size for this scenario/rep.
         "output_bytes": output_bytes,
+        "temporary_files_left": len(temporary_files_left),
+        "temporary_bytes_left": temporary_bytes_left,
     }
 
     # Peak RSS: a true sampled maximum (None -> NOT_AVAILABLE without psutil).
@@ -378,6 +411,7 @@ def run(
         result["peak_rss_bytes"] = None
         result["rss_samples"] = None
         result["rss_sample_interval_seconds"] = None
+        result["peak_rss_unavailable_reason"] = sampler.unavailable_reason
 
     if before is not None and after is not None:
         io_read_delta = after["io_read_bytes"] - before["io_read_bytes"]

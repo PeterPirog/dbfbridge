@@ -6,7 +6,8 @@ so that a crash in one scenario cannot take down the report or the controller.
 Measurement model
 -----------------
 - A configurable number of **warm-up** runs (``--warmup``) execute first and are
-  *excluded* from the reported results.
+  *excluded* from the reported results.  Warm-ups and measured repetitions use
+  the same post-validation path; an invalid warm-up invalidates the scenario.
 - A configurable number of **measured** runs (``--repetitions``) each write into
   its own fresh ``out/<scenario>/rep-<n>/`` directory (no inherited output).
 - For each measured run the wall/CPU time, records/s, source MiB/s, authoritative
@@ -120,6 +121,56 @@ def aggregate(
     }
 
 
+def _validate_reconstruction_output(
+    output_dir: Path,
+    *,
+    expected_records: int,
+    require_fpt: bool,
+) -> tuple[Path, Path | None]:
+    """Validate one isolated reconstruction output outside its timed window.
+
+    A reconstruction scenario has exactly one DBF.  Memo-free scenarios must
+    not accidentally create an FPT; the dedicated memo scenario must create
+    exactly one non-empty FPT.  Physical record counting is deliberately part
+    of post-validation, never part of the measured writer call.
+    """
+
+    dbfs = sorted(path for path in output_dir.rglob("*.dbf") if path.is_file())
+    fpts = sorted(path for path in output_dir.rglob("*.fpt") if path.is_file())
+    if len(dbfs) != 1:
+        raise RuntimeError(f"expected exactly one reconstructed DBF, found {len(dbfs)}")
+    dbf_path = dbfs[0]
+    if dbf_path.stat().st_size == 0:
+        raise RuntimeError("reconstructed DBF is empty")
+
+    if require_fpt:
+        if len(fpts) != 1:
+            raise RuntimeError(f"expected exactly one reconstructed FPT, found {len(fpts)}")
+        fpt_path: Path | None = fpts[0]
+        if fpt_path.stat().st_size == 0:
+            raise RuntimeError("reconstructed FPT is empty")
+    else:
+        if fpts:
+            raise RuntimeError(f"memo-free reconstruction produced {len(fpts)} unexpected FPT")
+        fpt_path = None
+
+    counts = fixture_factory._measured_counts(dbf_path)
+    if counts["total_records"] != expected_records:
+        raise RuntimeError(
+            f"reconstructed DBF has {counts['total_records']} records, expected {expected_records}"
+        )
+
+    partials = [
+        path
+        for path in output_dir.rglob("*")
+        if path.is_file() and "partial" in path.name.split(".")
+    ]
+    if partials:
+        names = ", ".join(path.name for path in partials[:3])
+        raise RuntimeError(f"reconstruction left temporary partial files: {names}")
+    return dbf_path, fpt_path
+
+
 def _scenario_names(profile: str) -> tuple[str, ...]:
     fast = (
         "jsonl_conversion_json",
@@ -214,11 +265,16 @@ class Runner:
         return out
 
     def _source_bytes(self, source_dbf: Path) -> int:
-        total = 0
-        for p in source_dbf.parent.iterdir() if source_dbf.parent.is_dir() else []:
-            if p.is_file() and (p.suffix in {".dbf", ".fpt"}):
-                total += p.stat().st_size
-        return total
+        """Logical input size of one table: its DBF plus same-stem FPT."""
+
+        wanted_stem = source_dbf.stem.casefold()
+        return sum(
+            path.stat().st_size
+            for path in source_dbf.parent.iterdir()
+            if path.is_file()
+            and path.stem.casefold() == wanted_stem
+            and path.suffix.casefold() in {".dbf", ".fpt"}
+        )
 
     def _measure(
         self,
@@ -233,43 +289,42 @@ class Runner:
     ) -> dict[str, object]:
         """Run warm-ups then measured reps, each into its own fresh output dir.
 
-        ``post_validate`` (optional) runs **after** each measured repetition's
-        ``metrics.run`` has returned — i.e. outside the wall/CPU measurement
-        window — and may inspect/flatten the artefacts and attach per-sample
-        extras.  Raising marks that sample ``FAILED`` (with the error preserved)
-        without inflating the measured times.
+        ``post_validate`` (optional) runs **after every successful warm-up and
+        measured repetition** has returned from ``metrics.run`` — i.e. outside
+        the wall/CPU measurement window.  It may inspect the artefacts and
+        attach per-sample extras.  Raising marks that sample ``FAILED`` (with
+        the error and measured times preserved) without inflating the measured
+        wall/CPU values.
         """
 
-        warmup_samples: list[dict[str, object]] = []
-        for _ in range(self.warmup):
-            out = self._fresh_out(name, "warmup")
-            warmup_samples.append(
-                bench_metrics.run(
-                    function_factory(out),
-                    input_bytes=input_bytes,
-                    input_records=input_records,
-                    output_dir=out,
-                    warmup=True,
-                )
-            )
-
-        measured: list[dict[str, object]] = []
-        for i in range(1, self.repetitions + 1):
-            out = self._fresh_out(name, f"rep-{i}")
+        def run_sample(rep: str, *, warmup: bool) -> dict[str, object]:
+            out = self._fresh_out(name, rep)
             sample = bench_metrics.run(
                 function_factory(out),
                 input_bytes=input_bytes,
                 input_records=input_records,
                 output_dir=out,
-                warmup=False,
+                warmup=warmup,
             )
             if post_validate is not None and sample.get("status") == STATUS_MEASURED:
+                validation_started = time.perf_counter()
                 try:
                     post_validate(out, sample)
                 except Exception as exc:  # post-validation failure fails the SAMPLE
                     sample["status"] = STATUS_FAILED
                     sample["error"] = f"post-validation failed: {type(exc).__name__}: {exc}"
-            measured.append(sample)
+                finally:
+                    # Diagnostic only.  This timer starts after metrics.run has
+                    # already closed the measured wall/CPU window.
+                    sample["post_validation_seconds"] = round(
+                        time.perf_counter() - validation_started,
+                        6,
+                    )
+            return sample
+
+        warmup_samples = [run_sample(f"warmup-{i}", warmup=True) for i in range(1, self.warmup + 1)]
+
+        measured = [run_sample(f"rep-{i}", warmup=False) for i in range(1, self.repetitions + 1)]
 
         # ANY failed warm-up OR measured repetition fails the whole scenario;
         # raw samples and errors are preserved, and the aggregate is flagged
@@ -301,7 +356,7 @@ class Runner:
         def make(out: Path):
             def run() -> None:
                 result = export_dbf(
-                    str(source_dbf.parent),
+                    str(source_dbf),
                     str(out),
                     formats=("jsonl",),
                     overwrite=True,
@@ -540,7 +595,7 @@ class Runner:
 
             def run() -> None:
                 result = export_dbf(
-                    str(source_dbf.parent),
+                    str(source_dbf),
                     str(out),
                     formats=("jsonl",),
                     deleted="include",
@@ -614,16 +669,18 @@ class Runner:
         self.results.append(result)
 
     def scenario_reconstruction(self, name: str, source_dbf: Path, records: int) -> None:
-        """Distinct export/rebuilt directories per reconstruction scenario."""
+        """Memo-free reconstruction with validation outside the timed call."""
 
         from dbfbridge import export_dbf, reconstruct_dbf
 
-        export_dir = self.work_dir / "out" / name / "export"
-        export_dir.mkdir(parents=True, exist_ok=True)
+        # Preparation is outside the measured window but must still be fresh:
+        # stale JSONL/schema files from an earlier run would reconstruct extra
+        # tables and invalidate both correctness and the input-size denominator.
+        export_dir = self._fresh_out(name, "export")
         # Prepare the JSONL input once (not measured) using the same dir name
         # space so reconstruction_* never collides across scenarios.
         export_dbf(
-            str(source_dbf.parent),
+            str(source_dbf),
             str(export_dir),
             formats=("jsonl",),
             deleted="include",
@@ -633,30 +690,37 @@ class Runner:
 
         def make(out: Path):
             def run() -> None:
-                target = out / "rebuilt"
                 result = reconstruct_dbf(
                     str(export_dir),
-                    str(target),
+                    str(out / "rebuilt"),
                     input_format="jsonl",
                     overwrite=True,
                 )
                 result.raise_for_errors()
-                # Flatten so the scenario's own output dir holds the artefacts
-                # (output_bytes is measured on this dir).
-                if target.exists():
-                    for child in target.iterdir():
-                        child.rename(out / child.name)
-                    target.rmdir()
 
             return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            dbf_path, _ = _validate_reconstruction_output(
+                out,
+                expected_records=records,
+                require_fpt=False,
+            )
+            # Keep the reconstructed tree intact.  metrics.run and this
+            # authoritative re-check both count output files recursively, so
+            # flattening/renaming is unnecessary and never enters the timed call.
+            sample["output_bytes"] = bench_metrics.directory_size_bytes(out)
+            if sample["output_bytes"] < dbf_path.stat().st_size:
+                raise RuntimeError("reconstruction output size is smaller than its DBF")
 
         self.results.append(
             self._measure(
                 name,
-                f"JSONL -> DBF/FPT reconstruction ({records} records)",
+                f"JSONL -> DBF reconstruction ({records} records, memo-free)",
                 make,
                 input_bytes=input_bytes,
                 input_records=records,
+                post_validate=post_validate,
             )
         )
 
@@ -665,8 +729,8 @@ class Runner:
 
         The JSONL input is prepared **outside** the measured window.  The
         **measured callable is ONLY the public ``reconstruct_dbf``** — nothing
-        else.  All post-validation (flattening the rebuilt tree, verifying the
-        DBF and FPT artefacts are present and non-empty, counting records, and
+        else.  All post-validation (verifying the DBF and FPT artefacts are
+        present and non-empty, counting records, and
         attaching ``output_dbf_bytes`` / ``output_fpt_bytes`` /
         ``fpt_mib_per_second``) runs in ``post_validate`` **after** the
         wall/CPU measurement window has closed, so it can never inflate the
@@ -676,10 +740,9 @@ class Runner:
 
         from dbfbridge import export_dbf, reconstruct_dbf
 
-        export_dir = self.work_dir / "out" / name / "export"
-        export_dir.mkdir(parents=True, exist_ok=True)
+        export_dir = self._fresh_out(name, "export")
         export_dbf(
-            str(source_dbf.parent),
+            str(source_dbf),
             str(export_dir),
             formats=("jsonl",),
             deleted="include",
@@ -691,7 +754,7 @@ class Runner:
         def make(out: Path):
             def run() -> None:
                 # ONLY the public reconstruct_dbf call is inside the measured
-                # window.  Flattening, stat and artifact validation are in
+                # window.  Stat and artifact validation are in
                 # post_validate (outside the wall/CPU measurement).
                 result = reconstruct_dbf(
                     str(export_dir),
@@ -705,28 +768,17 @@ class Runner:
             return run
 
         def post_validate(out: Path, sample: dict[str, object]) -> None:
-            target = out / "rebuilt"
-            if target.exists():
-                for child in target.iterdir():
-                    child.rename(out / child.name)
-                target.rmdir()
-            dbfs = [p for p in out.rglob("*.dbf") if p.is_file()]
-            fpts = [p for p in out.rglob("*.fpt") if p.is_file()]
-            if not dbfs or dbfs[0].stat().st_size == 0:
-                raise RuntimeError("reconstructed DBF is missing or empty")
-            if not fpts or fpts[0].stat().st_size == 0:
-                raise RuntimeError("reconstructed FPT is missing or empty")
-            counts = fixture_factory._measured_counts(dbfs[0])
-            if counts["total_records"] != records:
-                raise RuntimeError(
-                    f"reconstructed DBF has {counts['total_records']} records, expected {records}"
-                )
-            dbf_bytes = dbfs[0].stat().st_size
-            fpt_bytes = fpts[0].stat().st_size
+            dbf_path, fpt_path = _validate_reconstruction_output(
+                out,
+                expected_records=records,
+                require_fpt=True,
+            )
+            assert fpt_path is not None
+            dbf_bytes = dbf_path.stat().st_size
+            fpt_bytes = fpt_path.stat().st_size
             sample["output_dbf_bytes"] = dbf_bytes
             sample["output_fpt_bytes"] = fpt_bytes
-            # Authoritative output size now that the artefacts are flattened in.
-            sample["output_bytes"] = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
+            sample["output_bytes"] = bench_metrics.directory_size_bytes(out)
             wall = sample.get("wall_seconds")
             if isinstance(wall, (int, float)) and not isinstance(wall, bool) and wall > 0:
                 sample["fpt_mib_per_second"] = round((fpt_bytes / (1024 * 1024)) / wall, 6)
@@ -753,7 +805,7 @@ class Runner:
         def make(out: Path):
             def run() -> None:
                 result = check_conversion_quality(
-                    str(source_dbf.parent),
+                    str(source_dbf),
                     str(out),
                     overwrite=True,
                 )
