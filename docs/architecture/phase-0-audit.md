@@ -406,6 +406,12 @@ Classification recorded in persistent memory:
       (`output_fpt_bytes / 2^20 / wall_seconds`). Scenarios without an FPT
       (flat `reconstruction_190k`, `reconstruction_jsonl_to_dbf`) are never
       given a separate FPT throughput — there is no FPT to attribute.
+    - Aggregates over the successful measured samples (rendered as Markdown
+      columns): `max_output_dbf_bytes` (max DBF MiB), `max_output_fpt_bytes`
+      (max FPT MiB) and `median_fpt_mib_per_second` (median FPT MiB/s). They
+      are `NOT_AVAILABLE` for every scenario that does not rebuild a memo
+      table. The per-sample extras and the post-validation that attaches them
+      run **outside** the wall/CPU measurement window (see the worker bullet).
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
    worker invocation so a crash is contained. Runs an explicit warm-up (default
    1, excluded from results) followed by the measured repetitions; each
@@ -422,15 +428,21 @@ Classification recorded in persistent memory:
     records, no memo field, **no FPT** is produced).
   - `reconstruction_memo_190k` (full profile) is the **real DBF+FPT
     reconstruction**: the 190,000-record memo-heavy fixture is exported to JSONL
-    *outside* the measured window, then the public `reconstruct_dbf` runs
-    *inside* it and each measured repetition must produce a non-empty DBF and a
-    non-empty FPT with the expected record count (a missing/empty FPT fails the
-    sample). It is the only scenario that reports `output_dbf_bytes`,
-    `output_fpt_bytes` and `fpt_mib_per_second` (see §13 metric contract).
-    Its code path is validated by a small real integration test
+    *outside* the measured window, then the **measured callable is only the
+    public `reconstruct_dbf`**.  All post-validation — flattening the rebuilt
+    tree, the DBF/FPT `stat`, the record-count check, the artifact validation
+    (missing/empty FPT or a record-count mismatch fails the *sample*), and the
+    per-sample extras `output_dbf_bytes` / `output_fpt_bytes` /
+    `fpt_mib_per_second` — runs in a `post_validate` step **after** the
+    wall/CPU window has closed, so it can never inflate the measured times.
+    It is the only scenario that reports those extras (see §13 metric
+    contract). Its code path is validated by a small real integration test
     (`test_reconstruction_memo_real_integration`) that runs the genuine
     `reconstruct_dbf` on a 15-record memo DBF+FPT inside `metrics.run`,
-    without mocking any production code.
+    without mocking any production code, plus
+    `test_reconstruction_memo_post_validate_outside_measured_window` and
+    `test_reconstruction_memo_post_validate_failure_fails_sample` for the
+    measurement boundary and the sample-failure semantics.
 - `benchmarks/run_benchmark.py` — controller: runs scenarios in fresh
    subprocesses (diagnostic log opened via a context manager) with a
    configurable per-scenario timeout (`> 0` enforced; `repetitions >= 1` and
@@ -441,9 +453,12 @@ Classification recorded in persistent memory:
     and exits non-zero when any scenario is `FAILED`. **Baseline gate**:
     `--baseline` refuses (non-zero, nothing copied) unless the run is the **full**
     profile, `psutil` is available, no scenario FAILED, the report is exactly the
-    full contract (20 unique `MEASURED`, 4 unique `NOT_IMPLEMENTED`, 0 `FAILED`,
+    full     contract (20 unique `MEASURED`, 4 unique `NOT_IMPLEMENTED`, 0 `FAILED`,
     no unknown status, no duplicate name, no name outside the contract, no name
-    in more than one status category), `warmup >= 1` and `repetitions >= 3`,
+    in more than one status category), the payload is well-formed (a
+    dict `environment` and `environment.git` block, a list `scenarios`, and
+    every scenario entry a dict with a usable name — malformed entries are
+    rejected, never silently dropped), `warmup >= 1` and `repetitions >= 3`,
     every `MEASURED` scenario has exactly `environment.repetitions` `MEASURED`
     samples **and** exactly `environment.warmup` `MEASURED` warm-up samples
     (a missing/extra/`FAILED` warm-up rejects the baseline independent of
@@ -530,7 +545,20 @@ and installs the `--baseline` gate. A fifth commit,
 `--baseline` gate (exact sample and warm-up counts per scenario, the exact
 scenario contract, per-sample `MEASURED` status, the memo-reconstruction
 evidence), and replaces the emulated temporary-bytes test with a real
-`reconstruct_dbf` integration test on a 15-record memo DBF+FPT.)
+`reconstruct_dbf` integration test on a 15-record memo DBF+FPT. A sixth commit,
+`bench: isolate phase-0 reconstruction measurement boundary`, isolates the
+`reconstruction_memo_190k` measurement boundary: the measured callable is now
+*only* the public `reconstruct_dbf`, while flattening the rebuilt tree, the
+DBF/FPT `stat`, the record-count check, the artifact validation and the
+per-sample `output_dbf_bytes` / `output_fpt_bytes` / `fpt_mib_per_second`
+extras all run in a `post_validate` step **after** the wall/CPU window has
+closed (so they can never inflate the measured times; a post-validation
+failure fails the *sample*, not the run). It adds the `max_output_dbf_bytes` /
+`max_output_fpt_bytes` / `median_fpt_mib_per_second` aggregates and their
+Markdown columns, hardens the `--baseline` gate against malformed payloads
+(non-dict / unnamed scenario entries, a non-list scenario list, a missing
+`environment`/`git` block — rejected, never silently dropped), and adds
+regression tests for all of the above.)
 
 **A versioned full baseline does NOT exist yet.**  The `--baseline` gate
 requires a full, clean, complete, `psutil`-enabled run and has not been

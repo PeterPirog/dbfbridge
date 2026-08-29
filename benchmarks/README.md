@@ -117,6 +117,19 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
     measured FPT publish throughput. Scenarios without an FPT (flat
     `reconstruction_190k`, `reconstruction_jsonl_to_dbf`, ...) are **never**
     given a separate FPT throughput — there is no FPT to attribute.
+  - **Measurement boundary**: the measured callable for
+    `reconstruction_memo_190k` is **only the public `reconstruct_dbf`** call.
+    Flattening the rebuilt tree, the DBF/FPT `stat`, the record-count check,
+    the artifact validation and the per-sample extras above all run in a
+    `post_validate` step **after** the wall/CPU window has closed, so they
+    can never inflate the measured times. A post-validation failure (missing
+    or empty FPT, record-count mismatch) fails the *sample* — the measured
+    times are preserved, the scenario becomes `FAILED`.
+- **Memo reconstruction aggregates** (rendered as Markdown columns):
+  `max_output_dbf_bytes` (max DBF MiB), `max_output_fpt_bytes` (max FPT MiB)
+  and `median_fpt_mib_per_second` (median FPT MiB/s) over the successful
+  measured samples. They are `NOT_AVAILABLE` for every scenario that does not
+  rebuild a memo table.
 
 ## Baseline gate (`--baseline`)
 
@@ -132,6 +145,10 @@ the following is true:
 - the report is not exactly the full contract: any unknown status, any
   duplicate scenario name, any name outside the contract, or the same name in
   more than one status category;
+- the payload is malformed: a missing/non-dict `environment` or `environment.git`
+  block, a non-list `scenarios` list, a scenario entry that is not a dict, or a
+  scenario entry without a usable name (malformed entries are rejected, never
+  silently dropped);
 - any `MEASURED` scenario has `valid_baseline != true`;
 - a `MEASURED` scenario does not have exactly `environment.repetitions`
   samples, or any sample is not `MEASURED`;
@@ -184,6 +201,11 @@ are listed verbatim and are never simulated.
 - **Fixture generation is excluded** from measured time.  `fixtures.py` builds
   the DBF/FPT files up front; the measured wall/CPU clock starts only inside the
   `metrics.run()` wrapper around the target `dbfbridge` call.
+- **Post-validation is excluded** from measured time.  For
+  `reconstruction_memo_190k` the measured callable is *only* `reconstruct_dbf`;
+  flattening the rebuilt tree, the DBF/FPT `stat`, the record-count check and
+  the artifact validation run in a `post_validate` step after the window closes
+  (see "Memo reconstruction extras" above).
 - **Worker startup is NOT in the measured window.**  Each scenario is its own
   subprocess; `metrics.run()` begins timing *after* the process has imported and
   is inside the target call.  Python interpreter startup, imports, and fixture

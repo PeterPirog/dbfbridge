@@ -29,6 +29,7 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -111,6 +112,11 @@ def aggregate(
         "max_temporary_bytes_written": maxcol("temporary_bytes_written"),
         "max_peak_rss_bytes": maxcol("peak_rss_bytes"),
         "max_output_bytes": maxcol("output_bytes"),
+        # Memo-reconstruction extras (present only on scenarios that rebuild a
+        # memo table; None elsewhere so the Markdown renders NOT_AVAILABLE).
+        "max_output_dbf_bytes": maxcol("output_dbf_bytes"),
+        "max_output_fpt_bytes": maxcol("output_fpt_bytes"),
+        "median_fpt_mib_per_second": _median(col("fpt_mib_per_second")),
     }
 
 
@@ -222,9 +228,17 @@ class Runner:
         *,
         input_bytes: int | None,
         input_records: int | None,
-        **parameters: object,
+        post_validate: Callable[[Path, dict[str, object]], None] | None = None,
+        extra_parameters: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        """Run warm-ups then measured reps, each into its own fresh output dir."""
+        """Run warm-ups then measured reps, each into its own fresh output dir.
+
+        ``post_validate`` (optional) runs **after** each measured repetition's
+        ``metrics.run`` has returned — i.e. outside the wall/CPU measurement
+        window — and may inspect/flatten the artefacts and attach per-sample
+        extras.  Raising marks that sample ``FAILED`` (with the error preserved)
+        without inflating the measured times.
+        """
 
         warmup_samples: list[dict[str, object]] = []
         for _ in range(self.warmup):
@@ -242,15 +256,20 @@ class Runner:
         measured: list[dict[str, object]] = []
         for i in range(1, self.repetitions + 1):
             out = self._fresh_out(name, f"rep-{i}")
-            measured.append(
-                bench_metrics.run(
-                    function_factory(out),
-                    input_bytes=input_bytes,
-                    input_records=input_records,
-                    output_dir=out,
-                    warmup=False,
-                )
+            sample = bench_metrics.run(
+                function_factory(out),
+                input_bytes=input_bytes,
+                input_records=input_records,
+                output_dir=out,
+                warmup=False,
             )
+            if post_validate is not None and sample.get("status") == STATUS_MEASURED:
+                try:
+                    post_validate(out, sample)
+                except Exception as exc:  # post-validation failure fails the SAMPLE
+                    sample["status"] = STATUS_FAILED
+                    sample["error"] = f"post-validation failed: {type(exc).__name__}: {exc}"
+            measured.append(sample)
 
         # ANY failed warm-up OR measured repetition fails the whole scenario;
         # raw samples and errors are preserved, and the aggregate is flagged
@@ -267,7 +286,7 @@ class Runner:
             "status": status,
             "warmup": self.warmup,
             "repetitions": self.repetitions,
-            "parameters": parameters,
+            "parameters": dict(extra_parameters or {}),
             "warmup_samples": warmup_samples,
             "samples": measured,
             "aggregated": aggregate(measured, warmup_samples=warmup_samples),
@@ -310,7 +329,7 @@ class Runner:
                 self._export_function(source_dbf, **export_kwargs),
                 input_bytes=self._source_bytes(source_dbf),
                 input_records=input_records,
-                **export_kwargs,
+                extra_parameters=dict(export_kwargs),
             )
         )
 
@@ -506,7 +525,7 @@ class Runner:
                 make,
                 input_bytes=input_bytes,
                 input_records=records or None,
-                mode=mode,
+                extra_parameters={"mode": mode},
             )
         )
 
@@ -645,11 +664,14 @@ class Runner:
         """Memo-heavy reconstruction: a real JSONL -> DBF + FPT rebuild.
 
         The JSONL input is prepared **outside** the measured window.  The
-        measured call is the public ``reconstruct_dbf``.  Each measured
-        repetition must produce a non-empty DBF **and** a non-empty FPT with
-        the expected record count; a missing/empty FPT fails the sample.
-        Per-sample extras for successful reps: ``output_dbf_bytes``,
-        ``output_fpt_bytes`` and ``fpt_mib_per_second``.
+        **measured callable is ONLY the public ``reconstruct_dbf``** — nothing
+        else.  All post-validation (flattening the rebuilt tree, verifying the
+        DBF and FPT artefacts are present and non-empty, counting records, and
+        attaching ``output_dbf_bytes`` / ``output_fpt_bytes`` /
+        ``fpt_mib_per_second``) runs in ``post_validate`` **after** the
+        wall/CPU measurement window has closed, so it can never inflate the
+        measured times.  A missing/empty FPT (or a record-count mismatch)
+        fails the sample via post-validation.
         """
 
         from dbfbridge import export_dbf, reconstruct_dbf
@@ -668,64 +690,59 @@ class Runner:
 
         def make(out: Path):
             def run() -> None:
-                target = out / "rebuilt"
+                # ONLY the public reconstruct_dbf call is inside the measured
+                # window.  Flattening, stat and artifact validation are in
+                # post_validate (outside the wall/CPU measurement).
                 result = reconstruct_dbf(
                     str(export_dir),
-                    str(target),
+                    str(out / "rebuilt"),
                     input_format="jsonl",
                     memo="inline",
                     overwrite=True,
                 )
                 result.raise_for_errors()
-                # Flatten so the scenario's own output dir holds the artefacts.
-                if target.exists():
-                    for child in target.iterdir():
-                        child.rename(out / child.name)
-                    target.rmdir()
-                dbfs = [p for p in out.rglob("*.dbf") if p.is_file()]
-                fpts = [p for p in out.rglob("*.fpt") if p.is_file()]
-                if not dbfs or dbfs[0].stat().st_size == 0:
-                    raise RuntimeError("reconstructed DBF is missing or empty")
-                if not fpts or fpts[0].stat().st_size == 0:
-                    raise RuntimeError("reconstructed FPT is missing or empty")
-                counts = fixture_factory._measured_counts(dbfs[0])
-                if counts["total_records"] != records:
-                    raise RuntimeError(
-                        f"reconstructed DBF has {counts['total_records']} records, "
-                        f"expected {records}"
-                    )
 
             return run
 
-        result = self._measure(
-            name,
-            f"JSONL -> DBF+FPT memo reconstruction ({records} records, memo=inline)",
-            make,
-            input_bytes=input_bytes,
-            input_records=records,
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            target = out / "rebuilt"
+            if target.exists():
+                for child in target.iterdir():
+                    child.rename(out / child.name)
+                target.rmdir()
+            dbfs = [p for p in out.rglob("*.dbf") if p.is_file()]
+            fpts = [p for p in out.rglob("*.fpt") if p.is_file()]
+            if not dbfs or dbfs[0].stat().st_size == 0:
+                raise RuntimeError("reconstructed DBF is missing or empty")
+            if not fpts or fpts[0].stat().st_size == 0:
+                raise RuntimeError("reconstructed FPT is missing or empty")
+            counts = fixture_factory._measured_counts(dbfs[0])
+            if counts["total_records"] != records:
+                raise RuntimeError(
+                    f"reconstructed DBF has {counts['total_records']} records, expected {records}"
+                )
+            dbf_bytes = dbfs[0].stat().st_size
+            fpt_bytes = fpts[0].stat().st_size
+            sample["output_dbf_bytes"] = dbf_bytes
+            sample["output_fpt_bytes"] = fpt_bytes
+            # Authoritative output size now that the artefacts are flattened in.
+            sample["output_bytes"] = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
+            wall = sample.get("wall_seconds")
+            if isinstance(wall, (int, float)) and not isinstance(wall, bool) and wall > 0:
+                sample["fpt_mib_per_second"] = round((fpt_bytes / (1024 * 1024)) / wall, 6)
+            else:
+                sample["fpt_mib_per_second"] = None
+
+        self.results.append(
+            self._measure(
+                name,
+                f"JSONL -> DBF+FPT memo reconstruction ({records} records, memo=inline)",
+                make,
+                input_bytes=input_bytes,
+                input_records=records,
+                post_validate=post_validate,
+            )
         )
-        # Per-sample extras for MEASURED samples (the files are validated inside
-        # the measured call, so they exist for every successful repetition).
-        samples = result["samples"]
-        if isinstance(samples, list):
-            for i, sample in enumerate(samples, start=1):
-                if not isinstance(sample, dict) or sample.get("status") != STATUS_MEASURED:
-                    continue
-                rep_dir = self.work_dir / "out" / name / f"rep-{i}"
-                if not rep_dir.is_dir():
-                    continue
-                dbfs = [p for p in rep_dir.rglob("*.dbf") if p.is_file()]
-                fpts = [p for p in rep_dir.rglob("*.fpt") if p.is_file()]
-                dbf_bytes = dbfs[0].stat().st_size if dbfs else 0
-                fpt_bytes = fpts[0].stat().st_size if fpts else 0
-                sample["output_dbf_bytes"] = dbf_bytes
-                sample["output_fpt_bytes"] = fpt_bytes
-                wall = sample.get("wall_seconds")
-                if isinstance(wall, (int, float)) and not isinstance(wall, bool) and wall > 0:
-                    sample["fpt_mib_per_second"] = round((fpt_bytes / (1024 * 1024)) / wall, 6)
-                else:
-                    sample["fpt_mib_per_second"] = None
-        self.results.append(result)
 
     def scenario_roundtrip(self) -> None:
         name = "roundtrip_quality"

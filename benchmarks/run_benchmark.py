@@ -324,13 +324,22 @@ AGG_METRIC_COLUMNS = [
     ("median_source_mib_per_second", "median MiB/s"),
     ("max_peak_rss_bytes", "peak RSS (MiB)"),
     ("max_output_bytes", "output (MiB)"),
+    ("max_output_dbf_bytes", "max DBF (MiB)"),
+    ("max_output_fpt_bytes", "max FPT (MiB)"),
+    ("median_fpt_mib_per_second", "median FPT MiB/s"),
     ("median_read_amplification", "median read amp"),
     ("median_write_amplification", "median write amp"),
     ("max_temporary_bytes_written", "max temporary written (MiB)"),
 ]
 
 # Aggregate columns rendered in MiB units.
-_MIB_COLUMNS = {"max_peak_rss_bytes", "max_output_bytes", "max_temporary_bytes_written"}
+_MIB_COLUMNS = {
+    "max_peak_rss_bytes",
+    "max_output_bytes",
+    "max_output_dbf_bytes",
+    "max_output_fpt_bytes",
+    "max_temporary_bytes_written",
+}
 
 
 def _sample_missing_metrics(sample: dict[str, Any]) -> list[str]:
@@ -418,13 +427,40 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
       sample is ``MEASURED`` — a missing/extra/FAILED warm-up rejects the
       baseline independent of ``aggregated.valid_baseline``;
     - ``reconstruction_memo_190k`` samples additionally require the real
-      DBF+FPT metrics (see :func:`_memo_sample_missing_metrics`).
+      DBF+FPT metrics (see :func:`_memo_sample_missing_metrics`);
+    - a malformed payload (missing/non-dict environment or git block, a
+      non-list scenario list, a scenario entry that is not a dict or has no
+      usable name) is rejected outright — malformed entries are never silently
+      dropped.
     """
 
     reasons: list[str] = []
-    env = payload.get("environment", {})
-    git = env.get("git", {})
-    all_scenarios = [s for s in payload.get("scenarios", []) if isinstance(s, dict)]
+    if not isinstance(payload, dict):
+        return ["payload is not a dict (malformed payload)"]
+    env_raw = payload.get("environment")
+    if not isinstance(env_raw, dict):
+        reasons.append("environment is missing or not a dict (malformed payload)")
+    env = env_raw if isinstance(env_raw, dict) else {}
+    git_raw = env.get("git")
+    if not isinstance(git_raw, dict):
+        reasons.append("environment.git is missing or not a dict (malformed payload)")
+    git = git_raw if isinstance(git_raw, dict) else {}
+
+    scenarios_raw = payload.get("scenarios")
+    if not isinstance(scenarios_raw, list):
+        reasons.append("payload.scenarios is missing or not a list (malformed payload)")
+        scenarios_raw = []
+    # Malformed entries (not a dict, or no usable name) are REJECTED, never
+    # silently dropped.
+    all_scenarios: list[dict[str, Any]] = []
+    for i, entry in enumerate(scenarios_raw):
+        if not isinstance(entry, dict):
+            reasons.append(f"scenario entry #{i} is not a dict (malformed entry)")
+            continue
+        if not isinstance(entry.get("scenario"), str) or not entry.get("scenario"):
+            reasons.append(f"scenario entry #{i} has no usable scenario name (malformed entry)")
+            continue
+        all_scenarios.append(entry)
     statuses = [s.get("status") for s in all_scenarios]
     names = [s.get("scenario") for s in all_scenarios]
     measured = [s for s in all_scenarios if s.get("status") == STATUS_MEASURED]
