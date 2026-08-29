@@ -385,8 +385,11 @@ Classification recorded in persistent memory:
    samples taken on a background thread during the measured call (sampling
    interval recorded in the JSON); the sampler is always stopped/joined in
    `finally`. Two before/after snapshots are not sufficient to establish a peak.
-   Without `psutil`, all RSS/IO metrics are `NOT_AVAILABLE`. Wall/CPU times are
-   captured immediately after the measured call, before the sampler is stopped:
+   Without `psutil`, all RSS/IO metrics are `NOT_AVAILABLE`. If the current
+   process cannot be opened or disappears while sampling, peak RSS is likewise
+   `NOT_AVAILABLE` with a diagnostic reason rather than an unhandled sampler
+   thread exception. Wall/CPU times are captured immediately after the measured
+   call, before the sampler is stopped:
    they include the active sampler's small overhead but not the cost of
    stopping/joining it.
     **New metric contract (§13)**:
@@ -400,6 +403,10 @@ Classification recorded in persistent memory:
       inside the worker subprocess only (no production code modified). A real
       sum (0 when no temporary file was created); `NOT_AVAILABLE` with a reason
       only when the platform forbids the read.
+    - `temporary_files_left` / `temporary_bytes_left` = atomic-write residue
+      observed after the measured window. Both must be zero for every warm-up
+      and repetition; any remaining `.partial` name segment fails the sample,
+      scenario and baseline gate.
     - `output_dbf_bytes` / `output_fpt_bytes` / `fpt_mib_per_second` are
       carried **only** by `reconstruction_memo_190k`: the final non-empty DBF
       and FPT sizes and the measured FPT publish throughput
@@ -415,26 +422,40 @@ Classification recorded in persistent memory:
 - `benchmarks/worker.py` — in-process scenario executor; one scenario per
    worker invocation so a crash is contained. Runs an explicit warm-up (default
    1, excluded from results) followed by the measured repetitions; each
-   execution writes into its own fresh `out/<scenario>/rep-<n>/` directory
-   prepared before the measured window, so `output_bytes` is the authoritative
-   final size of that directory (re-running an overwritten scenario never yields
-   a zero). **Aggregation**: the median is computed only over successful
+   execution writes into its own fresh `out/<scenario>/warmup-<n>/` or
+   `out/<scenario>/rep-<n>/` directory prepared before the measured window, so
+   `output_bytes` is the authoritative recursive size of that isolated tree
+   (re-running an overwritten scenario never yields a zero). **Aggregation**:
+   the median is computed only over successful
    measured samples; if ANY warm-up or measured repetition is FAILED the whole
    scenario is FAILED, raw samples and errors are preserved, `warmups_succeeded`
    / `warmups_failed` are recorded, and the aggregate is flagged
    `valid_baseline: false` (the Markdown never presents a partial median as a
     comparable baseline).
-  - `reconstruction_190k` is the **flat / memo-free** reconstruction (190,000
-    records, no memo field, **no FPT** is produced).
+   Every DBF scenario passes the exact fixture file to the public API rather
+   than the shared fixture directory. Its `input_bytes` is limited to that DBF
+   plus its same-stem FPT, so neighbouring fixtures cannot leak into a run or
+   distort the denominator. Reconstruction preparation first replaces its
+   export directory with a fresh empty directory, preventing stale JSONL/schema
+   artifacts from a previous run from adding extra tables.
+  - `reconstruction_jsonl_to_dbf` and `reconstruction_190k` are the **flat /
+    memo-free** reconstructions (small and 190,000-record fixtures respectively,
+    no memo field, **no FPT** is produced). Their measured callable is only the
+    public `reconstruct_dbf`; DBF discovery, size and physical record-count
+    checks, the no-FPT assertion and temporary-file checks run afterwards for
+    every warm-up and measured repetition.
   - `reconstruction_memo_190k` (full profile) is the **real DBF+FPT
     reconstruction**: the 190,000-record memo-heavy fixture is exported to JSONL
     *outside* the measured window, then the **measured callable is only the
-    public `reconstruct_dbf`**.  All post-validation — flattening the rebuilt
-    tree, the DBF/FPT `stat`, the record-count check, the artifact validation
+    public `reconstruct_dbf`**.  All post-validation — DBF/FPT discovery and
+    `stat`, the record-count check, the artifact validation
     (missing/empty FPT or a record-count mismatch fails the *sample*), and the
     per-sample extras `output_dbf_bytes` / `output_fpt_bytes` /
     `fpt_mib_per_second` — runs in a `post_validate` step **after** the
     wall/CPU window has closed, so it can never inflate the measured times.
+    The output tree remains nested and isolated; recursive output sizing makes
+    flattening/renaming unnecessary. Post-validation uses the same semantics
+    for warm-ups and measured repetitions.
     It is the only scenario that reports those extras (see §13 metric
     contract). Its code path is validated by a small real integration test
     (`test_reconstruction_memo_real_integration`) that runs the genuine
@@ -453,7 +474,7 @@ Classification recorded in persistent memory:
     and exits non-zero when any scenario is `FAILED`. **Baseline gate**:
     `--baseline` refuses (non-zero, nothing copied) unless the run is the **full**
     profile, `psutil` is available, no scenario FAILED, the report is exactly the
-    full     contract (20 unique `MEASURED`, 4 unique `NOT_IMPLEMENTED`, 0 `FAILED`,
+    full contract (20 unique `MEASURED`, 4 unique `NOT_IMPLEMENTED`, 0 `FAILED`,
     no unknown status, no duplicate name, no name outside the contract, no name
     in more than one status category), the payload is well-formed (a
     dict `environment` and `environment.git` block, a list `scenarios`, and
@@ -548,17 +569,31 @@ evidence), and replaces the emulated temporary-bytes test with a real
 `reconstruct_dbf` integration test on a 15-record memo DBF+FPT. A sixth commit,
 `bench: isolate phase-0 reconstruction measurement boundary`, isolates the
 `reconstruction_memo_190k` measurement boundary: the measured callable is now
-*only* the public `reconstruct_dbf`, while flattening the rebuilt tree, the
-DBF/FPT `stat`, the record-count check, the artifact validation and the
+*only* the public `reconstruct_dbf`, while DBF/FPT discovery and `stat`, the
+record-count check, the artifact validation and the
 per-sample `output_dbf_bytes` / `output_fpt_bytes` / `fpt_mib_per_second`
 extras all run in a `post_validate` step **after** the wall/CPU window has
 closed (so they can never inflate the measured times; a post-validation
-failure fails the *sample*, not the run). It adds the `max_output_dbf_bytes` /
+failure fails the sample and scenario without crashing the worker). It adds the
+`max_output_dbf_bytes` /
 `max_output_fpt_bytes` / `median_fpt_mib_per_second` aggregates and their
 Markdown columns, hardens the `--baseline` gate against malformed payloads
 (non-dict / unnamed scenario entries, a non-list scenario list, a missing
 `environment`/`git` block — rejected, never silently dropped), and adds
-regression tests for all of the above.)
+regression tests for all of the above. A seventh commit,
+`bench: validate every reconstruction outside measured window`, applies this
+boundary to the flat reconstruction scenarios too and makes post-validation
+identical for every warm-up and measured repetition. It removes unnecessary
+flattening, requires exactly one valid DBF and the correct FPT presence policy,
+checks physical record counts and leftover partial files outside the timed
+window, preserves the raw measured times on validation failure, and records a
+separate diagnostic `post_validation_seconds`. It also isolates every benchmark
+to the explicitly selected DBF (+ same-stem FPT for input bytes), makes an
+unavailable RSS process an explicit `NOT_AVAILABLE` result instead of an
+unhandled sampler thread exception, and fixes a platform-dependent encoding
+test that could select `migration_report.jsonl` instead of the table data.
+Reconstruction preparation is also cleaned on every run so stale exports cannot
+silently change the measured table set.)
 
 **A versioned full baseline does NOT exist yet.**  The `--baseline` gate
 requires a full, clean, complete, `psutil`-enabled run and has not been
