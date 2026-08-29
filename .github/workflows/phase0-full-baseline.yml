@@ -63,7 +63,8 @@ jobs:
       - name: Run full profile and record baseline
         shell: pwsh
         run: |
-          python -m benchmarks.run_benchmark --profile full --warmup 1 --repetitions 3 --timeout 7200 --baseline 2>&1 | Tee-Object -FilePath phase0-full-run.log
+          $runLog = Join-Path $env:RUNNER_TEMP "phase0-full-run.log"
+          python -m benchmarks.run_benchmark --profile full --warmup 1 --repetitions 3 --timeout 7200 --baseline 2>&1 | Tee-Object -FilePath $runLog
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify generated baseline
@@ -89,6 +90,6 @@ jobs:
             benchmarks/baselines/phase-0-full.md
             benchmarks/results/phase-0-full.json
             benchmarks/results/phase-0-full.md
-            phase0-full-run.log
+            ${{ runner.temp }}/phase0-full-run.log
             phase0-verification.json
             benchmark-data/logs/**
