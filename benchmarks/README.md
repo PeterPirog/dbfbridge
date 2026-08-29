@@ -190,6 +190,27 @@ Only a **full, clean, complete, `psutil`-enabled** run may become a baseline.
 `psutil` is an optional, benchmark-only dependency (extra `dbfbridge[benchmark]`);
 it is **not** a runtime dependency of the library.
 
+### Recorded Phase 0 baseline
+
+The selected pre-Direct-Read baseline is versioned as:
+
+- `benchmarks/baselines/phase-0-full.json` — authoritative machine-readable
+  samples and environment metadata;
+- `benchmarks/baselines/phase-0-full.md` — human-readable summary generated
+  from the same payload.
+
+It was measured from clean commit
+`542961981e0062cdc977d1b7a4eec721e1f16fd4` on Windows Server 2025, AMD64,
+Python 3.12.10 with `psutil` 7.2.2. The gate accepted exactly 20 `MEASURED`
+scenarios, 4 `NOT_IMPLEMENTED`, 0 `FAILED`, one successful warm-up and three
+successful measured repetitions per executable scenario. All 60 measured
+samples include peak RSS and report zero remaining temporary files/bytes.
+
+This is the **BEFORE** reference for Phase 1. It records the hosted runner and
+dependency versions verbatim and is not presented as a universal hardware
+claim. Direct read, field projection, lazy memo and `raw_mode="none"` remain
+explicitly `NOT_IMPLEMENTED` until their AFTER measurements are added.
+
 ## Where results go
 
 - `benchmark-data/logs/` — **per-scenario diagnostic logs** (worker stdout/stderr;
@@ -197,10 +218,10 @@ it is **not** a runtime dependency of the library.
 - `benchmarks/results/` — **working reports from the last run(s); git-ignored.**
 - `benchmarks/baselines/` — **the selected, versioned baseline.** Created ONLY
   when the `--baseline` gate (above) passes: a full, clean, complete,
-  `psutil`-enabled run.  Until then nothing is written here.  A versioned
-  baseline must carry: git commit, worktree state, OS/CPU/Python, dependency
-  versions, fixture sizes and the status of every scenario — all of which the
-  report already contains.
+  `psutil`-enabled run. The Phase 0 directory contains the accepted JSON and
+  Markdown pair described above. A versioned baseline carries git commit,
+  worktree state, OS/CPU/Python, dependency versions, fixture sizes and the
+  status of every scenario — all of which the report contains.
 - `benchmark-data/` — generated fixtures and outputs; **git-ignored** (regenerated
   on demand; never committed).
 
