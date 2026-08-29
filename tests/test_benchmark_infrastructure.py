@@ -937,7 +937,16 @@ def _full_gate_payload() -> dict:
         {
             "scenario": name,
             "status": "MEASURED",
-            "aggregated": {"valid_baseline": True},
+            "aggregated": (
+                {
+                    "valid_baseline": True,
+                    "max_output_dbf_bytes": 5_000,
+                    "max_output_fpt_bytes": 9_000,
+                    "median_fpt_mib_per_second": 0.5,
+                }
+                if name == "reconstruction_memo_190k"
+                else {"valid_baseline": True}
+            ),
             "samples": [
                 dict(memo_sample if name == "reconstruction_memo_190k" else sample)
                 for _ in range(3)
@@ -955,7 +964,21 @@ def _full_gate_payload() -> dict:
             "profile": "full",
             "warmup": 1,
             "repetitions": 3,
-            "git": {"commit": good_sha, "worktree_dirty": False},
+            "git": {
+                "commit": good_sha,
+                "origin_main": "b" * 40,
+                "branch": "bench",
+                "worktree_dirty": False,
+            },
+            "system": {
+                "python": "3.12",
+                "os": "Windows 11",
+                "arch": "x64",
+                "processor": "CPU",
+                "cpu_count": 8,
+                "physical_memory_bytes": 64 * (1 << 30),
+            },
+            "packages": {"dbfbridge": "0.1.0"},
         },
         "scenarios": scenarios,
     }
@@ -1166,6 +1189,148 @@ def test_baseline_gate_memo_scenario_metrics(monkeypatch: pytest.MonkeyPatch) ->
     s = p["scenarios"][memo_index()]
     s["samples"][0]["fpt_mib_per_second"] = 0.0
     assert any("fpt_mib_per_second" in r for r in run_benchmark.check_baseline_gate(p))
+
+
+def test_baseline_gate_rejects_malformed_scenarios(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Malformed payload entries must be rejected, never silently dropped."""
+
+    from benchmarks import run_benchmark
+
+    monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
+
+    # a non-dict scenario entry -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append(None)
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("not a dict" in r for r in reasons)
+
+    # a dict without a usable scenario name -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"].append({"status": "MEASURED"})
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("scenario name" in r for r in reasons)
+
+    # scenarios not a list -> rejected.
+    p = _full_gate_payload()
+    p["scenarios"] = "not-a-list"
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("not a list" in r for r in reasons)
+
+    # environment not a dict -> rejected.
+    p = _full_gate_payload()
+    p["environment"] = "nope"
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("environment" in r for r in reasons)
+
+    # git block not a dict -> rejected.
+    p = _full_gate_payload()
+    p["environment"]["git"] = "nope"
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("git" in r for r in reasons)
+
+
+def test_aggregate_includes_memo_columns() -> None:
+    from benchmarks import worker
+
+    samples = [
+        {
+            "status": "MEASURED",
+            "output_dbf_bytes": 10,
+            "output_fpt_bytes": 20,
+            "fpt_mib_per_second": 1.5,
+        },
+        {
+            "status": "MEASURED",
+            "output_dbf_bytes": 30,
+            "output_fpt_bytes": 40,
+            "fpt_mib_per_second": 2.5,
+        },
+        {"status": "FAILED"},
+    ]
+    agg = worker.aggregate(samples)
+    assert agg["max_output_dbf_bytes"] == 30
+    assert agg["max_output_fpt_bytes"] == 40
+    assert agg["median_fpt_mib_per_second"] == 2.0
+    assert agg["valid_baseline"] is False
+
+    # Absent on non-memo scenarios -> None (rendered NOT_AVAILABLE), not 0.
+    agg2 = worker.aggregate([{"status": "MEASURED"}])
+    assert agg2["max_output_dbf_bytes"] is None
+    assert agg2["max_output_fpt_bytes"] is None
+    assert agg2["median_fpt_mib_per_second"] is None
+
+
+def test_markdown_has_memo_columns() -> None:
+    from benchmarks import run_benchmark
+
+    p = _full_gate_payload()
+    md = run_benchmark.render_markdown(p)
+    assert "max DBF (MiB)" in md
+    assert "max FPT (MiB)" in md
+    assert "median FPT MiB/s" in md
+    # The memo scenario's aggregate values are rendered (not NOT_AVAILABLE):
+    # 5_000 B = 0.0048 MiB -> "0.01"; 9_000 B = 0.0086 MiB -> "0.01"; rate 0.5.
+    memo_row = next(line for line in md.splitlines() if "reconstruction_memo_190k" in line)
+    assert "0.01" in memo_row
+    assert "0.500" in memo_row
+
+
+def _make_memo_runner(work: Path, *, repetitions: int = 2, warmup: int = 1):
+    from benchmarks import fixtures, worker
+
+    src = fixtures.generate_memo_heavy(work / "src" / "memo.dbf", 15)
+    runner = worker.Runner(Path.cwd(), "full", work, repetitions=repetitions, warmup=warmup)
+    return runner, src
+
+
+def test_reconstruction_memo_post_validate_outside_measured_window(tmp_path: Path) -> None:
+    """The measured callable is only reconstruct_dbf; post-validation (flatten,
+    counts, stat, artifact checks, per-sample extras) runs outside the
+    wall/CPU window and is attached to the sample afterwards."""
+
+    runner, src = _make_memo_runner(tmp_path)
+    runner.scenario_reconstruction_memo("reconstruction_memo_190k", src, 15)
+    result = runner.results[-1]
+    assert result["status"] == "MEASURED", result
+    samples_raw = result.get("samples")
+    assert isinstance(samples_raw, list)
+    assert len(samples_raw) == 2
+    for sample in samples_raw:
+        assert isinstance(sample, dict)
+        assert sample["status"] == "MEASURED"
+        assert sample["output_dbf_bytes"] > 0
+        assert sample["output_fpt_bytes"] > 0
+        assert sample["fpt_mib_per_second"] > 0
+        # output_bytes is authoritative after the artefacts are flattened in.
+        assert sample["output_bytes"] >= sample["output_dbf_bytes"] + sample["output_fpt_bytes"]
+    agg = result.get("aggregated")
+    assert isinstance(agg, dict)
+    assert agg["max_output_dbf_bytes"] > 0
+    assert agg["max_output_fpt_bytes"] > 0
+    assert agg["median_fpt_mib_per_second"] > 0
+
+
+def test_reconstruction_memo_post_validate_failure_fails_sample(tmp_path: Path) -> None:
+    """A post-validation failure (record-count mismatch) fails the SAMPLE,
+    keeps the measured times, and marks the scenario FAILED."""
+
+    runner, src = _make_memo_runner(tmp_path)
+    # Expected 999 records but the fixture only has 15 -> post-validation must
+    # reject every repetition.
+    runner.scenario_reconstruction_memo("reconstruction_memo_190k", src, 999)
+    result = runner.results[-1]
+    assert result["status"] == "FAILED"
+    agg = result.get("aggregated")
+    assert isinstance(agg, dict)
+    assert agg["valid_baseline"] is False
+    samples_raw = result.get("samples")
+    assert isinstance(samples_raw, list)
+    for sample in samples_raw:
+        assert isinstance(sample, dict)
+        assert sample["status"] == "FAILED"
+        assert "post-validation failed" in str(sample.get("error", ""))
+        # The measured times are still present (they were not discarded).
+        assert isinstance(sample["wall_seconds"], (int, float))
 
 
 def test_amplification_formulas_and_edge_cases() -> None:
