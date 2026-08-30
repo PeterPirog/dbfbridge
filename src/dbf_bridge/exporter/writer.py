@@ -145,7 +145,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             schema_writer.write("\n")
             schema_writer.flush_and_fsync()
 
-        table = open_table(discovered.source_path, config)
+        table = open_table(discovered.source_path, config, resolved_encoding=metadata.encoding)
         data_collector = StatsCollector(metadata.fields)
         stats = data_collector.stats
         with AtomicTextWriter(data_path, overwrite=config.overwrite) as data_writer:

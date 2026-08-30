@@ -115,7 +115,7 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         )
         raise UnsupportedTableError(details)
 
-    table = open_table(discovered.source_path, config)
+    table = open_table(discovered.source_path, config, resolved_encoding=raw.encoding)
     fields = raw.fields
     warnings: list[str] = []
     if config.decode_errors in {"ignore", "replace"}:
@@ -172,11 +172,20 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
     )
 
 
-def open_table(dbf_path: Path, config: ExportConfig) -> DBF:
+def open_table(
+    dbf_path: Path, config: ExportConfig, *, resolved_encoding: str | None = None
+) -> DBF:
+    """Open a table for export.
+
+    An explicit user override (``config.encoding``) always wins; otherwise the
+    encoding already resolved from the header (e.g. the Mazovia driver 0x69)
+    is passed to ``dbfread`` explicitly so it does not fall back to ASCII for
+    driver bytes it does not know.
+    """
     return DBF(
         dbf_path,
         load=False,
-        encoding=config.encoding,
+        encoding=config.encoding or resolved_encoding,
         parserclass=LosslessFieldParser,
         char_decode_errors=config.decode_errors,
         ignore_missing_memofile=config.missing_memo == "null-with-warning",

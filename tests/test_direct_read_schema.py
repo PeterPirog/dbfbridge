@@ -24,6 +24,7 @@ import dbfbridge
 from dbfbridge import (
     DbfFormatUnsupportedError,
     DbfHeaderInvalidError,
+    DbfIoError,
     DbfPathError,
     DbfTruncatedError,
     DirectReadError,
@@ -70,10 +71,11 @@ def _patch_header_bytes(path: Path, patches: dict[int, bytes]) -> None:
 
 
 def _field_count(path: Path) -> int:
+    """Count field descriptors; only 0x0D is a terminator (never 0x0A)."""
     data = path.read_bytes()
     count = 0
     offset = 32
-    while data[offset : offset + 1] not in (b"\r", b"\n"):
+    while data[offset : offset + 1] != b"\r":
         count += 1
         offset += 32
     return count
@@ -119,6 +121,7 @@ def test_public_symbols_are_exported_from_both_namespaces() -> None:
         "DbfHeaderInvalidError",
         "DbfTruncatedError",
         "DbfFormatUnsupportedError",
+        "DbfIoError",
         "EncodingUnknownError",
     )
     for name in names:
@@ -141,11 +144,13 @@ def test_error_codes_are_stable_machine_values() -> None:
     assert ErrorCode.DBF_TRUNCATED.value == "DBF_TRUNCATED"
     assert ErrorCode.DBF_FORMAT_UNSUPPORTED.value == "DBF_FORMAT_UNSUPPORTED"
     assert ErrorCode.ENCODING_UNKNOWN.value == "ENCODING_UNKNOWN"
+    assert ErrorCode.DBF_IO_ERROR.value == "DBF_IO_ERROR"
     for exc_type in (
         DbfPathError,
         DbfHeaderInvalidError,
         DbfTruncatedError,
         DbfFormatUnsupportedError,
+        DbfIoError,
         EncodingUnknownError,
     ):
         assert issubclass(exc_type, DirectReadError)
@@ -254,28 +259,63 @@ def test_companions_are_recognized_case_insensitive(sample_input_dir: Path) -> N
             os.replace(renamed, fpt_path)
 
 
-def test_structural_cdx_flag_comes_from_the_header(sample_input_dir: Path) -> None:
+def test_table_flags_byte_is_a_bitmask_not_a_single_flag(sample_input_dir: Path) -> None:
     dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
-    assert inspect_table(dbf_path).has_structural_cdx is False
-    _patch_header_bytes(dbf_path, {28: b"\x01"})
+    for value in (0x00, 0x01, 0x02, 0x03, 0x04, 0x07):
+        _patch_header_bytes(dbf_path, {28: bytes([value])})
+        try:
+            info = inspect_table(dbf_path)
+        finally:
+            _patch_header_bytes(dbf_path, {28: b"\x00"})
+        assert info.has_structural_cdx is bool(value & 0x01), value
+        assert info.has_memo_flag is bool(value & 0x02), value
+        assert info.is_database_container is bool(value & 0x04), value
+    # In particular: a memo-only flags byte must not imply a structural CDX.
+    _patch_header_bytes(dbf_path, {28: b"\x02"})
     try:
-        assert inspect_table(dbf_path).has_structural_cdx is True
+        info = inspect_table(dbf_path)
     finally:
         _patch_header_bytes(dbf_path, {28: b"\x00"})
+    assert info.has_structural_cdx is False
+    assert info.has_memo_flag is True
 
 
 def test_dbc_bound_comes_from_the_vfp_backlink_not_a_dbc_file(sample_input_dir: Path) -> None:
     dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
-    # No .dbc file exists next to the table: the flag must stay False.
-    assert inspect_table(dbf_path).dbc_bound is False
+    schema_before = read_schema(dbf_path)
 
-    terminator_offset = 32 + 32 * _field_count(dbf_path) + 1
-    backlink = dbf_path.read_bytes()[terminator_offset : terminator_offset + 2]
+    # 1) An all-zero backlink area means the table is standalone...
+    assert schema_before.dbc_bound is False
+    assert schema_before.dbc_backlink_path is None
+    # ...and the mere existence of a neighbouring .dbc file must not change it.
+    dbc_file = dbf_path.parent / (dbf_path.stem + ".dbc")
     try:
-        _patch_header_bytes(dbf_path, {terminator_offset: b"\x07\x00"})
-        assert inspect_table(dbf_path).dbc_bound is True
+        dbc_file.write_bytes(b"\x00" * 64)
+        assert inspect_table(dbf_path).dbc_bound is False
+
+        terminator_offset = 32 + 32 * _field_count(dbf_path) + 1
+        original = dbf_path.read_bytes()[terminator_offset : terminator_offset + 263]
+        try:
+            # 2) First byte zero, later bytes non-zero: still standalone (the
+            #    backlink path is null-terminated, the first byte decides).
+            _patch_header_bytes(dbf_path, {terminator_offset: b"\x00" + b"\xff" * 262})
+            bounded = read_schema(dbf_path)
+            assert bounded.dbc_bound is False
+            assert bounded.dbc_backlink_path is None
+
+            # 3) A real null-terminated relative DBC path means bound.
+            path_bytes = b".." + b"\\" + b"data" + b"\\" + b"app.dbc" + b"\x00"
+            _patch_header_bytes(
+                dbf_path, {terminator_offset: path_bytes + b"\x00" * (263 - len(path_bytes))}
+            )
+            bounded = read_schema(dbf_path)
+            assert bounded.dbc_bound is True
+            assert bounded.dbc_backlink_path == "..\\data\\app.dbc"
+            assert bounded.dbc_backlink_path.encode("utf-8") == path_bytes.rstrip(b"\x00")
+        finally:
+            _patch_header_bytes(dbf_path, {terminator_offset: original})
     finally:
-        _patch_header_bytes(dbf_path, {terminator_offset: backlink})
+        dbc_file.unlink(missing_ok=True)
 
 
 def test_vfp_field_flags_nullable_binary_and_memo(tmp_path: Path) -> None:
@@ -289,8 +329,9 @@ def test_vfp_field_flags_nullable_binary_and_memo(tmp_path: Path) -> None:
 
     assert fields["KOD"].nullable is True
     assert fields["KOD"].flags & 0x02
-    assert fields["DANE"].binary is True
+    assert fields["DANE"].nocptrans is True
     assert fields["DANE"].flags & 0x04
+    assert fields["DANE"].is_binary is True
     assert fields["DANE"].supported is False
     assert fields["DANE"].unsupported_reason
     assert fields["TEKST"].supported is True
@@ -506,6 +547,316 @@ def test_unsupported_field_type_is_reported_per_field(tmp_path: Path) -> None:
     assert field.supported is False
     assert field.unsupported_reason
     assert any("ZAWARTOSC" in warning for warning in info.warnings)
+
+
+# ---------------------------------------------------------------------------
+# VFP header semantics: table flags, backlink, date, field descriptors
+# ---------------------------------------------------------------------------
+
+
+def test_header_year_is_1900_plus_byte_without_pivot(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    cases = {
+        0: "1900-",
+        79: "1979-",
+        100: "2000-",
+        126: "2026-",
+        255: "2155-",
+    }
+    original_year = dbf_path.read_bytes()[1]
+    try:
+        for year_byte, expected_prefix in cases.items():
+            _patch_header_bytes(dbf_path, {1: bytes([year_byte])})
+            schema = read_schema(dbf_path)
+            assert schema.last_update is not None
+            assert schema.last_update.startswith(expected_prefix), (year_byte, schema.last_update)
+    finally:
+        _patch_header_bytes(dbf_path, {1: bytes([original_year])})
+
+
+def test_invalid_header_date_is_none_with_warning(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    original_month = dbf_path.read_bytes()[2]
+    try:
+        _patch_header_bytes(dbf_path, {2: b"\x0d"})  # month 13: invalid
+        schema = read_schema(dbf_path)
+        assert schema.last_update is None
+        assert any("last-update date is invalid" in warning for warning in schema.warnings)
+    finally:
+        _patch_header_bytes(dbf_path, {2: bytes([original_month])})
+
+
+def test_newline_byte_is_not_a_descriptor_terminator(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    terminator_offset = 32 + 32 * _field_count(dbf_path)
+    original = dbf_path.read_bytes()[terminator_offset]
+    try:
+        _patch_header_bytes(dbf_path, {terminator_offset: b"\x0a"})
+        with pytest.raises(DbfHeaderInvalidError) as error:
+            inspect_table(dbf_path)
+        assert error.value.code is ErrorCode.DBF_HEADER_INVALID
+    finally:
+        _patch_header_bytes(dbf_path, {terminator_offset: bytes([original])})
+
+
+def test_terminator_must_be_inside_the_declared_header(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    data = bytearray(dbf_path.read_bytes())
+    header_length = struct.unpack_from("<H", data, 8)[0]
+    terminator_offset = 32 + 32 * _field_count(dbf_path)
+    original_terminator = data[terminator_offset]
+    record_byte = data[header_length + 5]
+    try:
+        # Remove the terminator entirely; a 0x0D byte exists later in the
+        # record area and must not be mistaken for it.
+        data[terminator_offset] = 0x00
+        data[header_length + 5] = 0x0D
+        dbf_path.write_bytes(bytes(data))
+        with pytest.raises(DbfTruncatedError) as error:
+            inspect_table(dbf_path)
+        assert error.value.code is ErrorCode.DBF_TRUNCATED
+        # Corrupting (or clearing) the record area must change nothing: the
+        # parser is bounded by the declared header length.
+        data[header_length + 5] = 0x00
+        dbf_path.write_bytes(bytes(data))
+        with pytest.raises(DbfTruncatedError) as second:
+            inspect_table(dbf_path)
+        assert second.value.code is ErrorCode.DBF_TRUNCATED
+    finally:
+        data[terminator_offset] = original_terminator
+        data[header_length + 5] = record_byte
+        dbf_path.write_bytes(bytes(data))
+
+
+def test_descriptor_crossing_header_length_is_rejected(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    # Trim the declared header so the last descriptor would run past it.
+    header_length = struct.unpack_from("<H", dbf_path.read_bytes(), 8)[0]
+    too_short = 32 + 32 * (_field_count(dbf_path) - 1) + 1
+    try:
+        _patch_header_bytes(dbf_path, {8: struct.pack("<H", too_short)})
+        with pytest.raises(DbfTruncatedError) as error:
+            inspect_table(dbf_path)
+        assert error.value.code is ErrorCode.DBF_TRUNCATED
+        assert error.value.context["field_ordinal"] == _field_count(dbf_path)
+    finally:
+        _patch_header_bytes(dbf_path, {8: struct.pack("<H", header_length)})
+
+
+def test_truncated_vfp_backlink_area_is_rejected(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    header_length = struct.unpack_from("<H", dbf_path.read_bytes(), 8)[0]
+    # A VFP header without room for the 263-byte backlink area is truncated.
+    no_backlink = 32 + 32 * _field_count(dbf_path) + 1
+    try:
+        _patch_header_bytes(dbf_path, {8: struct.pack("<H", no_backlink)})
+        with pytest.raises(DbfTruncatedError) as error:
+            inspect_table(dbf_path)
+        assert error.value.code is ErrorCode.DBF_TRUNCATED
+        assert error.value.context["required_backlink_size"] == 263
+    finally:
+        _patch_header_bytes(dbf_path, {8: struct.pack("<H", header_length)})
+
+
+def test_vfp_autoincrement_descriptor_is_exposed(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "AINC.dbf", "KOD N(6,0); NAZWA C(40)", [{"KOD": 1, "NAZWA": "x"}]
+    )
+    # Properly constructed VFP autoincrement descriptor for field 1 (KOD):
+    # type byte 11 -> '+', bytes 19-22 -> next value (LE), byte 23 -> step.
+    _patch_header_bytes(
+        dbf_path,
+        {
+            32 + 11: b"+",
+            32 + 19: struct.pack("<L", 42),
+            32 + 23: b"\x02",
+        },
+    )
+    info = inspect_table(dbf_path)
+    fields = {field.name: field for field in info.fields}
+
+    assert fields["KOD"].is_autoincrement is True
+    assert fields["KOD"].dbf_type == "+"
+    assert fields["KOD"].autoincrement_next_value == 42
+    assert fields["KOD"].autoincrement_step == 2
+    assert fields["NAZWA"].is_autoincrement is False
+    assert fields["NAZWA"].autoincrement_next_value == 0
+    assert fields["NAZWA"].autoincrement_step == 0
+    payload = json.dumps(info.to_dict())
+    assert (
+        '"autoincrement_next_value": 42' in payload
+        or json.loads(payload)["fields"][0]["autoincrement_next_value"] == 42
+    )
+
+
+def test_general_and_picture_memos_are_semantic_binary(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "BINARYMEMO.dbf",
+        "KOD N(6,0); ZALACZNIK M; OBRAZ M",
+        [{"KOD": 1, "ZALACZNIK": "file", "OBRAZ": "img"}],
+    )
+    # Properly constructed General/Picture memo descriptors (type byte 11).
+    _patch_header_bytes(dbf_path, {32 + 32 + 11: b"G", 32 + 64 + 11: b"P"})
+    info = inspect_table(dbf_path)
+    fields = {field.name: field for field in info.fields}
+
+    for name in ("ZALACZNIK", "OBRAZ"):
+        assert fields[name].is_memo is True
+        assert fields[name].is_binary is True
+        # The NOCPTRANS flag is a separate, descriptor-level property.
+        assert fields[name].nocptrans is False
+    assert fields["KOD"].is_binary is False
+
+
+# ---------------------------------------------------------------------------
+# memo companion consistency
+# ---------------------------------------------------------------------------
+
+
+def test_dbt_memo_version_is_marked_unsupported_for_direct_read(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "DBT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    _patch_header_bytes(dbf_path, {0: b"\x8b"})  # dBASE IV (with memo)
+    (tmp_path / "DBT.dbt").write_bytes(b"\x00" * 16)
+    schema = read_schema(dbf_path)
+    assert schema.memo_companion_format == "DBT"
+    assert schema.memo_companion_present is True
+    assert schema.memo_companion_path is not None
+    assert schema.memo_block_size is None  # not an FPT: no FPT block details
+    assert any("DBT" in w and "not supported" in w for w in schema.warnings)
+
+
+def test_smt_memo_version_uses_smt_companion(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "SMT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    _patch_header_bytes(dbf_path, {0: b"\xe5"})  # HiPer-Six (SMT memo)
+    (tmp_path / "SMT.smt").write_bytes(b"\x00" * 16)
+    schema = read_schema(dbf_path)
+    assert schema.memo_companion_format == "SMT"
+    assert schema.memo_companion_present is True
+    assert any("SMT" in w and "not supported" in w for w in schema.warnings)
+
+
+def test_short_fpt_header_is_a_diagnostic_warning(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "SHORTFPT.dbf",
+        "KOD N(6,0); NOTATKA M",
+        [{"KOD": 1, "NOTATKA": "x"}],
+    )
+    (tmp_path / "SHORTFPT.fpt").write_bytes(b"\x00" * 4)  # shorter than an FPT header
+    schema = read_schema(dbf_path)
+    assert schema.memo_companion_present is True
+    assert schema.memo_companion_size_bytes == 4
+    assert schema.memo_block_size is None
+    assert any("FPT" in w and "8-byte" in w for w in schema.warnings)
+
+
+def test_invalid_fpt_block_size_is_a_diagnostic_warning(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "BADFPT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    # 8-byte FPT header with a non power-of-two block size.
+    (tmp_path / "BADFPT.fpt").write_bytes(struct.pack(">LHH", 1, 0, 96) + b"\x00" * 8)
+    schema = read_schema(dbf_path)
+    assert schema.memo_block_size == 96
+    assert any("block" in w.lower() and "96" in w for w in schema.warnings)
+
+
+def test_structural_cdx_flag_without_companion_warns(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "CDX1.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    _patch_header_bytes(dbf_path, {28: b"\x01"})
+    schema = read_schema(dbf_path)
+    assert schema.has_structural_cdx is True
+    assert schema.companion_cdx_present is False
+    assert any("structural CDX" in w for w in schema.warnings)
+
+
+def test_cdx_companion_without_flag_is_reported_but_not_flagged(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "CDX2.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    (tmp_path / "CDX2.cdx").write_bytes(b"\x00" * 32)
+    schema = read_schema(dbf_path)
+    assert schema.has_structural_cdx is False
+    assert schema.companion_cdx_present is True
+    assert schema.companion_cdx_path is not None
+    assert not any("structural CDX" in w for w in schema.warnings)
+
+
+# ---------------------------------------------------------------------------
+# typed I/O errors and JSON-safe error payloads
+# ---------------------------------------------------------------------------
+
+
+def test_scandir_failure_is_a_typed_io_error(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "IO.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    real_scandir = os.scandir
+
+    def broken_scandir(path=None, *args, **kwargs):
+        raise PermissionError(13, "access denied", str(path))
+
+    monkeypatch.setattr(os, "scandir", broken_scandir)
+    try:
+        with pytest.raises(DbfIoError) as error:
+            inspect_table(dbf_path)
+    finally:
+        monkeypatch.setattr(os, "scandir", real_scandir)
+    assert error.value.code is ErrorCode.DBF_IO_ERROR
+    assert error.value.path is not None
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_error_to_dict_is_json_safe_with_hostile_context(tmp_path: Path) -> None:
+    error = DbfIoError(
+        "synthetic hostile context",
+        path=tmp_path / "x.dbf",
+        context={
+            "raw": b"\xde\xad\xbe\xef",
+            "codes": (ErrorCode.DBF_TRUNCATED, "a"),
+            "path": Path("C:/temp/x.dbf"),
+            "nested": {"t": (1, 2), "flag": True},
+        },
+    )
+    payload = json.loads(json.dumps(error.to_dict(), ensure_ascii=False))
+    assert payload["code"] == "DBF_IO_ERROR"
+    assert payload["path"] == (tmp_path / "x.dbf").as_posix()
+    assert payload["context"]["raw"] == "deadbeef"
+    assert payload["context"]["codes"] == ["DBF_TRUNCATED", "a"]
+    assert payload["context"]["path"] == "C:/temp/x.dbf"
+    assert payload["context"]["nested"]["t"] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Mazovia export end-to-end (language driver 0x69)
+# ---------------------------------------------------------------------------
+
+
+def test_mazovia_ldid_table_exports_polish_characters(tmp_path: Path) -> None:
+    from dbfbridge import export_dbf
+
+    dbf_path = _create_vfp_table(
+        tmp_path / "MAZ.dbf", "KOD N(6,0); NAZWA C(40)", [{"KOD": 1, "NAZWA": "x"}]
+    )
+    _patch_header_bytes(dbf_path, {29: b"\x69"})  # Mazovia language driver
+    # Put a Mazovia-encoded byte (0x80 -> 'a') into NAZWA of the first record.
+    data = bytearray(dbf_path.read_bytes())
+    header_length = struct.unpack_from("<H", data, 8)[0]
+    nazwa_offset = header_length + 1 + 6  # delete flag + KOD N(6)
+    data[nazwa_offset] = 0x80
+    dbf_path.write_bytes(bytes(data))
+
+    output = tmp_path / "out"
+    result = export_dbf(dbf_path, output, formats=("jsonl",), overwrite=True)
+    result.raise_for_errors()
+
+    jsonl_files = list(output.rglob("MAZ.jsonl"))
+    assert len(jsonl_files) == 1
+    line = next(
+        line for line in jsonl_files[0].read_text(encoding="utf-8").splitlines() if line.strip()
+    )
+    record = json.loads(line)
+    assert record["NAZWA"] == "\u0105"
+    assert record["KOD"] in (1, "1")
 
 
 # ---------------------------------------------------------------------------

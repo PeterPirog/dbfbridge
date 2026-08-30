@@ -10,13 +10,59 @@ Importing this package has no side effects: no codepage is registered, no
 files are created, and no CLI, reporting, or optional heavy dependency
 (Polars, OpenPyXL, XlsxWriter, orjson, ``dbf``) is loaded.  Public symbols
 are resolved lazily on first access; the Polish Mazovia/PIAST codec is
-registered explicitly by the code paths that need it.
+registered explicitly by the code paths that need it.  Static type checkers
+resolve the full public surface through the ``TYPE_CHECKING`` declarations
+below, which are never executed at runtime.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .api import (
+        ProgressCallback,
+        check_conversion_quality,
+        export_dbf,
+        reconstruct_dbf,
+        verify_conversion,
+    )
+    from .api_models import (
+        DBFBridgeRunError,
+        ExportOptions,
+        ExportRunResult,
+        ProgressEvent,
+        QualityRunResult,
+        ReconstructionOptions,
+        ReconstructionRunResult,
+        VerificationRunResult,
+    )
+    from .core import (
+        DbfFormatUnsupportedError,
+        DbfHeaderInvalidError,
+        DbfIoError,
+        DbfPathError,
+        DbfTruncatedError,
+        DirectReadError,
+        EncodingUnknownError,
+        ErrorCode,
+        FieldInfo,
+        TableInfo,
+        TableSchema,
+        inspect_table,
+        read_schema,
+    )
+    from .exporter.models import (
+        DecodeErrors,
+        DeletedPolicy,
+        MemoPolicy,
+        MissingMemoPolicy,
+        OutputFormat,
+        TableResult,
+        TableStatus,
+    )
+    from .importer.models import InputFormat, ReconstructionResult
 
 __version__ = "0.1.0"
 
@@ -60,6 +106,7 @@ _LAZY_SYMBOLS: dict[str, str] = {
     "DbfHeaderInvalidError": "dbf_bridge.core",
     "DbfTruncatedError": "dbf_bridge.core",
     "DbfFormatUnsupportedError": "dbf_bridge.core",
+    "DbfIoError": "dbf_bridge.core",
     "EncodingUnknownError": "dbf_bridge.core",
 }
 
@@ -69,6 +116,7 @@ __all__ = [
     "DeletedPolicy",
     "DbfFormatUnsupportedError",
     "DbfHeaderInvalidError",
+    "DbfIoError",
     "DbfPathError",
     "DbfTruncatedError",
     "DirectReadError",

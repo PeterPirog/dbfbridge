@@ -12,12 +12,14 @@ from __future__ import annotations
 from .errors import (
     DbfFormatUnsupportedError,
     DbfHeaderInvalidError,
+    DbfIoError,
     DbfPathError,
     DbfTruncatedError,
     DirectReadError,
     EncodingUnknownError,
     ErrorCode,
 )
+from .header import SUPPORTED_MEMO_FORMATS, memo_companion_extension, memo_companion_format
 from .inspect import inspect_table, read_schema
 from .models import CompanionFile, FieldInfo, TableInfo, TableSchema
 
@@ -25,14 +27,18 @@ __all__ = [
     "CompanionFile",
     "DbfFormatUnsupportedError",
     "DbfHeaderInvalidError",
+    "DbfIoError",
     "DbfPathError",
     "DbfTruncatedError",
     "DirectReadError",
     "EncodingUnknownError",
     "ErrorCode",
     "FieldInfo",
+    "SUPPORTED_MEMO_FORMATS",
     "TableInfo",
     "TableSchema",
     "inspect_table",
+    "memo_companion_extension",
+    "memo_companion_format",
     "read_schema",
 ]
