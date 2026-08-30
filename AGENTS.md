@@ -24,6 +24,13 @@ Current package version/status: 0.1.0, alpha.
 
 ```text
 src/dbf_bridge/
+├── core/                  Phase 1A direct read core (read-only, stdlib + dbfread tables)
+│   ├── errors.py          ErrorCode + DirectReadError subclasses (JSON-safe to_dict)
+│   ├── codecs.py          Mazovia/PIAST table + registration + driver resolution (single source)
+│   ├── fields.py          pure field classification (memo/binary/supported) + type names
+│   ├── header.py          single pure DBF header parser (O(header), read-only)
+│   ├── models.py          FieldInfo / TableInfo / TableSchema (frozen, to_dict)
+│   └── inspect.py         public inspect_table / read_schema + companion discovery
 ├── api.py                 stable high-level Python functions
 ├── api_models.py          options, progress events, and run results
 ├── cli.py                 export CLI and multi-format orchestration
@@ -57,6 +64,9 @@ Other important paths:
 
 - `examples/` — thin executable wrappers and PowerShell examples;
 - `examples/python_api.py` — complete programmatic API example;
+- `examples/inspect_table.py` — Phase 1A read-only inspection example;
+- `docs/architecture/phase-1-direct-read.md` — Phase 1A direct read contract;
+- `tests/test_direct_read_schema.py` — Phase 1A direct read integration tests;
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
 - `benchmarks/` — synthetic JSONL conversion benchmark;
@@ -90,7 +100,18 @@ The public Python interface must stay synchronized as well:
 - `export_dbf()` → `ExportRunResult`;
 - `reconstruct_dbf()` → `ReconstructionRunResult`;
 - `verify_conversion()` → `VerificationRunResult`;
-- `check_conversion_quality()` → `QualityRunResult`.
+- `check_conversion_quality()` → `QualityRunResult`;
+- `inspect_table()` → `TableInfo` (Phase 1A, read-only);
+- `read_schema()` → `TableSchema` (Phase 1A, read-only).
+
+Phase 1A direct read core (`src/dbf_bridge/core/`) is a hard boundary:
+no CLI, no reporting, no output files, no `.partial` artifacts, no Polars/
+OpenPyXL/XlsxWriter/orjson/`dbf`, no network/COM/VFP, no printing or
+`sys.exit`. It runs in O(header) work and never iterates the record area.
+The exporter delegates its header parse to `core.header.parse_header` and its
+Mazovia table to `core.codecs` — there is exactly one header parser and one
+codepage table in the codebase. `import dbfbridge` must register no codepage,
+create no files, and load no CLI/reporting or heavy dependency.
 
 Use `from dbfbridge import ...` in user documentation. `dbf_bridge` exposes the same
 symbols for compatibility. CLI modules should delegate to these functions wherever

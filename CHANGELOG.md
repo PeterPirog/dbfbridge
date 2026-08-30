@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Phase 1A direct read core: `inspect_table()` and `read_schema()` — read-only,
+  O(header) inspection of one DBF table with no output files, no record
+  iteration, and a byte-identical source
+- Stable, immutable, JSON-safe public models `FieldInfo`, `TableInfo`, and
+  `TableSchema` (explicit `to_dict()`, no bytes/Path in the payload, no raw
+  header Base64)
+- Typed direct-read error model: `ErrorCode` machine codes
+  (`DBF_HEADER_INVALID`, `DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`,
+  `ENCODING_UNKNOWN`, `PATH_NOT_FOUND`) and `DirectReadError` subclasses with
+  JSON-safe `to_dict()`
+- New `dbf_bridge.core` package holding the single shared implementation of
+  the DBF header parser, field classification, and the Mazovia/PIAST
+  codepage tables; the migration exporter now delegates to it instead of
+  keeping a second copy
+- Side-effect-free public import: `import dbfbridge` / `import dbf_bridge`
+  registers no codepage, creates no files, and loads no CLI/reporting or
+  optional heavy dependency (Polars, OpenPyXL, XlsxWriter, orjson, `dbf`);
+  the Mazovia/PIAST codec is registered explicitly by the code paths that
+  need it
+- Direct read support for the Mazovia language driver byte (0x69) via the
+  custom Polish codec
+- `examples/inspect_table.py` — executable direct read example
+- `docs/architecture/phase-1-direct-read.md` — Phase 1A architecture contract
+
+### Notes
+- Record reading (`iter_records`/`read_records`), field projection, and lazy
+  memo reading remain the next phase; the benchmark scenarios
+  `direct_read_bounded`, `field_projection`, `memo_lazy`, and `raw_mode_none`
+  stay `NOT_IMPLEMENTED`
+- The Phase 0 benchmark baselines remain the BEFORE reference
+
 ## [0.1.0] - 2026-08-09
 
 ### Added

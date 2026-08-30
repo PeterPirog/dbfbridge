@@ -7,14 +7,14 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from ..core.fields import (
+    classify_field,
+)
 from .models import FieldMetadata
 
-BINARY_FIELD_FLAG = 0x04
 BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
 RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
 RAW_RECORD_KEY = "__dbfbridge_raw_record__"
-UNSUPPORTED_FIELD_TYPES = {"Q", "W"}
-VFP_DOUBLE_VERSIONS = {0x30, 0x31, 0x32}
 
 
 class SerializationError(ValueError):
@@ -34,64 +34,23 @@ def field_metadata(
     index_field_flag: int = 0,
     descriptor_bytes: bytes | None = None,
 ) -> FieldMetadata:
-    is_binary_flag = bool(flags & BINARY_FIELD_FLAG)
-    representation = "unsupported"
-    is_memo = False
-    is_binary = False
-    supported = True
-    reason: str | None = None
-
-    if dbf_type in UNSUPPORTED_FIELD_TYPES:
-        supported = False
-        reason = f"Unsupported Visual FoxPro field type {dbf_type!r}."
-    elif dbf_type in {"C", "V"}:
-        if is_binary_flag:
-            supported = False
-            reason = f"Binary {dbf_type!r} fields require a dedicated parser."
-            is_binary = True
-        else:
-            representation = "string"
-    elif dbf_type == "M":
-        representation = "string-or-base64"
-        is_memo = True
-    elif dbf_type in {"G", "P"}:
-        representation = "base64"
-        is_memo = True
-        is_binary = True
-    elif dbf_type == "B":
-        if dbversion_byte in VFP_DOUBLE_VERSIONS and length == 8:
-            representation = "number"
-        else:
-            representation = "base64"
-            is_memo = True
-            is_binary = True
-    elif dbf_type in {"N", "F", "I", "+", "O"}:
-        representation = "number"
-    elif dbf_type == "Y":
-        representation = "decimal-string"
-    elif dbf_type == "L":
-        representation = "boolean-or-null"
-    elif dbf_type == "D":
-        representation = "date-iso8601"
-    elif dbf_type in {"T", "@"}:
-        representation = "datetime-iso8601"
-    elif dbf_type == "0":
-        representation = "base64"
-        is_binary = True
-    else:
-        supported = False
-        reason = f"Unknown DBF field type {dbf_type!r}."
-
+    classification = classify_field(
+        dbf_type=dbf_type,
+        length=length,
+        decimal_count=decimal_count,
+        dbversion_byte=dbversion_byte,
+        flags=flags,
+    )
     return FieldMetadata(
         name=name,
         dbf_type=dbf_type,
         length=length,
         decimal_count=decimal_count,
-        target_representation=representation,
-        is_memo=is_memo,
-        is_binary=is_binary,
-        supported=supported,
-        unsupported_reason=reason,
+        target_representation=classification.target_representation,
+        is_memo=classification.is_memo,
+        is_binary=classification.is_binary,
+        supported=classification.supported,
+        unsupported_reason=classification.unsupported_reason,
         flags=flags,
         ordinal=ordinal,
         address=address,
