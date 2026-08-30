@@ -25,7 +25,7 @@ Current package version/status: 0.1.0, alpha.
 ```text
 src/dbf_bridge/
 ├── core/                  Phase 1A direct read core (read-only, stdlib + dbfread tables)
-│   ├── errors.py          ErrorCode + DirectReadError subclasses (JSON-safe to_dict)
+│   ├── errors.py          ErrorCode (+DBF_IO_ERROR) + typed errors, JSON-safe to_dict
 │   ├── codecs.py          Mazovia/PIAST table + registration + driver resolution (single source)
 │   ├── fields.py          pure field classification (memo/binary/supported) + type names
 │   ├── header.py          single pure DBF header parser (O(header), read-only)
@@ -107,11 +107,17 @@ The public Python interface must stay synchronized as well:
 Phase 1A direct read core (`src/dbf_bridge/core/`) is a hard boundary:
 no CLI, no reporting, no output files, no `.partial` artifacts, no Polars/
 OpenPyXL/XlsxWriter/orjson/`dbf`, no network/COM/VFP, no printing or
-`sys.exit`. It runs in O(header) work and never iterates the record area.
-The exporter delegates its header parse to `core.header.parse_header` and its
-Mazovia table to `core.codecs` — there is exactly one header parser and one
-codepage table in the codebase. `import dbfbridge` must register no codepage,
-create no files, and load no CLI/reporting or heavy dependency.
+`sys.exit`. Its DBF read is bounded by the declared header length (independent
+of the record count; the descriptor scan never runs past it) plus at most one
+case-insensitive companion-file lookup per call (direct exact-name paths are
+checked first, so the common case performs no directory scan). The header
+table-flags byte (offset 28) is a bit mask: 0x01 structural CDX, 0x02 memo,
+0x04 database container; `dbc_bound` comes from the 263-byte VFP backlink
+path, never from a neighbouring `.dbc` file. The exporter delegates its header
+parse to `core.header.parse_header` and its Mazovia table to `core.codecs` —
+there is exactly one header parser and one codepage table in the codebase.
+`import dbfbridge` must register no codepage, create no files, and load no
+CLI/reporting or heavy dependency.
 
 Use `from dbfbridge import ...` in user documentation. `dbf_bridge` exposes the same
 symbols for compatibility. CLI modules should delegate to these functions wherever

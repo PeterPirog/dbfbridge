@@ -48,7 +48,11 @@ Hard rules for the core layer:
   codepage table);
 - no network, no COM, no VFP;
 - no printing, no `sys.exit`;
-- inspection runs in O(header) work and never iterates the record area;
+- the DBF read is bounded by the declared `header_length` and independent of
+  the number of records; the descriptor scan never runs past it, so a
+  malformed header can never be mistaken for record data; plus at most one
+  companion-file lookup per call in the table's directory (direct exact-name
+  paths are checked first, so the common case performs no directory scan);
 - no duplicate parser: the migration exporter delegates to
   `core.header.parse_header` (`src/dbf_bridge/exporter/reader.py`), and the
   Mazovia table exists in exactly one place (`core/codecs.py`;
@@ -84,52 +88,89 @@ fresh interpreter by `tests/test_direct_read_schema.py::test_fresh_interpreter_i
 
 `FieldInfo` keeps the physical VFP facts an MCP consumer needs: `ordinal`,
 `name`, `dbf_type` + readable `dbf_type_name`, `length`, `decimal_count`,
-`address`, raw `flags` as int plus derived `system` / `nullable` / `binary`,
-`is_memo`, `supported`, `unsupported_reason`.
+`address`, raw `flags` as int plus derived `system` / `nullable` /
+`nocptrans` (the binary flag), `index_field_flag`, `is_autoincrement` plus
+`autoincrement_next_value` (descriptor bytes 19–22, little-endian) and
+`autoincrement_step` (byte 23), the semantic `is_binary` classification
+(true for binary C/V, G/P memos, binary B, null flags), `is_memo`,
+`supported`, `unsupported_reason`.
 
-`TableInfo` carries: `path`, `record_count`, `header_length`, `record_length`,
-`language_driver`, `encoding`, `has_memo`, `has_structural_cdx`, `dbc_bound`,
-`fields`, `warnings`.
+`TableInfo` carries: `path`, `record_count`, `header_length`,
+`record_length`, `language_driver`, `encoding`, `has_memo`, `has_memo_flag`,
+`has_structural_cdx`, `is_database_container`, `dbc_bound`, `fields`,
+`warnings`.
 
 `TableSchema` additionally carries: `dbversion_byte` / `dbversion_name`,
-`last_update`, `incomplete_transaction`, `encryption_flag`, companion FPT
-details (`memo_companion_present`, `memo_companion_path`,
-`memo_companion_size_bytes`, `memo_block_size`, `memo_next_free_block`) and
-structural CDX companion presence (`companion_cdx_present`,
-`companion_cdx_path`).
+`last_update`, `incomplete_transaction`, `encryption_flag`,
+`dbc_backlink_path` (the decoded relative DBC path when bound), companion
+memo details (`memo_companion_format`, `memo_companion_present`,
+`memo_companion_path`, `memo_companion_size_bytes`, `memo_block_size`,
+`memo_next_free_block`) and structural CDX companion presence
+(`companion_cdx_present`, `companion_cdx_path`).
 
 Semantics:
 
-- `has_memo` = the table declares memo fields; companion `.fpt` presence is
-  separate metadata — a missing FPT is a **structured warning** in
+- the header table-flags byte (offset 28) is a **bit mask**: 0x01 structural
+  CDX (`has_structural_cdx`), 0x02 memo in use (`has_memo_flag`), 0x04
+  database container (`is_database_container`); the raw value stays
+  available as `structural_index_flag` for migration-schema compatibility.
+  In particular a memo-only 0x02 value never implies a structural CDX;
+- `has_memo` = the table declares memo fields; companion presence is
+  separate metadata — a missing companion is a **structured warning** in
   `warnings`, not an error, as long as the header itself is safe;
-- companion `.fpt`/`.cdx` discovery is case-insensitive (directory scan, no
-  file creation);
+- memo companion format depends on the DBF version: VFP/FoxPro use `.fpt`,
+  dBASE III+/IV use `.dbt`, HiPer-Six uses `.smt`. Only FPT is supported for
+  reading in Direct Read; DBT/SMT companions are reported with their format
+  plus an explicit "not supported" warning;
+- a present but too-short or invalid FPT header (missing 8-byte header, or a
+  block size that is not a power of two between 64 and 4096) yields a
+  diagnostic warning;
+- the structural CDX flag without a `.cdx` companion yields a warning; a
+  `.cdx` companion without the flag is reported as a companion but never
+  sets `has_structural_cdx`;
+- companion `.fpt`/`.cdx` discovery is case-insensitive, at most one
+  directory scan per call (direct exact-name paths first), and a failed
+  directory scan is a typed I/O error, never a silent "missing";
 - `dbc_bound` is derived from the VFP database-container backlink stored in
-  the header extension (first two bytes after the field terminator,
-  little-endian record number; zero = standalone) — **not** from the mere
-  existence of a `.dbc` file;
-- `has_structural_cdx` is the header structural-index flag (byte 0x1C);
+  the 263-byte header extension after the field terminator: the first byte
+  is 0x00 for a standalone table, otherwise the area holds a null-terminated
+  relative DBC path (`dbc_backlink_path`). It is **not** the mere existence
+  of a `.dbc` file, and the first two bytes are never interpreted as a
+  little-endian record number;
+- the header last-update date is `1900 + year_byte` (no century pivot); an
+  impossible month/day yields `last_update = None` plus a warning;
 - CDX reporting is structural only: dbfbridge does **not** declare CDX tag
   expression / order / primary-tag parsing;
 - the Mazovia language driver byte (0x69) resolves to the custom `mazovia`
-  codec via `core.codecs.driver_to_encoding`.
+  codec via `core.codecs.driver_to_encoding`, and the migration exporter
+  passes that resolved encoding to `dbfread` explicitly (a manual
+  `encoding=` override still wins), so LDID 0x69 tables export correct
+  Polish characters even though dbfread falls back to ASCII for driver bytes
+  it does not know.
 
 ## 5. Structured errors
 
 Tainted or unsupported files never yield a partially-trusted model. Detected
 conditions include: missing/non-file path, fixed header shorter than 32
-bytes, header length outside the file bounds, missing descriptor terminator,
-truncated field descriptor, zero record length, field-length/record-length
-inconsistency, physical record area shorter than the header count, unknown
-DBF version, and unknown language driver.
+bytes, header length outside the file bounds, a descriptor section that does
+not terminate with 0x0D inside the declared header (0x0A is never a
+terminator), a field descriptor crossing the header length, a VFP 263-byte
+backlink area that does not fit before the record area, zero record length,
+field-length/record-length inconsistency, physical record area shorter than
+the header count, unknown DBF version, and unknown language driver.
+
+Raw filesystem failures (open, stat, header read, FPT header read, directory
+scan) are converted to a typed error instead of leaking
+`PermissionError`/`OSError`.
 
 Machine codes (stable): `PATH_NOT_FOUND`, `DBF_HEADER_INVALID`,
-`DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`, `ENCODING_UNKNOWN`.
+`DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`, `ENCODING_UNKNOWN`,
+`DBF_IO_ERROR`.
 
 Every exception carries `code`, `path`, a readable `message`, and a JSON-safe
-`context` mapping; `to_dict()` is JSON-serializable. No generic
-`RuntimeError`; MCP never needs to parse error text.
+`context` mapping; `to_dict()` is JSON-serializable even when the context
+carries `Path`, `bytes`, enum, or tuple values (paths are reported in POSIX
+form). No generic `RuntimeError`; MCP never needs to parse error text.
 
 ## 6. Explicit non-goals of this phase
 
@@ -147,10 +188,13 @@ Consequently the benchmark scenarios `direct_read_bounded`,
 
 ## 7. Verification
 
-- `tests/test_direct_read_schema.py` — 32 integration tests against real
-  fixture DBF/FPT files (happy paths, VFP flags, language drivers including
-  Mazovia, structured errors, read-only guarantees, fresh-interpreter import
-  side effects, codec-on-demand registration, exporter delegation);
+- `tests/test_direct_read_schema.py` — 49 integration tests against real
+  fixture DBF/FPT files (happy paths, table-flags bitmask values, DBC
+  backlink path semantics, 1900+year date expansion, descriptor boundary
+  hardening, VFP autoincrement and G/P binary memos, Mazovia LDID 0x69
+  end-to-end export, DBT/SMT/short-FPT/CDX inconsistency warnings, typed I/O
+  errors, JSON-safe error payloads, read-only guarantees, fresh-interpreter
+  import side effects, codec-on-demand registration, exporter delegation);
 - full pre-existing suite stays green (export, reconstruction, Polish codecs,
   benchmark infrastructure);
 - `ruff check` + `ruff format --check` clean; `python -m build` +

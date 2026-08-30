@@ -3,11 +3,52 @@
 This namespace is a thin alias of the historical ``dbf_bridge`` package.
 Importing it has no side effects (no codec registration, no CLI, no optional
 heavy dependencies); public symbols are resolved lazily from ``dbf_bridge``.
+Static type checkers resolve the full typed public surface through the
+``TYPE_CHECKING`` declarations below, which are never executed at runtime.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from dbf_bridge import (  # noqa: F401
+        DBFBridgeRunError,
+        DbfFormatUnsupportedError,
+        DbfHeaderInvalidError,
+        DbfIoError,
+        DbfPathError,
+        DbfTruncatedError,
+        DecodeErrors,
+        DeletedPolicy,
+        DirectReadError,
+        EncodingUnknownError,
+        ErrorCode,
+        ExportOptions,
+        ExportRunResult,
+        FieldInfo,
+        InputFormat,
+        MemoPolicy,
+        MissingMemoPolicy,
+        OutputFormat,
+        ProgressCallback,
+        ProgressEvent,
+        QualityRunResult,
+        ReconstructionOptions,
+        ReconstructionResult,
+        ReconstructionRunResult,
+        TableInfo,
+        TableResult,
+        TableSchema,
+        TableStatus,
+        VerificationRunResult,
+        check_conversion_quality,
+        export_dbf,
+        inspect_table,
+        read_schema,
+        reconstruct_dbf,
+        verify_conversion,
+    )
 
 import dbf_bridge
 
