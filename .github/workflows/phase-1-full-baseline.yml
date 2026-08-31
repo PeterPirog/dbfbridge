@@ -27,7 +27,7 @@ permissions:
 # The provenance commit that defines the measured code state (commit A of the
 # provenance work).  Every run checks out exactly this SHA.
 env:
-  MEASURED_SHA: "3804f8195693108a6fb74101c6f23941fa4d8b70"
+  MEASURED_SHA: "df035de662f2d78a7a8d9d9a141a8235e1161382"
 
 jobs:
   full-baseline:
@@ -45,7 +45,7 @@ jobs:
       - name: Check out exactly MEASURED_SHA
         uses: actions/checkout@v4
         with:
-          ref: "3804f8195693108a6fb74101c6f23941fa4d8b70"
+          ref: "df035de662f2d78a7a8d9d9a141a8235e1161382"
           persist-credentials: false
 
       - name: Confirm checked-out commit is MEASURED_SHA
@@ -147,7 +147,33 @@ jobs:
           assert payload["environment"]["storage"] == "github-actions-windows-temp"
           print("trio verified: 24 MEASURED, provenance bound, zero residue")
           '@ | python -
-        if: always()
+
+      - name: Verify the Markdown carries the exact run provenance
+        shell: pwsh
+        run: |
+          @'
+          import json, pathlib, sys
+
+          sys.path.insert(0, ".")
+          base = pathlib.Path("benchmarks") / "baselines"
+          payload = json.loads(
+              (base / "phase-1-direct-read-full.json").read_text(encoding="utf-8")
+          )
+          env = payload["environment"]
+          md = (base / "phase-1-direct-read-full.md").read_text(encoding="utf-8")
+          required = {
+              "run_id": env["run_id"],
+              "benchmark_contract": env["benchmark_contract"],
+              "profile": env["profile"],
+              "git_commit": env["git"]["commit"],
+              "generated_at": env["generated_at"],
+              "runner": env["runner"],
+              "storage": env["storage"] or "",
+          }
+          missing = [name for name, value in required.items() if not value or value not in md]
+          assert not missing, f"Markdown lacks run provenance: {missing}"
+          print("Markdown provenance verified:", ", ".join(required))
+          '@ | python -
 
       - name: BEFORE/AFTER comparison
         shell: pwsh
@@ -177,7 +203,7 @@ jobs:
           '@ | python -
         if: always()
 
-      - name: Collect checksums
+      - name: Collect checksums (only after a successful comparison)
         shell: pwsh
         run: |
           Get-FileHash -Algorithm SHA256 `
@@ -188,13 +214,12 @@ jobs:
             "$env:RUNNER_TEMP\phase-0-vs-phase-1.md" |
             Format-Table | Out-File -FilePath "$env:RUNNER_TEMP\checksums-sha256.txt" -Encoding utf8
           Get-Content "$env:RUNNER_TEMP\checksums-sha256.txt"
-        if: always()
 
       - name: Upload Phase 1 baseline artifacts (also on failure)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: phase-1-full-baseline-3804f81
+          name: phase-1-full-baseline-df035de
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/phase-0-vs-phase-1.json
@@ -210,7 +235,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: phase-1-full-baseline-diagnostic-logs-3804f81
+          name: phase-1-full-baseline-diagnostic-logs-df035de
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/dbfbridge-benchmark-data/logs/**
