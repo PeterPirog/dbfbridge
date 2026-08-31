@@ -437,10 +437,16 @@ with the versioned report identity `benchmark_contract:
 "phase-1-direct-read-v1"`). `field_projection` proves the same logical result
 with an O(1)-memory digest (the reference full read is computed once, outside
 the measured window); `memo_lazy` enforces zero operations on the real backend
-memo boundary. The Phase 0
-baseline remains the BEFORE reference and is unchanged; a Phase 1 AFTER
-baseline does not exist yet, and no performance-improvement claim is made
-before it is saved. A complete executable example is in
+memo boundary. Benchmark artifacts are contract-named and separated: local
+runs write `benchmarks/results/phase-1-direct-read-<profile>...{json,md}`, the
+future AFTER baseline is `benchmarks/baselines/phase-1-direct-read-full.{json,md}`
+(published only by the full gate as an atomic SHA-256-verified pair, never
+overwriting the existing baseline), while `benchmarks/baselines/phase-0-full.{json,md}`
+is the preserved Phase 0 BEFORE reference and stays unchanged; no
+performance-improvement claim is made before an AFTER baseline exists, and
+the comparison CLI (`benchmarks/compare_baselines.py`) will flag the Direct
+Read scenarios as NEWLY_MEASURED (never "infinitely faster" than
+NOT_IMPLEMENTED). A complete executable example is in
 [`examples/read_records.py`](examples/read_records.py).
 
 #### Export and incremental export

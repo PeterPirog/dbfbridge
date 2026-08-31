@@ -93,6 +93,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses a future Phase 1 AFTER snapshot without exactly this value
   (documents Phase 0 as the preserved BEFORE and forbids any
   performance-improvement claim before the AFTER baseline is saved)
+- Contract-derived benchmark artifact naming with the Phase 0 pair reserved:
+  local reports are now
+  `benchmarks/results/phase-1-direct-read-<profile>[-<scenarios>].{json,md}`
+  (and the versioned AFTER baseline `phase-1-direct-read-full.{json,md}`),
+  so a Phase 1 `--baseline` can never overwrite the preserved Phase 0
+  `phase-0-full.{json,md}` BEFORE pair; the legacy names stay reserved for
+  the historical BEFORE artifact
+- Atomic Phase 1 baseline publication (`benchmarks/artifacts.py`): staged
+  `.partial` JSON/Markdown pair published back-to-back with an in-memory
+  round-trip check and post-write SHA-256 verification; a failure rolls the
+  baselines directory back exactly (never half a pair, never a leftover
+  `.partial`); an existing baseline is never overwritten and there is no
+  force/overwrite flag (re-baselining needs an explicit, separate decision)
+- stdlib-only BEFORE/AFTER comparison CLI `benchmarks/compare_baselines.py`:
+  recognises the legacy Phase 0 BEFORE (no contract field) and requires
+  `phase-1-direct-read-v1` for AFTER; compares common `MEASURED` scenarios
+  (wall/CPU, records/s, source MiB/s, peak RSS, amplifications, temporary
+  and output bytes with `NOT_AVAILABLE` handling and no division by zero);
+  marks the four former `NOT_IMPLEMENTED` Direct Read scenarios as
+  NEWLY_MEASURED without inventing a speedup; surfaces environment
+  differences and never labels a change an improvement across unlike
+  environments; refuses swapped, broken or wrong-contract artifacts with
+  non-zero exit codes
 
 ### Fixed
 - Phase 1B hardening: `memo="inline"` requires and opens the FPT only when the

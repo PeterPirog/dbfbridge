@@ -70,9 +70,22 @@ def _run_controller(*extra: str, tmp_path: Path, **env: str) -> subprocess.Compl
 
 
 def _load_json(results_dir: Path, suffix: str) -> dict:
-    path = results_dir / f"phase-0-fast{suffix}.json"
+    # The controller names reports after the versioned Phase 1 contract.
+    path = results_dir / f"{_contract_prefix()}-fast{suffix}.json"
     assert path.is_file(), f"missing report {path}"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _report_md(results_dir: Path, scenarios: list[str]) -> Path:
+    """Expected Phase 1 controller Markdown report for the given scenarios."""
+    suffix = f"-{'_'.join(scenarios)}" if scenarios else ""
+    return results_dir / f"{_contract_prefix()}-fast{suffix}.md"
+
+
+def _contract_prefix() -> str:
+    from benchmarks import artifacts
+
+    return artifacts.contract_report_prefix(artifacts.BENCHMARK_CONTRACT)
 
 
 def test_warmup_and_repetitions_are_executed_and_excluded(tmp_path: Path) -> None:
@@ -318,7 +331,7 @@ def test_worker_crash_maps_to_failed_and_controller_exits_nonzero(tmp_path: Path
     assert "diagnostic_log" in scenario
     # The report (JSON + Markdown) was still written — the controller kept
     # going after the FAILED scenario.
-    assert (tmp_path / "results" / "phase-0-fast-encoding_cp1250.md").is_file()
+    assert (_report_md(tmp_path / "results", ["encoding_cp1250"])).is_file()
 
 
 def test_worker_malformed_json_maps_to_failed(tmp_path: Path) -> None:
@@ -424,7 +437,7 @@ runpy.run_path({real_worker!r}, run_name="__main__")
         "the scenario after a FAILED one must still run in the same controller invocation"
     )
     # The report (JSON + Markdown) was written with both scenarios.
-    assert (tmp_path / "results" / "phase-0-fast-encoding_cp1250_encoding_cp852.md").is_file()
+    assert (_report_md(tmp_path / "results", ["encoding_cp1250", "encoding_cp852"])).is_file()
 
 
 def test_worker_timeout_maps_to_failed(tmp_path: Path) -> None:

@@ -382,4 +382,20 @@ declared verified until its full CI run is green).
   exit code 0 (no `--baseline`); the Phase 0 baseline
   `benchmarks/baselines/phase-0-full.json` / `phase-0-full.md` remain the
   **BEFORE** reference and are byte-identical to commit 4950078; a Phase 1
-  full AFTER baseline does not exist yet.
+  full AFTER baseline does not exist yet;
+- Phase 1 artifacts are **contract-named** (`benchmarks/artifacts.py` is the
+  single source): local reports live at
+  `benchmarks/results/phase-1-direct-read-<profile>[-<scenarios>].{json,md}`
+  and the future versioned AFTER baseline at
+  `benchmarks/baselines/phase-1-direct-read-full.{json,md}`; the preserved
+  Phase 0 `phase-0-full.{json,md}` names are RESERVED for the BEFORE pair
+  (publication to them is impossible). `--baseline` publishes an atomic,
+  SHA-256-verified JSON+Markdown pair, never overwrites an existing baseline
+  (re-baselining is an explicit, separate decision — there is no force
+  flag), and leaves no half pair or `.partial` residue. The future AFTER
+  comparison tool is `benchmarks/compare_baselines.py` (BEFORE = legacy
+  Phase 0 artifact, AFTER = `phase-1-direct-read-v1`, NEWLY_MEASURED without
+  invented speedups, explicit environment-comparability check). Phase 0
+  BEFORE SHA-256 (unchanged): `phase-0-full.json` =
+  `d3b5ab45...f07453aa6`, `phase-0-full.md` = `137ade61...4f06eff0c` (full
+  values recorded in `phase-0-audit.md` §17).
