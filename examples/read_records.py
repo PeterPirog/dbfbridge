@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"format={value.memo_format} -> {value.load()!r}"
                 )
 
-    print("raw streaming (all records, deleted included; the FPT is never opened):")
+    print("raw streaming (pure forensic: no field is decoded, the FPT is never")
+    print("opened, and even damaged text bytes cannot hide the record image):")
     for record in iter_raw_records(args.dbf):
         print(record.physical_index, record.deleted, len(record.raw_record or b""))
     return 0

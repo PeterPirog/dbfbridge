@@ -148,10 +148,11 @@ class MemoPayloadBackend(Protocol):
 def is_memo_pointer_field(field_type: str, dbversion_byte: int) -> bool:
     """Whether the field's raw bytes hold a memo block pointer.
 
-    M/G/P always point into the memo companion.  A non-Visual-FoxPro ``B``
-    field is a memo pointer; VFP stores a double there instead.
+    M/G/P always point into the memo companion, and so does a VFP ``W`` (Blob)
+    field.  A non-Visual-FoxPro ``B`` field is a memo pointer; VFP stores a
+    double there instead.
     """
-    if field_type in {"M", "G", "P"}:
+    if field_type in {"M", "G", "P", "W"}:
         return True
     return field_type == "B" and dbversion_byte not in VFP_DBVERSIONS
 
@@ -160,17 +161,18 @@ class DirectRecordFieldParser(FieldParser):
     """Field parser of the direct record backend.
 
     dbfread's header check refuses tables with types it does not know.  The
-    backend adds raw-bytes stubs for the VFP types ``dbfread`` cannot decode
-    (Varbinary ``Q``, Blob ``W``) so tables carrying them remain streamable;
-    the public record API still refuses to *decode* unsupported selected
-    fields (``FIELD_TYPE_UNSUPPORTED``) before the parser is ever reached.
+    backend adds stubs for the VFP types ``dbfread`` cannot decode: a VFP
+    ``W`` (Blob) field is a real FPT pointer (read like G/P), and the raw
+    ``Q`` (Varbinary) bytes are passed through so such tables remain
+    streamable; the public record API still refuses to *decode* unsupported
+    selected fields (``FIELD_TYPE_UNSUPPORTED``) before the parser is ever
+    reached.
     """
 
     def parseQ(self, field, data):
         return data
 
-    def parseW(self, field, data):
-        return data
+    parseW = FieldParser.parseG
 
 
 class DbfreadBackend:
@@ -280,11 +282,26 @@ class DbfreadBackend:
             fields = table.fields
             pointer_fields = memo_pointer_fields or frozenset()
             index = start_index
-            for _ in range(max(0, table.header.numrecords - start_index)):
+            declared_records = table.header.numrecords
+            for _ in range(max(0, declared_records - start_index)):
                 marker = read(1)
                 if marker not in (b" ", b"*"):
-                    if marker in (b"\x1a", b""):
-                        return
+                    if marker in (b"\x1a", b"") or not marker:
+                        # EOF or a 0x1A terminator is only a normal end AFTER
+                        # the whole declared record area: running out of
+                        # records earlier is truncation (the header promised
+                        # more records than the file contains).
+                        raise errors.DbfTruncatedError(
+                            f"The DBF record area ends at record {index} in {path.name} "
+                            f"after {index - start_index} record(s) read, but the header "
+                            f"declares {declared_records} record(s).",
+                            path=path,
+                            context={
+                                "record_index": index,
+                                "declared_records": declared_records,
+                                "records_read": index - start_index,
+                            },
+                        )
                     raise errors.DbfRecordInvalidError(
                         f"Unexpected DBF record marker {marker!r} at record {index} "
                         f"in {path.name}.",
@@ -301,7 +318,11 @@ class DbfreadBackend:
                     raise errors.DbfTruncatedError(
                         f"Truncated DBF record at record {index} in {path.name}.",
                         path=path,
-                        context={"record_index": index},
+                        context={
+                            "record_index": index,
+                            "declared_records": declared_records,
+                            "records_read": index - start_index,
+                        },
                     )
                 deleted = marker == b"*"
                 items: list[tuple[str, object]] = []
@@ -459,21 +480,35 @@ def _open_memofile(table: DBF, use_memofile: bool) -> MemoFile:
     """Open the memo companion when the consumer needs parsed memo values.
 
     ``use_memofile=False`` returns a no-op fake never touching the FPT — the
-    memo payloads stay unread (skip/null/lazy/raw paths).
+    memo payloads stay unread (skip/null/lazy/raw paths).  A companion that
+    vanishes right after its successful discovery is a typed
+    ``FPT_REQUIRED_MISSING`` (never a silent ``FakeMemoFile``), while broken
+    header content stays ``FPT_INVALID``.
     """
+    memo_path = Path(table.memofilename) if table.memofilename else Path(table.filename)
     try:
         if use_memofile:
             return table._open_memofile()
         return FakeMemoFile(None)
+    except MissingMemoFile as exc:
+        raise errors.FptRequiredMissingError(
+            f"The memo companion vanished before the memo values could be read: {memo_path}",
+            path=memo_path,
+            context={"policy": "inline"},
+        ) from exc
     except struct.error as exc:
-        memo_path = Path(table.memofilename) if table.memofilename else Path(table.filename)
         raise errors.FptInvalidError(
             f"The memo companion header is invalid: {memo_path}",
             path=memo_path,
             context={"operation": "open"},
         ) from exc
     except OSError as exc:
-        memo_path = Path(table.memofilename) if table.memofilename else Path(table.filename)
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            raise errors.FptRequiredMissingError(
+                f"The memo companion vanished before it could be opened: {memo_path}",
+                path=memo_path,
+                context={"policy": "inline"},
+            ) from exc
         raise errors.DbfIoError(
             f"Cannot open the memo companion: {memo_path}",
             path=memo_path,

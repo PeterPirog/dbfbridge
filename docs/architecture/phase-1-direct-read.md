@@ -224,34 +224,53 @@ Contract:
 - `physical_index`, `offset`, and `next_offset` are **zero-based physical
   record indices**; `offset` is resolved by seek (records before it are not
   scanned), and the record order stays physical;
+- premature end (EOF **or** a `0x1A` marker before the declared record count)
+  raises `DBF_TRUNCATED` with `record_index`, `declared_records`, and
+  `records_read` in the context — EOF is normal only after the whole declared
+  record area has been processed; an invalid marker byte still raises
+  `DBF_RECORD_INVALID`;
 - `limit` must be positive and `offset` non-negative (`ARGUMENT_INVALID`
   otherwise); `read_records` materializes only O(limit) records — nothing
   beyond the page is parsed or decoded;
 - `include_deleted=False` skips deleted records **within the same pass** (a
   deleted record costs one physical scan without parsing, never a second
-  run-through); `iter_raw_records` returns all records, deleted included, and
-  never opens the FPT (memo fields are not decoded there — the raw image
-  carries them);
+  run-through);
+- `iter_raw_records` is a **pure forensic stream**: no field is parsed or
+  decoded, the FPT is never opened, `values` is an empty read-only mapping,
+  and damaged text bytes cannot hide the exact `raw_record` image — while
+  truncation and invalid markers are still detected. Decoded values together
+  with the raw image are available through `iter_records(..., raw=True)`;
 - `fields` is a projection: validated case-insensitively, values use schema
   names in the caller's order, unselected fields are **never parsed**;
   unknown or duplicate names raise `FIELD_PROJECTION_INVALID`; a selected
   unsupported field raises `FIELD_TYPE_UNSUPPORTED` while an unsupported
-  unselected field never blocks the read;
+  unselected field never blocks the read. `memo="skip"` trims memo fields
+  (incl. the unsupported VFP Blob `W`, which is an FPT pointer field) from
+  the effective projection **before** this validation, so a skipped
+  unsupported memo field cannot block either;
 - memo policy semantics: `skip` — the memo field is absent from `values`;
-  `null` — the field is present with `None`; `lazy` — the value is a
-  `LazyMemoValue` (table/field/physical block) and the FPT is not opened
-  during iteration; `inline` — the payload is read through the backend
-  immediately. `skip`/`null`/`lazy` never open or read any FPT payload;
-  `inline` without an FPT raises `FPT_REQUIRED_MISSING`, a broken FPT raises
-  `FPT_INVALID` — and `LazyMemoValue.load()` raises the same typed errors;
+  `null` — the field is present with `None` (the payload is not read); `lazy`
+  — the value is a `LazyMemoValue` (table/field/physical block) and the FPT
+  is not opened during iteration; `inline` — the payload is read through the
+  backend immediately. `skip`/`null`/`lazy` never open or read any FPT
+  payload; `inline` **only when the effective projection really contains
+  memo fields** requires a companion (missing → `FPT_REQUIRED_MISSING`,
+  broken → `FPT_INVALID`) — otherwise `inline` over non-memo projections
+  works without any FPT. The inline open is **strict**
+  (`ignore_missing_memofile=False`): a companion that vanishes between the
+  eager validation and the first `next()` raises `FPT_REQUIRED_MISSING`
+  (with `path` and `policy` in the JSON-safe context) instead of silently
+  reading nulls; `LazyMemoValue.load()` raises the same typed errors;
 - costs: `lazy` iteration never touches the FPT; only explicit `load()`
   performs a short per-value read through the backend, so lazy is the right
   default for bounded scans and inspection, while `inline` trades payload
   reads for immediate values (the migration exporter's `inline` export keeps
   its historic behaviour);
-- `raw=False` stores no raw bytes anywhere (`raw_record is None`,
-  `to_dict()` contains no raw/base64 record payload); `raw=True` keeps the
-  exact physical record image (delete marker + field bytes);
+- public models are really immutable: `DirectRecord` takes a **defensive
+  read-only snapshot** of `values` in projection order (mutating the
+  caller's dict never leaks in, item assignment raises `TypeError`),
+  `RecordPage.records` is always a tuple, and `to_dict()` returns a fresh,
+  independently mutable, JSON-safe dict;
 - `encoding="auto"` uses the Phase 1A language-driver resolution; a manual
   override wins; strict decode failures raise `TEXT_DECODE_ERROR` (never a
   raw `UnicodeDecodeError`); `replace`/`ignore` are passed through;
@@ -264,9 +283,14 @@ Contract:
 The four Phase 1 benchmark scenarios (`direct_read_bounded`,
 `field_projection`, `memo_lazy`, `raw_mode_none`) measure these contracts:
 the bounded scenario proves `limit=100` does not scan the 190k table (read
-amplification far below 1), `memo_lazy` enforces zero FPT payload opens with
-an open-guard, `field_projection` verifies the same logical result as the
-unprojected stream, and `raw_mode_none` verifies no raw bytes in any record.
+amplification far below 1), `memo_lazy` instruments the **real backend memo
+boundary** (`backend._open_memofile(use_memofile=True)`,
+`backend.read_memo_payload`, and the adapter's `dbfread open_memofile`
+binding) and requires all counters to stay zero across warm-ups and
+repetitions (a controlled real memo read is proven to increment them),
+`field_projection` verifies the same logical result with an O(1)-memory
+digest (the reference full read is computed exactly once, outside every
+measured window), and `raw_mode_none` verifies no raw bytes in any record.
 
 ## 5. Structured errors
 

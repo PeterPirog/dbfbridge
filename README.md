@@ -387,25 +387,38 @@ Contract:
 - `physical_index` is the zero-based **physical** record index (deleted
   records keep their index); `offset`/`next_offset` use the same physical
   space; a page seek jumps to `offset` without scanning earlier records;
+  running out of records (EOF or a `0x1A` marker) before the declared record
+  count is a typed `DBF_TRUNCATED` — EOF is normal only after the whole
+  declared record area;
 - `iter_records()` streams with O(1) memory; `read_records()` uses O(limit)
   memory; `limit` must be positive and `offset` non-negative
   (`ARGUMENT_INVALID` otherwise);
 - `include_deleted=False` skips deleted records **in the same pass** (no
   second read of the record area); `iter_raw_records` returns *all* records,
-  deleted included, in physical order and never opens the FPT;
+  deleted included, in physical order as **pure forensic snapshots**: no
+  field is parsed or decoded (the FPT is never opened, `values` is an empty
+  read-only mapping) and even damaged text bytes cannot hide the exact
+  `raw_record` image — decoded values together with the raw image are
+  available through `iter_records(..., raw=True)`;
 - `fields` is validated case-insensitively while `values` use schema names in
   the caller's order; unselected fields are **never parsed**; unknown or
   duplicate names raise `FIELD_PROJECTION_INVALID` and a selected unsupported
   field raises `FIELD_TYPE_UNSUPPORTED` — an unsupported field left unselected
-  never blocks reading;
+  never blocks reading, and memo fields removed by `memo="skip"` are trimmed
+  from the projection *before* that validation;
 - memo policies: `skip` (field absent from `values`), `null` (field present
   with `None`), `lazy` (a `LazyMemoValue`; the FPT is not opened during
   iteration — loading it later costs a small per-value read), `inline` (the
-  payload is read through the backend immediately). `skip`/`null`/`lazy` never
-  open or read the FPT; `inline` without an FPT raises `FPT_REQUIRED_MISSING`
-  and a damaged FPT raises `FPT_INVALID`;
-- `raw=False` stores no raw bytes anywhere; `raw=True` keeps the exact
-  physical record image in `raw_record`;
+  payload is read through the backend immediately). Only an effective
+  projection that really decodes memo values requires the FPT for `inline`;
+  `skip`/`null`/`lazy` never open or read the FPT; `inline` without an FPT
+  raises `FPT_REQUIRED_MISSING` (also when the companion vanishes after
+  validation — the open is strict, never silently null) and a damaged FPT
+  raises `FPT_INVALID`;
+- `DirectRecord.values` takes a defensive read-only snapshot in projection
+  order (mutating the caller's dict never leaks in, item assignment raises
+  `TypeError`); `to_dict()` returns a fresh, independently mutable, JSON-safe
+  dict;
 - `encoding="auto"` resolves from the language driver, an explicit override
   wins; strict decode failures raise `TEXT_DECODE_ERROR`, never a raw
   `UnicodeDecodeError`;
@@ -419,9 +432,15 @@ Contract:
 
 The benchmark scenarios `direct_read_bounded`, `field_projection`, `memo_lazy`,
 and `raw_mode_none` are real `MEASURED` scenarios since Phase 1B (fast profile:
-19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`).
-The Phase 0 baseline remains the BEFORE reference and is unchanged; a Phase 1
-AFTER baseline does not exist yet. A complete executable example is in
+19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`,
+with the versioned report identity `benchmark_contract:
+"phase-1-direct-read-v1"`). `field_projection` proves the same logical result
+with an O(1)-memory digest (the reference full read is computed once, outside
+the measured window); `memo_lazy` enforces zero operations on the real backend
+memo boundary. The Phase 0
+baseline remains the BEFORE reference and is unchanged; a Phase 1 AFTER
+baseline does not exist yet, and no performance-improvement claim is made
+before it is saved. A complete executable example is in
 [`examples/read_records.py`](examples/read_records.py).
 
 #### Export and incremental export

@@ -31,6 +31,8 @@ import statistics
 import sys
 import time
 from collections.abc import Callable
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,110 @@ AGGREGATION = "median-of-measured-repetitions"
 
 # Bump when the JSONL input recipe changes; triggers safe regeneration.
 JSONL_INPUT_VERSION = "1"
+
+#: Versioned contract of the Phase 1 benchmark report (direct record read).
+#: A future Phase 1 AFTER baseline must carry exactly this value.
+BENCHMARK_CONTRACT = "phase-1-direct-read-v1"
+
+
+def _logical_value_text(value: object) -> str:
+    """Deterministic text of one decoded value for the projection digest."""
+    if isinstance(value, Decimal):
+        return f"decimal:{format(value, 'f')}"
+    if isinstance(value, (datetime, date)):
+        return f"dt:{value.isoformat()}"
+    return repr(value)
+
+
+def _install_memo_read_guard() -> tuple[dict[str, int], Callable[[], None]]:
+    """Instrument the REAL backend memo boundary (benchmark harness only).
+
+    Wraps the actual implementation-level entry points, not ``Path.open``:
+
+    - ``backend._open_memofile`` with ``use_memofile=True`` (a real memo-file
+      open through the adapter);
+    - ``backend.dbfread_backend.read_memo_payload`` (an explicit lazy payload
+      read);
+    - the ``dbfread.memo.open_memofile`` call the adapter uses inside
+      ``read_memo_payload`` (any adapter-level FPT read).
+
+    Returns ``(counters, restore)``; *restore* is idempotent and always safe
+    to call in a ``finally``.
+    """
+    import dbfread.memo as dbfread_memo_module
+
+    from dbf_bridge.core import backend as core_backend
+
+    counters: dict[str, int] = {
+        "memofile_opens_use_memofile_true": 0,
+        "read_memo_payload_calls": 0,
+        "adapter_fpt_opens": 0,
+    }
+    real_memo_payload = core_backend.dbfread_backend.read_memo_payload
+    real_backend_open = core_backend._open_memofile
+    real_dbfread_open = dbfread_memo_module.open_memofile
+    installed: dict[str, bool] = {"active": True}
+
+    def counting_memo_payload(memo_path, block, *, dbversion_byte):
+        # NOTE: read_memo_payload is a BOUND method of the backend instance;
+        # assigning a plain function to the instance attribute never binds a
+        # self parameter.
+        counters["read_memo_payload_calls"] += 1
+        return real_memo_payload(memo_path, block, dbversion_byte=dbversion_byte)
+
+    def counting_backend_open(table, use_memofile):
+        if use_memofile:
+            counters["memofile_opens_use_memofile_true"] += 1
+        return real_backend_open(table, use_memofile)
+
+    def counting_dbfread_open(filename, dbversion):
+        counters["adapter_fpt_opens"] += 1
+        return real_dbfread_open(filename, dbversion)
+
+    # Patch the three real boundary points.  The adapter binds dbfread's
+    # open_memofile into its own module namespace, so the adapter binding (and
+    # the dbfread.memo original, defensively) are both patched.
+    core_backend.dbfread_backend.read_memo_payload = counting_memo_payload  # type: ignore[method-assign]
+    core_backend._open_memofile = counting_backend_open  # type: ignore[assignment]
+    core_backend.open_memofile = counting_dbfread_open  # type: ignore[assignment]
+
+    def restore() -> None:
+        if not installed["active"]:  # pragma: no cover - idempotence guard
+            return
+        installed["active"] = False
+        core_backend.dbfread_backend.read_memo_payload = real_memo_payload  # type: ignore[method-assign]
+        core_backend._open_memofile = real_backend_open  # type: ignore[assignment]
+        core_backend.open_memofile = real_dbfread_open  # type: ignore[assignment]
+        dbfread_memo_module.open_memofile = real_dbfread_open  # type: ignore[assignment]
+
+    return counters, restore
+
+
+def _validate_memo_lazy_state(state: dict[str, object], sample: dict[str, object]) -> None:
+    """Shared post-validation of the memo_lazy evidence (also unit-tested)."""
+    records = state["records"]  # type: ignore[assignment]
+    lazy_values = state["lazy_values"]  # type: ignore[assignment]
+    empty_values = state["empty_values"]  # type: ignore[assignment]
+    if not isinstance(records, int) or records != 2_000:
+        raise RuntimeError(f"memo_lazy must stream exactly 2,000 records, got {records}")
+    if not isinstance(lazy_values, int) or not isinstance(empty_values, int):
+        raise RuntimeError("memo_lazy scenario did not collect its counters")
+    if lazy_values + empty_values != records:
+        raise RuntimeError(
+            f"every record must expose a lazy or empty memo, got "
+            f"{lazy_values} lazy + {empty_values} empty"
+        )
+    counters = state.get("memo_guard")
+    if not isinstance(counters, dict) or any(counters.values()):
+        raise RuntimeError(
+            f'memo="lazy" must not touch the real backend memo boundary once '
+            f"(memofile open use_memofile=True / read_memo_payload / adapter FPT "
+            f"open): {counters}"
+        )
+    if sample.get("output_bytes") != 0:
+        raise RuntimeError("Direct Read must not write any output bytes")
+    if sample.get("temporary_bytes_written") != 0:
+        raise RuntimeError("Direct Read must write zero temporary bytes")
 
 
 def _median(values: list[float | None]) -> float | None:
@@ -881,56 +987,112 @@ class Runner:
         )
 
     def scenario_field_projection(self) -> None:
-        """iter_records(fields=...) matches the unprojected logical result."""
+        """iter_records(fields=...) matches the unprojected logical result.
+
+        The reference digest is computed exactly once (outside the measured
+        window); every measured call only accumulates the projected digest in
+        O(1) extra memory — nothing proportional to the 190k record count is
+        ever materialized, so peak RSS reflects the streaming behaviour.
+        """
+
         from dbfbridge import iter_records
 
         source_dbf = self.medium()
         input_bytes = self._source_bytes(source_dbf)
         fields = ("ID", "NAZWA", "KWOTA")
-        state: dict[str, object] = {}
+
+        # The reference full-read digest is computed ONCE, before all
+        # warm-ups and repetitions, outside every measured window.  It walks
+        # the unprojected stream and digests only the projected columns, so
+        # each measured repetition can verify "same logical result" without
+        # a second full scan and without materializing records.
+        def _digest_of(values: dict[str, object]) -> str:
+            digest = hashlib.sha256()
+            for name in fields:
+                digest.update(name.encode("utf-8"))
+                digest.update(b"\x1f")
+                digest.update(_logical_value_text(values[name]).encode("utf-8"))
+                digest.update(b"\x1e")
+            return digest.hexdigest()
+
+        reference = hashlib.sha256()
+        reference_records = 0
+        for record in iter_records(str(source_dbf), memo="null"):
+            reference.update(_digest_of(dict(record.values)).encode("ascii"))
+            reference_records += 1
+        reference_digest = reference.hexdigest()
+        if reference_records != 190_000:  # pragma: no cover - fixture contract
+            raise RuntimeError(
+                f"the reference full read covered {reference_records} records, expected 190000"
+            )
+
+        state: dict[str, object] = {
+            "reference_digest": reference_digest,
+            "reference_records": reference_records,
+            "digests": [],
+            "records_read": 0,
+        }
 
         def make(out: Path):
             def run() -> None:
-                projected: list[tuple[object, ...]] = []
-                decode_calls = 0
+                digest = hashlib.sha256()
+                records_read = 0
                 for record in iter_records(str(source_dbf), fields=fields, memo="null"):
-                    decode_calls += 1
-                    projected.append(tuple(record.values[name] for name in fields))
-                state["projected"] = projected
-                state["decode_calls"] = decode_calls
+                    values = dict(record.values)
+                    digest.update(_digest_of(values).encode("ascii"))
+                    records_read += 1
+                state["digests"] = [*state.get("digests", []), digest.hexdigest()]  # type: ignore[assignment]
+                state["records_read"] = records_read
 
             return run
 
         def post_validate(out: Path, sample: dict[str, object]) -> None:
-            projected = state["projected"]  # type: ignore[assignment]
-            reference = [
-                tuple(record.values[name] for name in fields)
-                for record in iter_records(str(source_dbf), memo="null")
-            ]
-            if len(projected) != len(reference) or len(projected) != 190_000:  # type: ignore[arg-type]
-                raise RuntimeError("projection scenario must cover all 190k records")
-            if projected != reference:  # type: ignore[comparison-overlap]
+            records_read = state["records_read"]  # type: ignore[assignment]
+            digests = state["digests"]  # type: ignore[assignment]
+            if not isinstance(records_read, int) or not isinstance(digests, list):
+                raise RuntimeError("field_projection scenario did not collect its counters")
+            if records_read != state["reference_records"]:  # type: ignore[comparison-overlap]
+                raise RuntimeError(
+                    f"projection must cover {state['reference_records']} records, "  # type: ignore[attr-defined]
+                    f"got {records_read}"
+                )
+            if len(set(digests)) != 1 or digests[-1] != state["reference_digest"]:  # type: ignore[comparison-overlap]
                 raise RuntimeError("field projection returned a different logical result")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
 
-        self.results.append(
-            self._measure(
-                "field_projection",
-                f"Direct Read: iter_records(fields={list(fields)}) over the 190k table "
-                "(same logical result as the unprojected stream)",
-                make,
-                input_bytes=input_bytes,
-                input_records=190_000,
-                post_validate=post_validate,
-            )
+        result = self._measure(
+            "field_projection",
+            f"Direct Read: iter_records(fields={list(fields)}) over the 190k table "
+            "(O(1) memory, digest equal to the once-precomputed full-read reference)",
+            make,
+            input_bytes=input_bytes,
+            input_records=190_000,
+            post_validate=post_validate,
         )
+        # Diagnostics only (never part of the metrics): the per-repetition
+        # digests prove every repetition produced the same logical result.
+        result["projection_digests"] = list(state.get("digests", []))  # type: ignore[arg-type]
+        result["projection_records"] = state.get("records_read")  # type: ignore[union-attr]
+        self.results.append(result)
 
     def scenario_memo_lazy(self) -> None:
-        """iter_records(memo="lazy"): FPT payloads are never read."""
+        """iter_records(memo="lazy"): the REAL backend memo boundary stays silent.
+
+        The instrumentation wraps the actual adapter entry points
+        (``backend._open_memofile(use_memofile=True)``,
+        ``backend.dbfread_backend.read_memo_payload``, and the adapter's
+        ``dbfread.memo.open_memofile``), not ``Path.open`` — every warm-up and
+        measured repetition must see all three counters at zero.  The
+        instrumentation is always restored in ``finally``.
+        """
         from dbfbridge import LazyMemoValue, iter_records
 
         source_dbf = self.memo_heavy(2_000)
         input_bytes = self._source_bytes(source_dbf)
-        state: dict[str, object] = {"fpt_opens": 0, "lazy_values": 0, "records": 0}
+        state: dict[str, object] = {"lazy_values": 0, "empty_values": 0, "records": 0}
 
         def make(out: Path):
             def run() -> None:
@@ -956,56 +1118,27 @@ class Runner:
             return run
 
         def post_validate(out: Path, sample: dict[str, object]) -> None:
-            records = state["records"]  # type: ignore[assignment]
-            lazy_values = state["lazy_values"]  # type: ignore[assignment]
-            empty_values = state["empty_values"]  # type: ignore[assignment]
-            if not isinstance(records, int) or records != 2_000:
-                raise RuntimeError(f"memo_lazy must stream exactly 2,000 records, got {records}")
-            if not isinstance(lazy_values, int) or not isinstance(empty_values, int):
-                raise RuntimeError("memo_lazy scenario did not collect its counters")
-            if lazy_values + empty_values != records:
-                raise RuntimeError(
-                    f"every record must expose a lazy or empty memo, got "
-                    f"{lazy_values} lazy + {empty_values} empty"
-                )
-            if state["fpt_opens"] != 0:  # type: ignore[comparison-overlap]
-                raise RuntimeError('memo="lazy" must not read any FPT payloads')
-            if sample.get("output_bytes") != 0:
-                raise RuntimeError("Direct Read must not write any output bytes")
-            if sample.get("temporary_bytes_written") != 0:
-                raise RuntimeError("Direct Read must write zero temporary bytes")
+            _validate_memo_lazy_state(state, sample)
 
-        # Guard every FPT open across warm-ups and measured repetitions; the
-        # guard lives OUTSIDE the measured call so only real reads are timed.
-        import contextlib
-
-        real_open = Path.open
-
-        @contextlib.contextmanager
-        def guarded_open():
-            def _open(self: Path, *args, **kwargs):
-                if self.suffix.lower() == ".fpt":
-                    state["fpt_opens"] = int(state["fpt_opens"]) + 1  # type: ignore[arg-type]
-                return real_open(self, *args, **kwargs)
-
-            Path.open = _open  # type: ignore[method-assign]
-            try:
-                yield
-            finally:
-                Path.open = real_open  # type: ignore[method-assign]
-
-        with guarded_open():
+        # Instrument the real backend memo boundary for warm-ups AND measured
+        # repetitions; the guard only counts (it never changes behaviour) and
+        # the instrumentation is always restored in finally.
+        counters, restore_memo_guard = _install_memo_read_guard()
+        state["memo_guard"] = counters
+        try:
             self.results.append(
                 self._measure(
                     "memo_lazy",
                     'Direct Read: iter_records(memo="lazy") over the 2,000-record memo table '
-                    "(zero FPT payload reads, zero output)",
+                    "(zero real backend memo operations, zero output)",
                     make,
                     input_bytes=input_bytes,
                     input_records=2_000,
                     post_validate=post_validate,
                 )
             )
+        finally:
+            restore_memo_guard()
 
     def scenario_raw_mode_none(self) -> None:
         """iter_records(raw=False): no raw record images are kept."""
