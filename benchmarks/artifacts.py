@@ -2,34 +2,53 @@
 
 This module is the SINGLE place that knows how benchmark report and baseline
 artifacts are named.  Names are always derived from the explicit
-``benchmark_contract`` so a Phase 1 run can never collide with the preserved
-Phase 0 BEFORE baseline:
+``benchmark_contract`` (validated by :mod:`benchmarks.contract`) so a Phase 1
+run can never collide with the preserved Phase 0 BEFORE baseline:
 
 - runner reports: ``benchmarks/results/<contract-prefix>-<profile>[-<scenarios>].{json,md}``;
-- versioned AFTER baseline: ``benchmarks/baselines/<contract-prefix>-full.{json,md}``.
+- versioned AFTER baseline: ``benchmarks/baselines/<contract-prefix>-full.{json,md}``
+  plus the commit marker ``<contract-prefix>-full.manifest.json``.
 
-``publish_baseline_pair()`` writes the JSON/Markdown pair atomically: both
-payloads are staged as ``.partial`` files, then published back-to-back with
-``os.replace``; a refusal (existing target, reserved Phase 0 name, unknown
-contract) or a partially failed publish leaves the baselines directory
-exactly as it was — never half a pair, never a leftover ``.partial`` — and
-both published files are re-read and SHA-256 verified before the call
-returns.  There is deliberately **no overwrite/force flag**: re-baselining an
-existing snapshot requires an explicit architectural decision, and Phase 1
-can never target the historical Phase 0 names.
+``publish_baseline_pair()`` performs the publication as an **exception-safe
+transaction** over the actually-read JSON source:
+
+1. the source JSON is parsed and fully validated with the Phase 1 AFTER
+   contract validator (an independently passed payload is never trusted);
+2. the Markdown is verified to belong to the same run (run identifier);
+3. the targets (JSON, Markdown, manifest) are staged as ``.partial`` files
+   and published back-to-back with ``os.replace``; any failure rolls the
+   target directory back to its previous state — never half a trio, never a
+   leftover ``.partial``;
+4. every published file is re-read, byte-verified and re-validated
+   (JSON re-parsed and re-validated; manifest checked against the published
+   bytes).
+
+Two independent ``os.replace`` calls are not a crash-consistent transaction;
+the published **manifest** is what makes the baseline complete: a baseline
+counts as committed only when the JSON, the Markdown AND a valid manifest all
+exist and corroborate each other (names, SHA-256, contract, profile, run id).
+No force/overwrite flag exists: re-baselining an existing snapshot requires
+an explicit architectural decision.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
 
+from .contract import (
+    CONTRACT_PHASE_1,
+    build_manifest,
+    manifest_problems,
+    validate_saved_phase1_after,
+)
+
 #: Versioned identity of the Phase 1 benchmark report contract (direct
 #: record read).  A Phase 1 AFTER baseline must carry exactly this value.
-CONTRACT_PHASE_1 = "phase-1-direct-read-v1"
 BENCHMARK_CONTRACT = CONTRACT_PHASE_1
 
 #: The preserved BEFORE snapshot that must never be touched by Phase 1.
@@ -42,6 +61,7 @@ __all__ = [
     "RESERVED_PHASE_0_BASELINE_FILES",
     "UnknownBenchmarkContractError",
     "baseline_target_names",
+    "baseline_target_paths",
     "contract_report_prefix",
     "publish_baseline_pair",
     "report_stem",
@@ -54,16 +74,16 @@ class UnknownBenchmarkContractError(RuntimeError):
 
 
 class BaselinePublishError(RuntimeError):
-    """A baseline publication was refused or failed (nothing published)."""
+    """A baseline publication was refused or failed (nothing committed)."""
 
 
-def contract_report_prefix(contract: str | None) -> str:
+def contract_report_prefix(contract: Any) -> str:
     """Derive the report/baseline name prefix from the versioned contract.
 
     ``"phase-1-direct-read-v1"`` → ``"phase-1-direct-read"``.  Reports use
-    ``<prefix>-<profile>[-<scenarios>].{json,md}``; the full baseline pair is
-    ``<prefix>-full.{json,md}``.  The Phase 0 prefix is only produced for the
-    explicitly given legacy contract.
+    ``<prefix>-<profile>[-<scenarios>].{json,md}``; the full baseline trio is
+    ``<prefix>-full.{json,md}`` + ``<prefix>-full.manifest.json``.  The Phase 0
+    prefix is only produced for the explicitly given legacy contract.
     """
     if contract == CONTRACT_PHASE_1:
         return "phase-1-direct-read"
@@ -74,22 +94,17 @@ def contract_report_prefix(contract: str | None) -> str:
     )
 
 
-def report_stem(contract: str | None, profile: str, scenario_suffix: str = "") -> str:
-    """Derive the report stem (without extension) from the explicit contract.
-
-    ``"phase-1-direct-read-v1"`` produces ``phase-1-direct-read-<profile>``
-    stems (plus ``-<scenario_suffix>`` when given).  Reports are never named
-    with the Phase 0 prefix unless the legacy contract is explicitly given.
-    """
+def report_stem(contract: Any, profile: str, scenario_suffix: str = "") -> str:
+    """Derive the report stem (without extension) from the explicit contract."""
     prefix = contract_report_prefix(contract)
     suffix = f"-{scenario_suffix}" if scenario_suffix else ""
     return f"{prefix}-{profile}{suffix}"
 
 
-def baseline_target_names(contract: str, profile: str = "full") -> tuple[str, str]:
+def baseline_target_paths(contract: str, profile: str = "full") -> tuple[str, str, str]:
     """Derive the versioned baseline file names from the contract.
 
-    Only the Phase 1 contract names baseline artifacts, and the derived names
+    Returns ``(json_name, markdown_name, manifest_name)``; the derived names
     can never collide with the preserved Phase 0 BEFORE pair
     (``phase-0-full.{json,md}`` — see :data:`RESERVED_PHASE_0_BASELINE_FILES`).
     """
@@ -104,14 +119,23 @@ def baseline_target_names(contract: str, profile: str = "full") -> tuple[str, st
             f"A versioned baseline is only published for the full profile, got {profile!r}."
         )
     stem = report_stem(contract, profile)
-    json_name, md_name = f"{stem}.json", f"{stem}.md"
-    _reject_reserved_names(json_name, md_name)
+    json_name = f"{stem}.json"
+    md_name = f"{stem}.md"
+    manifest_name = f"{stem}.manifest.json"
+    _reject_reserved_names(json_name, md_name, manifest_name)
+    return json_name, md_name, manifest_name
+
+
+def baseline_target_names(contract: str, profile: str = "full") -> tuple[str, str]:
+    """The versioned baseline JSON/Markdown names (manifest is separate)."""
+    json_name, md_name, _manifest_name = baseline_target_paths(contract, profile)
     return json_name, md_name
 
 
-def _reject_reserved_names(json_name: str, md_name: str) -> None:
-    for name in (json_name, md_name):
-        if name in RESERVED_PHASE_0_BASELINE_FILES:
+def _reject_reserved_names(*names: str) -> None:
+    reserved = RESERVED_PHASE_0_BASELINE_FILES
+    for name in names:
+        if name in reserved:
             raise BaselinePublishError(
                 f"Refusing to publish a Phase 1 baseline under the preserved "
                 f"Phase 0 BEFORE name {name!r}."
@@ -140,107 +164,194 @@ def _remove_quietly(path: Path) -> None:
         path.unlink()  # pragma: no cover - best effort cleanup path
 
 
-def publish_baseline_pair(
-    source_json: Path,
-    source_md: Path,
-    target_dir: Path,
-    *,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Publish a versioned baseline JSON/Markdown pair atomically.
+def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) -> dict[str, Any]:
+    """Publish a versioned Phase 1 AFTER baseline trio, exception-safe.
 
-    - the target names are derived from the payload's explicit
-      ``benchmark_contract`` (or from the explicit contract parameter);
-    - an existing baseline file is never overwritten (no force flag exists);
-    - both files are staged as ``.partial`` first and published back-to-back
-      with ``os.replace``; a failure at any point restores the directory to
-      its previous state (never half a pair, never a leftover ``.partial``);
-    - after publishing, both files are re-read and their SHA-256 hashes are
-      verified against the staged payloads.
+    The publication validates the ACTUALLY read JSON (never an independently
+    passed payload): the target names, contract, profile, and run id are
+    derived from the source JSON itself and the full Phase 1 AFTER contract
+    validator runs on the real bytes.  The Markdown must carry the same
+    ``run_id`` — otherwise it belongs to another run and is refused.
 
-    Returns a dict with the published paths and their SHA-256 hashes.
+    Guarantees:
+
+    - an existing baseline artifact (JSON/Markdown/manifest) is never
+      overwritten; a re-baseline requires an explicit, separate decision;
+    - the trio (JSON + Markdown + manifest) is staged as ``.partial`` files
+      and published back-to-back; every handled failure rolls the target
+      directory back to its exact previous state — no half trio, no leftover
+      ``.partial``;
+    - every published file is re-read, byte-compared, re-validated (the JSON
+      through the full Phase 1 contract validator again, the manifest through
+      its own checks against the published bytes), and only then considered
+      committed; a post-publish verification failure removes all three files.
+
+    Note: two independent ``os.replace`` calls are not crash-consistent
+    between themselves — a hard process kill between them cannot be fully
+    rolled back, which is exactly why the manifest is published LAST and
+    completeness is defined as JSON + Markdown + a manifest that
+    corroborates them (a directory missing or mismatching the manifest is
+    never a complete baseline).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    data_json = _read_bytes(source_json)
-    data_md = _read_bytes(source_md)
-
-    # Derive the target names from the explicit contract carried by the
-    # payload; a missing/unknown contract is a refusal, never a guess.
-    if payload is None or not isinstance(payload, dict):
+    try:
+        data_json = _read_bytes(source_json)
+    except OSError as exc:
+        raise BaselinePublishError(f"Cannot read the source report JSON: {source_json}") from exc
+    try:
+        payload = json.loads(data_json)
+    except json.JSONDecodeError as exc:
         raise BaselinePublishError(
-            "The report payload is required to derive the baseline target names."
+            f"The source report JSON is not valid JSON: {source_json} ({exc})"
+        ) from exc
+
+    # Never trust a separately passed payload: the ACTUAL source bytes decide.
+    problems = validate_saved_phase1_after(payload)
+    if problems:
+        summary = "; ".join(problems[:6]) + ("..." if len(problems) > 6 else "")
+        raise BaselinePublishError(
+            f"The report JSON does not satisfy the Phase 1 AFTER baseline contract ({summary})."
         )
+
     env = payload.get("environment")
     env = env if isinstance(env, dict) else {}
-    contract = env.get("benchmark_contract")
-    profile = env.get("profile")
-    if contract != CONTRACT_PHASE_1:
-        raise BaselinePublishError(
-            f"The report carries benchmark_contract {contract!r}; a Phase 1 "
-            f"baseline requires exactly {CONTRACT_PHASE_1!r}."
-        )
-    if profile != "full":
-        raise BaselinePublishError(f"Baseline requires the full profile, got {profile!r}.")
-    # Narrowed by the two refusals above.
-    validated_contract: str = CONTRACT_PHASE_1
-    validated_profile: str = profile
+    run_id = env["run_id"]
+    contract = env["benchmark_contract"]
+    profile = env["profile"]
+    git_commit = (env.get("git") or {}).get("commit") or ""
 
-    json_name, md_name = baseline_target_names(validated_contract, validated_profile)
-
+    json_name, md_name, manifest_name = baseline_target_paths(contract, profile)
     target_json = target_dir / json_name
     target_md = target_dir / md_name
+    target_manifest = target_dir / manifest_name
+
+    # The Markdown must belong to the same run as the JSON (run identifier
+    # and contract must appear in the rendered report).
+    data_md = _read_bytes(source_md)
+    md_text = data_md.decode("utf-8", errors="replace")
+    consistency_problems = []
+    if run_id not in md_text:
+        consistency_problems.append("the Markdown does not carry the run_id of this report")
+    if str(contract) not in md_text:
+        consistency_problems.append("the Markdown does not mention the benchmark contract")
+    if str(profile) not in md_text:
+        consistency_problems.append("the Markdown does not mention the run profile")
+    if consistency_problems:
+        raise BaselinePublishError(
+            "The Markdown report does not match the JSON run: " + "; ".join(consistency_problems)
+        )
 
     # An existing baseline is protected: re-baselining is an explicit
     # architectural decision and is never automatic.
-    for target in (target_json, target_md):
+    for target in (target_json, target_md, target_manifest):
         if target.exists():
             raise BaselinePublishError(
-                f"Refusing to overwrite the existing baseline {target}; removing "
-                "or replacing a versioned baseline requires an explicit, "
+                f"Refusing to overwrite the existing baseline artifact {target}; "
+                "removing or replacing a versioned baseline requires an explicit, "
                 "separate decision."
             )
 
-    # Verify the sources actually belong to the derived pair.
-    if _sha256(_read_bytes(source_json)) != _sha256(data_json):  # pragma: no cover - paranoia
-        raise BaselinePublishError(f"The JSON source changed while publishing: {source_json}")
+    json_sha = _sha256(data_json)
+    md_sha = _sha256(data_md)
+    manifest_payload = build_manifest(
+        run_id=run_id,
+        contract=contract,
+        profile=profile,
+        git_commit=git_commit,
+        json_name=json_name,
+        json_sha256=json_sha,
+        markdown_name=md_name,
+        markdown_sha256=md_sha,
+    )
+    data_manifest = json.dumps(manifest_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
     json_partial = target_dir / f"{json_name}.partial"
     md_partial = target_dir / f"{md_name}.partial"
+    manifest_partial = target_dir / f"{manifest_name}.partial"
+    published: list[Path] = []
+    partials = (json_partial, md_partial, manifest_partial)
+    targets = (target_json, target_md, target_manifest)
     try:
-        json_partial.write_bytes(data_json)
-        md_partial.write_bytes(data_md)
-        # Both staged payloads must round-trip byte-for-byte before anything
+        for partial, data in (
+            (json_partial, data_json),
+            (md_partial, data_md),
+            (manifest_partial, data_manifest),
+        ):
+            partial.write_bytes(data)
+        # Every staged payload must round-trip byte-for-byte before anything
         # is published.
-        if json_partial.read_bytes() != data_json or md_partial.read_bytes() != data_md:
-            raise BaselinePublishError(
-                "The staged baseline files failed their round-trip verification."
-            )
-        os.replace(json_partial, target_json)
-        try:
-            os.replace(md_partial, target_md)
-        except Exception:
-            # Never leave half a pair on the filesystem: remove the already
-            # published JSON (which did not exist before this call).
-            _remove_quietly(target_json)
-            raise
+        for partial, data in (
+            (json_partial, data_json),
+            (md_partial, data_md),
+            (manifest_partial, data_manifest),
+        ):
+            if partial.read_bytes() != data:
+                raise BaselinePublishError(
+                    f"The staged file {partial.name} failed its round-trip verification."
+                )
+        for partial, target in zip(partials, targets, strict=True):
+            os.replace(partial, target)
+            published.append(target)
     except Exception as exc:
-        _remove_quietly(json_partial)
-        _remove_quietly(md_partial)
+        # Exception-safe transaction: the target directory must look exactly
+        # as before the call.
+        for published_file in reversed(published):
+            _remove_quietly(published_file)
+        for partial in partials:
+            _remove_quietly(partial)
         if isinstance(exc, BaselinePublishError):
             raise
         raise BaselinePublishError(f"Baseline publication failed: {exc}") from exc
 
-    published_json = _read_bytes(target_json)
-    published_md = _read_bytes(target_md)
-    if published_json != data_json or published_md != data_md:
-        raise BaselinePublishError(
-            "Post-publish verification failed: the published files do not "
-            "match the staged payloads byte for byte."
+    # Post-publish verification: re-read all three artifacts and re-check
+    # bytes, the manifest, and a full re-validation of the published JSON.
+    try:
+        if (_read_bytes(target_json), _read_bytes(target_md), _read_bytes(target_manifest)) != (
+            data_json,
+            data_md,
+            data_manifest,
+        ):
+            raise BaselinePublishError(
+                "Post-publish verification failed: files do not match the staged payloads."
+            )
+        published_problems = manifest_problems(
+            json.loads(_read_bytes(target_manifest).decode("utf-8")),
+            expected_json_name=json_name,
+            expected_json_sha256=json_sha,
+            expected_markdown_name=md_name,
+            expected_markdown_sha256=md_sha,
+            expected_run_id=run_id,
+            expected_contract=contract,
+            expected_profile=profile,
         )
+        if published_problems:
+            raise BaselinePublishError(
+                "Post-publish manifest verification failed: " + "; ".join(published_problems)
+            )
+        revalidated = json.loads(_read_bytes(target_json).decode("utf-8"))
+        republished_problems = validate_saved_phase1_after(revalidated)
+        if republished_problems:
+            raise BaselinePublishError(
+                "Post-publish re-validation of the published JSON failed: "
+                + "; ".join(republished_problems[:6])
+            )
+        if run_id not in _read_bytes(target_md).decode("utf-8"):
+            raise BaselinePublishError(
+                "Post-publish Markdown verification failed: the run_id is missing."
+            )
+    except BaselinePublishError:
+        for published_file in targets:
+            _remove_quietly(published_file)
+        for partial in partials:
+            _remove_quietly(partial)
+        raise
 
     return {
+        "run_id": run_id,
         "json": target_json,
         "markdown": target_md,
-        "json_sha256": _sha256(published_json),
-        "markdown_sha256": _sha256(published_md),
+        "manifest": target_manifest,
+        "json_sha256": json_sha,
+        "markdown_sha256": md_sha,
+        "git_commit": git_commit,
     }

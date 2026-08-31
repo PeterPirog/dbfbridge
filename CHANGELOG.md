@@ -100,6 +100,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a Phase 1 `--baseline` can never overwrite the preserved Phase 0
   `phase-0-full.{json,md}` BEFORE pair; the legacy names stay reserved for
   the historical BEFORE artifact
+- Pure, host-independent saved-baseline validators (`benchmarks/contract.py`):
+  the frozen Phase 0 BEFORE contract (approved legacy form without
+  `benchmark_contract`, 20 `MEASURED` + exactly the 4 documented
+  `NOT_IMPLEMENTED` names) and the full Phase 1 AFTER contract (exact
+  contract, stable `run_id`, 24 unique `MEASURED` scenarios, complete
+  sample/warm-up counts, required metrics, peak RSS, zero temporary residue,
+  repo identity, memo-reconstruction extras). `check_baseline_gate` now
+  delegates these shared checks while keeping its live `psutil` check
+- Publication derives everything from the ACTUAL source JSON: the full Phase
+  1 AFTER validator runs on the really-read bytes (an independently passed
+  payload is never trusted, so a modified-after-gate JSON is refused), the
+  Markdown must carry the same `run_id`/contract/profile, and the
+  publication is an **exception-safe transaction** with a crash-consistency
+  manifest (`phase-1-direct-read-full.manifest.json`, published last):
+  committed = JSON + Markdown + valid manifest with identical `run_id`
+  (two independent `os.replace` calls are not crash-atomic between
+  themselves; any handled failure rolls the directory back exactly)
+- Comparison honesty hardened: `benchmarks/compare_baselines.py` runs the
+  full validators on BOTH sides before comparing, verifies the AFTER
+  manifest and file naming, compares only the 20 common `MEASURED`
+  scenarios, restricts NEWLY_MEASURED to the four documented Phase 1
+  placeholders (no invented speedup for anything else), and replaces the
+  boolean environment flag with a three-state verdict — `COMPARABLE` /
+  `PARTIALLY_COMPARABLE` (identical runtime environment, missing storage
+  provenance) / `NOT_COMPARABLE` (any OS/Python/CPU/architecture/dependency
+  difference) — while contract, commit, branch and the dbfbridge package
+  version are never treated as environment mismatches
 - Atomic Phase 1 baseline publication (`benchmarks/artifacts.py`): staged
   `.partial` JSON/Markdown pair published back-to-back with an in-memory
   round-trip check and post-write SHA-256 verification; a failure rolls the

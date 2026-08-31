@@ -167,36 +167,58 @@ hardcodes a report name):
   a **preserved historical artifact** and is never a Phase 1 target.
 
 `--baseline` is refused (non-zero, filesystem untouched) when: the payload
-does not carry `benchmark_contract == "phase-1-direct-read-v1"`, the target
-pair already exists (overwriting a versioned baseline is an explicit
-architectural decision — there is **no force/overwrite flag**, and even a
-forged contract can never land on a `phase-0-*` name), or the publication
-does not produce an identical JSON+Markdown pair with verified SHA-256
-hashes. The pair is staged as `.partial` files and published back-to-back;
-a failure at any point leaves the baselines directory exactly as before.
-Before/after publication hashes of the preserved Phase 0 pair are recorded
-below.
+does not satisfy the **full Phase 1 AFTER saved-artifact contract** (validated
+by the host-independent, stdlib-only validators in `benchmarks/contract.py`:
+exact contract, run_id, 24 unique `MEASURED` scenarios over the frozen name
+set, complete samples/warm-ups, required metrics, peak RSS, zero temporary
+residue, full commit + clean worktree metadata, memo-reconstruction extras),
+the target trio already exists (overwriting a versioned baseline is an
+explicit architectural decision — there is **no force/overwrite flag**, and
+even a forged contract can never land on a `phase-0-*` name), or the
+publication cannot produce an identical, manifest-corroborated artifact set.
+The run identity (`run_id`, deterministic per report content) appears in the
+JSON, the Markdown, the manifest and the publication message; the comparator
+shows the run ids of both sides.
 
 ### BEFORE vs AFTER (and what the comparison may claim)
 
-- `benchmarks/baselines/phase-0-full.{json,md}` — the preserved **BEFORE**;
-- `benchmarks/baselines/phase-1-direct-read-full.{json,md}` — the future
-  **AFTER**, publishable only through the full baseline gate;
+- `benchmarks/baselines/phase-0-full.{json,md}` — the preserved **BEFORE**
+  (a versioned **legacy** artifact: no `benchmark_contract` field, validated
+  by the frozen Phase 0 contract, never retro-fitted with new fields);
+- `benchmarks/baselines/phase-1-direct-read-full.{json,md}` + the commit
+  marker `phase-1-direct-read-full.manifest.json` — the future **AFTER**,
+  publishable only through the full baseline gate. The publication is an
+  **exception-safe transaction**: staged `.partial` files, one post-write
+  SHA-256/manifest/re-validation pass that removes all three new files and
+  every partial on any failure. Two independent `os.replace` calls are not
+  crash-consistent between themselves — a hard process kill between them
+  cannot be fully rolled back, which is exactly why the manifest is published
+  LAST and an AFTER baseline counts as committed **only** when the JSON, the
+  Markdown AND a valid manifest all exist and corroborate each other;
+  `run_id` must be identical in all three;
 - a fast run is **never** a baseline and never evidence of an improvement —
   it is a local regression gate;
 - the stdlib-only comparison CLI
   (`python -m benchmarks.compare_baselines benchmarks/baselines/phase-0-full.json
-  benchmarks/baselines/phase-1-direct-read-full.json`) is available for the
-  day the AFTER baseline exists: it compares common `MEASURED` scenarios
-  (wall/CPU, records/s, source MiB/s, peak RSS, amplifications, temporary and
-  output bytes, with `NOT_AVAILABLE` for missing/zero values), flags the four
-  former `NOT_IMPLEMENTED` Direct Read scenarios as **NEWLY_MEASURED — with
-  no speedup invented** (they are not "infinitely faster" than a missing
-  feature), reports environment differences (OS, Python, CPU, architecture,
-  memory, dependencies, commit) and refuses to call anything an improvement
-  when the environments are not comparable. It refuses swapped, broken or
-  wrong-contract artifacts with non-zero exit codes. No committed comparison
-  report exists yet, because the AFTER baseline does not exist yet.
+  benchmarks/baselines/phase-1-direct-read-full.json`) fully validates BOTH
+  sides before comparing, requires the AFTER trio (JSON + Markdown +
+  manifest corroborating each other), compares only the **20 common
+  `MEASURED` scenarios** (wall/CPU, records/s, source MiB/s, peak RSS,
+  amplifications, temporary and output bytes, with `NOT_AVAILABLE` for
+  missing/zero values), and restricts **NEWLY_MEASURED to the four
+  documented Phase 1 placeholders** — no speedup is invented for them
+  (they are never "infinitely faster" than a missing feature). Missing,
+  extra, unknown, duplicated or FAILED rows are refused. The environment
+  verdict is three-valued — `COMPARABLE`, `PARTIALLY_COMPARABLE` (identical
+  runtime environment, storage/runner provenance missing on a side: numbers
+  and ratios are shown but I/O-sensitive results do not prove improvement
+  without shared storage provenance — the legacy Phase 0 file is never
+  retro-fitted with a storage descriptor), `NOT_COMPARABLE` (any
+  OS/Python/CPU/architecture/dependency mismatch) — and contract, commit,
+  branch and the dbfbridge package version are never treated as
+  environment mismatches because they are the expected subject of the
+  comparison. No committed comparison report exists yet, because the AFTER
+  baseline does not exist yet.
 
 ## Baseline gate (`--baseline`)
 
@@ -214,11 +236,12 @@ of the following is true:
 - the run does not contain the full-profile scenario set (24 `MEASURED` since
   Phase 1 implements the former placeholders; the expected `NOT_IMPLEMENTED`
   set is empty);
-- the target baseline pair already exists (overwriting a versioned baseline is
+- the target baseline trio already exists (overwriting a versioned baseline is
   an explicit, separate architectural decision — there is no force/overwrite
   flag, and derived names can never collide with the `phase-0-*` pair);
-- the atomic publication cannot produce an identical, SHA-256-verified
-  JSON+Markdown pair (no half pairs, no leftover `.partial` files);
+- the exception-safe publication cannot produce an identical, manifest-
+  corroborated, SHA-256-verified artifact trio (no half trios, no leftover
+  `.partial` files, run_id identical in all three artifacts);
 - the report is not exactly the full contract: any unknown status, any
   duplicate scenario name, any name outside the contract, or the same name in
   more than one status category;

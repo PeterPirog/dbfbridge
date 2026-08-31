@@ -389,13 +389,27 @@ declared verified until its full CI run is green).
   and the future versioned AFTER baseline at
   `benchmarks/baselines/phase-1-direct-read-full.{json,md}`; the preserved
   Phase 0 `phase-0-full.{json,md}` names are RESERVED for the BEFORE pair
-  (publication to them is impossible). `--baseline` publishes an atomic,
-  SHA-256-verified JSON+Markdown pair, never overwrites an existing baseline
-  (re-baselining is an explicit, separate decision — there is no force
-  flag), and leaves no half pair or `.partial` residue. The future AFTER
+  (publication to them is impossible). `--baseline` publishes an
+  **exception-safe transaction**: the ACTUAL source JSON is fully validated
+  with the frozen Phase 1 AFTER contract (an independently passed payload is
+  never trusted), the Markdown must carry the same `run_id`, contract and
+  profile, and the staged `.partial` trio (JSON + Markdown + manifest) is
+  published with a post-write pass that verifies bytes, SHA-256 hashes, the
+  manifest and a JSON re-validation, removing all three new files on any
+  failure. The manifest (`phase-1-direct-read-full.manifest.json`, published
+  last) is the crash-consistency marker: an AFTER baseline is committed ONLY
+  when JSON, Markdown and a corroborating manifest all exist with an
+  identical `run_id`. Two unrelated `os.replace` calls are not
+  crash-atomic between themselves; no force/overwrite flag exists
+  (re-baselining is an explicit, separate decision). The future AFTER
   comparison tool is `benchmarks/compare_baselines.py` (BEFORE = legacy
-  Phase 0 artifact, AFTER = `phase-1-direct-read-v1`, NEWLY_MEASURED without
-  invented speedups, explicit environment-comparability check). Phase 0
-  BEFORE SHA-256 (unchanged): `phase-0-full.json` =
-  `d3b5ab45...f07453aa6`, `phase-0-full.md` = `137ade61...4f06eff0c` (full
-  values recorded in `phase-0-audit.md` §17).
+  Phase 0 artifact validated by the frozen Phase 0 contract, AFTER =
+  `phase-1-direct-read-v1` with manifest verification, the 20 common
+  `MEASURED` scenarios compared, NEWLY_MEASURED restricted to the four
+  documented placeholders without invented speedups, and a three-state
+  environment verdict: COMPARABLE / PARTIALLY_COMPARABLE / NOT_COMPARABLE,
+  where contract, commit, branch and the dbfbridge version are never
+  environment mismatches and the legacy Phase 0 file can never be
+  retro-fitted with storage provenance). Phase 0 BEFORE SHA-256 (unchanged):
+  `phase-0-full.json` = `d3b5ab45...f07453aa6`, `phase-0-full.md` =
+  `137ade61...4f06eff0c` (full values recorded in `phase-0-audit.md` §17).

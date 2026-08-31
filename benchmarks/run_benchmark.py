@@ -39,7 +39,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
@@ -53,6 +52,7 @@ from typing import Any
 from .artifacts import BENCHMARK_CONTRACT as BENCHMARK_CONTRACT
 from .artifacts import CONTRACT_PHASE_1 as CONTRACT_PHASE_1
 from .artifacts import BaselinePublishError, publish_baseline_pair, report_stem
+from .contract import derive_run_id, validate_saved_phase1_after
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -404,180 +404,28 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     """Return the list of reasons a versioned baseline must be REJECTED.
 
     An empty list means the run is eligible to be copied into
-    ``benchmarks/baselines/``.  A versioned baseline is only allowed from a
-    **full, clean, complete** run with ``psutil`` available:
+    ``benchmarks/baselines/``.  The shared saved-artifact contract (frozen
+    scenario names, exact sample/warm-up counts, per-sample statuses and
+    metrics, valid_baseline, full commit and clean worktree, system/package
+    metadata, run_id) is delegated to the host-independent validator
+    :func:`benchmarks.contract.validate_saved_phase1_after`, which works purely
+    on the payload content.
 
-    - the report contains only ``MEASURED`` / ``FAILED`` / ``NOT_IMPLEMENTED``
-      entries, every scenario name exactly once, all names inside the full
-      profile contract (``reconstruction_memo_190k`` included);
-    - exactly the full-profile set of MEASURED scenarios (24), the exact
-      NOT_IMPLEMENTED set (Phase 1 implements the former placeholders, so the
-      expected set is empty), zero FAILED;
-    - for every MEASURED scenario: ``len(samples) == environment["repetitions"]``
-      and **every** sample is ``MEASURED`` with all required metrics and zero
-      remaining atomic-write temporary files;
-      ``len(warmup_samples) == environment["warmup"]`` and **every** warm-up
-      sample is ``MEASURED`` — a missing/extra/FAILED warm-up rejects the
-      baseline independent of ``aggregated.valid_baseline``;
-    - ``reconstruction_memo_190k`` samples additionally require the real
-      DBF+FPT metrics (see :func:`_memo_sample_missing_metrics`);
-    - a malformed payload (missing/non-dict environment or git block, a
-      non-list scenario list, a scenario entry that is not a dict or has no
-      usable name) is rejected outright — malformed entries are never silently
-      dropped.
+    The gate keeps the one check that genuinely belongs to the ACTIVE machine:
+    the current availability of ``psutil`` (RSS/IO metrics must have been
+    collectable while the scenarios ran).
     """
 
     reasons: list[str] = []
     if not isinstance(payload, dict):
         return ["payload is not a dict (malformed payload)"]
-    env_raw = payload.get("environment")
-    if not isinstance(env_raw, dict):
-        reasons.append("environment is missing or not a dict (malformed payload)")
-    env = env_raw if isinstance(env_raw, dict) else {}
-    contract = env.get("benchmark_contract")
-    if contract != BENCHMARK_CONTRACT:
-        reasons.append(
-            f"benchmark_contract is {contract!r}; an AFTER baseline must carry "
-            f"exactly {BENCHMARK_CONTRACT!r}"
-        )
-    git_raw = env.get("git")
-    if not isinstance(git_raw, dict):
-        reasons.append("environment.git is missing or not a dict (malformed payload)")
-    git = git_raw if isinstance(git_raw, dict) else {}
-
-    scenarios_raw = payload.get("scenarios")
-    if not isinstance(scenarios_raw, list):
-        reasons.append("payload.scenarios is missing or not a list (malformed payload)")
-        scenarios_raw = []
-    # Malformed entries (not a dict, or no usable name) are REJECTED, never
-    # silently dropped.
-    all_scenarios: list[dict[str, Any]] = []
-    for i, entry in enumerate(scenarios_raw):
-        if not isinstance(entry, dict):
-            reasons.append(f"scenario entry #{i} is not a dict (malformed entry)")
-            continue
-        if not isinstance(entry.get("scenario"), str) or not entry.get("scenario"):
-            reasons.append(f"scenario entry #{i} has no usable scenario name (malformed entry)")
-            continue
-        all_scenarios.append(entry)
-    statuses = [s.get("status") for s in all_scenarios]
-    names = [s.get("scenario") for s in all_scenarios]
-    measured = [s for s in all_scenarios if s.get("status") == STATUS_MEASURED]
-    not_implemented = [s for s in all_scenarios if s.get("status") == STATUS_NOT_IMPLEMENTED]
-    failed = [s for s in all_scenarios if s.get("status") == STATUS_FAILED]
-
-    if env.get("profile") != "full":
-        reasons.append(f"profile is {env.get('profile')!r}; a baseline requires --profile full")
+    # Live check: the current process must have had psutil available, so the
+    # recorded samples were actually able to carry RSS/IO metrics.
     if not psutil_available():
         reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
-
-    warmup_expected = env.get("warmup")
-    reps_expected = env.get("repetitions")
-    if not _is_positive_int(warmup_expected, 1):
-        reasons.append(f"warmup is {warmup_expected!r}; a baseline requires warmup >= 1")
-    if not _is_positive_int(reps_expected, 3):
-        reasons.append(f"repetitions is {reps_expected!r}; a baseline requires repetitions >= 3")
-
-    # ------------------------------------------------------------------ report shape
-    allowed = {STATUS_MEASURED, STATUS_FAILED, STATUS_NOT_IMPLEMENTED}
-    unknown = sorted(str(st) for st in statuses if st not in allowed)
-    if unknown:
-        reasons.append(f"unknown scenario status(es) in the report: {', '.join(map(str, unknown))}")
-    duplicates = sorted({str(n) for n in names if names.count(n) > 1})
-    if duplicates:
-        reasons.append("duplicate scenario names in the report: " + ", ".join(duplicates))
-    contract = set(_scenario_names("full")) | {e["scenario"] for e in NOT_IMPLEMENTED}
-    foreign = sorted({str(n) for n in names if n not in contract})
-    if foreign:
-        reasons.append("scenario name(s) outside the full-profile contract: " + ", ".join(foreign))
-
-    expected_full = list(_scenario_names("full"))
-    measured_names = [s["scenario"] for s in measured]
-    expected_set = set(expected_full)
-    have_set = set(measured_names)
-    missing = [n for n in expected_full if n not in have_set]
-    extra = sorted(str(n) for n in have_set - expected_set if n is not None)
-    if missing:
-        reasons.append(
-            f"{len(missing)} expected full-profile MEASURED scenario(s) missing: "
-            + ", ".join(missing)
-        )
-    if extra:
-        reasons.append(
-            "unexpected MEASURED scenario(s) not in the full profile: " + ", ".join(extra)
-        )
-    if len(measured) != len(expected_full):
-        reasons.append(
-            f"expected exactly {len(expected_full)} MEASURED scenarios, found {len(measured)}"
-        )
-
-    expected_not_impl = {s["scenario"] for s in NOT_IMPLEMENTED}
-    have_not_impl = {s["scenario"] for s in not_implemented}
-    if have_not_impl != expected_not_impl:
-        reasons.append(
-            "NOT_IMPLEMENTED set mismatch; expected "
-            f"{sorted(expected_not_impl)}, found {sorted(have_not_impl)}"
-        )
-
-    if failed:
-        reasons.append(
-            f"{len(failed)} scenario(s) FAILED: " + ", ".join(s["scenario"] for s in failed)
-        )
-
-    invalid = [
-        s["scenario"] for s in measured if not (s.get("aggregated") or {}).get("valid_baseline")
-    ]
-    if invalid:
-        reasons.append(
-            f"{len(invalid)} MEASURED scenario(s) without a valid baseline: " + ", ".join(invalid)
-        )
-
-    # Per-scenario completeness: exact sample counts AND every sample complete.
-    incomplete: list[str] = []
-    for s in measured:
-        problems: list[str] = []
-        samples = s.get("samples")
-        if not isinstance(samples, list):
-            problems.append("no sample list")
-        else:
-            if _is_positive_int(reps_expected, 0) and len(samples) != reps_expected:
-                problems.append(
-                    f"{len(samples)} samples but the run declares {reps_expected} repetitions"
-                )
-            for i, sample in enumerate(samples, start=1):
-                if not isinstance(sample, dict) or sample.get("status") != STATUS_MEASURED:
-                    shown = sample.get("status") if isinstance(sample, dict) else "absent"
-                    problems.append(f"rep{i}: sample status is {shown!r}, expected MEASURED")
-                    continue
-                extra_missing = _sample_missing_metrics(sample)
-                if s.get("scenario") == "reconstruction_memo_190k":
-                    extra_missing += _memo_sample_missing_metrics(sample)
-                if extra_missing:
-                    problems.append(f"rep{i}: missing {','.join(extra_missing)}")
-        warmups = s.get("warmup_samples")
-        if not isinstance(warmups, list) or (
-            _is_positive_int(warmup_expected, 0) and len(warmups) != warmup_expected
-        ):
-            found = len(warmups) if isinstance(warmups, list) else "absent"
-            problems.append(f"warmup count mismatch: {found} != {warmup_expected}")
-        elif isinstance(warmups, list):
-            for i, warm in enumerate(warmups, start=1):
-                if not isinstance(warm, dict) or warm.get("status") != STATUS_MEASURED:
-                    shown = warm.get("status") if isinstance(warm, dict) else "absent"
-                    problems.append(f"warmup{i}: status is {shown!r}, expected MEASURED")
-        if problems:
-            incomplete.append(f"{s['scenario']} ({'; '.join(problems)})")
-    if incomplete:
-        reasons.append(
-            f"{len(incomplete)} MEASURED scenario(s) with incomplete samples or warm-ups: "
-            + " | ".join(incomplete)
-        )
-
-    commit = str(git.get("commit") or "")
-    if not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
-        reasons.append(f"commit SHA is not a full 40-hex value: {commit!r}")
-    if git.get("worktree_dirty", True):
-        reasons.append("worktree was dirty before the run; a baseline requires a clean worktree")
+    # Everything else is the pure saved-artifact contract.
+    reasons.extend(validate_saved_phase1_after(payload))
+    _ = _is_positive_int  # kept for helper parity
     return reasons
 
 
@@ -598,8 +446,10 @@ def render_markdown(payload: dict[str, Any]) -> str:
     git: dict[str, Any] = env["git"]
     scenarios: list[dict[str, Any]] = list(payload["scenarios"])
     lines = [
-        "# dbfbridge Phase 0 benchmark baseline",
+        "# dbfbridge benchmark report",
         "",
+        f"- run_id: `{env.get('run_id', 'n/a')}` (identical in JSON, Markdown and the manifest)",
+        f"- benchmark_contract: `{env.get('benchmark_contract', 'legacy-phase-0')}`",
         f"- Profile: `{env['profile']}`",
         f"- Commit: `{git['commit']}` (origin/main: `{git['origin_main']}`)",
         f"- Worktree: {'dirty' if git['worktree_dirty'] else 'clean'} on branch `{git['branch']}`",
@@ -780,11 +630,27 @@ def main(argv: list[str] | None = None) -> int:
             "repetitions": args.repetitions,
             "warmup": args.warmup,
             "aggregation": "median-of-measured-repetitions",
+            # The run_id is derived deterministically from the run content and
+            # embedded in the JSON, the Markdown and (on publication) the
+            # manifest — one identifier for all artifacts.
+            "run_id": derive_run_id(
+                {
+                    "environment": {
+                        "benchmark_contract": BENCHMARK_CONTRACT,
+                        "git": git_state(REPO_ROOT),
+                        "profile": args.profile,
+                        "repetitions": args.repetitions,
+                        "warmup": args.warmup,
+                    },
+                    "scenarios": results,
+                }
+            ),
         },
         "fixtures": _fixture_manifest(work_dir),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "scenarios": results,
     }
+    run_id = payload["environment"]["run_id"]
 
     # ALWAYS write reports, even if scenarios failed.  The report names are
     # derived from the versioned benchmark contract (never the legacy
@@ -798,8 +664,10 @@ def main(argv: list[str] | None = None) -> int:
     md_path.write_text(render_markdown(payload), encoding="utf-8")
 
     # A versioned baseline is created ONLY when the full gate passes, and the
-    # publication is atomic: names derived from benchmark_contract, no
-    # overwrite, no half pair, no leftover .partial, post-write verification.
+    # publication is an exception-safe transaction: contract-derived names
+    # from the actually-read JSON, full AFTER validation of the published
+    # bytes, no overwrite, a manifest published last, rollback on failure and
+    # post-write verification.
     baseline_note = ""
     if args.baseline:
         gate_reasons = check_baseline_gate(payload)
@@ -813,7 +681,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         baseline_dir = REPO_ROOT / "benchmarks" / "baselines"
         try:
-            published = publish_baseline_pair(json_path, md_path, baseline_dir, payload=payload)
+            published = publish_baseline_pair(json_path, md_path, baseline_dir)
         except BaselinePublishError as exc:
             print(f"BASELINE REFUSED: {exc}", file=sys.stderr)
             print(
@@ -823,9 +691,24 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         baseline_note = (
             f" baseline={published['json']}"
+            f" manifest={published['manifest']}"
+            f" run_id={published['run_id']}"
             f" json_sha256={published['json_sha256']}"
             f" markdown_sha256={published['markdown_sha256']}"
         )
+
+    print(
+        json.dumps(
+            {
+                "profile": args.profile,
+                "run_id": run_id,
+                "json": str(json_path),
+                "markdown": str(md_path),
+            }
+        )
+    )
+    if baseline_note:
+        print(baseline_note)
 
     print(json.dumps({"profile": args.profile, "json": str(json_path), "markdown": str(md_path)}))
     if baseline_note:
