@@ -53,5 +53,5 @@ def test_release_files_and_workflows_stay_synchronized() -> None:
     assert f"dbfbridge=={dbfbridge.__version__}" in publishing
     assert "name: pypi" in publish_workflow
     assert "pypa/gh-action-pypi-publish@release/v1" in publish_workflow
-    for version in ("3.10", "3.11", "3.12", "3.13"):
+    for version in ("3.10", "3.11", "3.12", "3.13", "3.14"):
         assert f'python: "{version}"' in ci_workflow

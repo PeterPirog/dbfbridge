@@ -77,7 +77,7 @@ Other important paths:
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
 - `benchmarks/` — Phase 0/1 benchmark runner (fast = 19 MEASURED scenarios,
-  full = 24; Phase 0 baseline unchanged, Phase 1 AFTER baseline not yet saved);
+  full = 24; Phase 0 baseline unchanged, Phase 1 AFTER baseline recorded);
 - `.github/workflows/ci.yml` — Linux/Windows compatibility checks;
 - `.github/workflows/publish.yml` — release build and PyPI Trusted Publishing;
 - `PUBLISHING.md` — release checklist and one-time PyPI configuration;
