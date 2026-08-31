@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path and JSON-safe context, and a single `read_schema` call opens a given
   FPT header at most once (the same details feed the model and the
   validation instead of reading the header twice)
+- Companion discovery boundary normalized: the exact-path candidate check
+  uses explicitly protected `stat` (ENOENT/ENOTDIR mean "companion absent";
+  any other OSError — incl. access denied — becomes a `DbfIoError` naming
+  the specific companion with JSON-safe `errno`/`operation="stat"` context,
+  never a leaked `PermissionError`), and during the case-insensitive scan
+  both `os.scandir` failures and `DirEntry.is_file()` failures on matching
+  entries raise `DbfIoError` reporting the concrete entry path. A genuinely
+  missing companion and an inaccessible one are distinct states
 - Header table-flags byte (offset 28) is now treated as a bit mask
   (0x01 structural CDX / 0x02 memo / 0x04 database container); a memo-only
   0x02 value no longer implies a structural CDX. The raw value stays

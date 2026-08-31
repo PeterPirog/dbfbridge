@@ -306,6 +306,13 @@ power-of-two rule. A missing required companion, an unreadable/suspicious FPT
 header, or a structural-CDX flag without a `.cdx` file is a structured warning
 in `warnings`, never an opaque failure.
 
+Companion discovery is a typed I/O boundary: the exact-path candidate check
+(protected `stat`), the case-insensitive directory scan, and per-entry checks
+all convert `OSError` into `DbfIoError` (`DBF_IO_ERROR`) with the specific
+companion path and a JSON-safe context. A genuinely absent companion means
+`present=False`; an inaccessible one (e.g. access denied) raises instead of
+being disguised as missing.
+
 Structured failures carry a machine code instead of free text:
 
 ```python

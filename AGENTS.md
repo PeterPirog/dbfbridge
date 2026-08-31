@@ -124,8 +124,11 @@ fields. FPT health rules: the header record is 512 bytes, the 8-byte prefix
 carries next-free block and block size, block size 0 is invalid, 1-32 mean
 512-byte units and >32 are plain byte sizes (no power-of-two rule);
 DBT/SMT companions are never parsed as FPT, and one `read_schema` call reads
-a given FPT header at most once (all companion stat/open/read failures are
-typed `DbfIoError`). The exporter delegates its header parse to
+a given FPT header at most once (all companion stat/open/read/scandir
+failures — exact-path stat, directory scan, and entry checks — are typed
+`DbfIoError`; a genuinely absent companion is `present=False`, while an
+inaccessible one raises, never disguised as missing). The exporter delegates
+its header parse to
 `core.header.parse_header` and its Mazovia table to `core.codecs` —
 there is exactly one header parser and one codepage table in the codebase.
 `import dbfbridge` must register no codepage, create no files, and load no
