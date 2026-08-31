@@ -19,9 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (binary flag), `index_field_flag`, `is_autoincrement` plus
   `autoincrement_next_value`/`autoincrement_step`, and the semantic
   `is_binary` classification (binary C/V, G/P/binary memo)
-- `TableInfo`/`TableSchema` expose the table-flags bit mask booleans
-  (`has_structural_cdx`, `has_memo_flag`, `is_database_container`) and
-  `TableSchema` adds `dbc_backlink_path` (decoded relative DBC path)
+- `TableInfo`/`TableSchema` expose the raw header table-flags byte
+  (`table_flags` as int plus `table_flags_hex`) alongside the bit-mask
+  booleans (`has_structural_cdx`, `has_memo_flag`,
+  `is_database_container`), and `TableSchema` adds `dbc_backlink_path`
+  (decoded relative DBC path)
 - Typed direct-read error model: `ErrorCode` machine codes
   (`DBF_HEADER_INVALID`, `DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`,
   `ENCODING_UNKNOWN`, `PATH_NOT_FOUND`, `DBF_IO_ERROR`) and
@@ -44,6 +46,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/architecture/phase-1-direct-read.md` — Phase 1A architecture contract
 
 ### Fixed
+- VFP autoincrement semantics corrected: for Visual FoxPro tables (0x30/
+  0x31/0x32) `is_autoincrement` is derived from the field-flags mask 0x0C on
+  an Integer (`I`) field (physical VFP type), not from the dBASE Level 7
+  type `+`; the next value and step stay in descriptor bytes 19-22 (LE) and
+  23. Bit 0x04 inside the autoincrement mask no longer reports an
+  autoincrement Integer as `nocptrans` or semantic binary, while real 0x04
+  flags on Character/Memo fields keep the NOCPTRANS meaning; `index_field_flag`
+  (byte 31) is documented as migration-compatibility metadata only (VFP
+  reserves bytes 24-31, so it is not reliable CDX-membership evidence)
+- FPT header validation rewritten to the actual VFP rules: a full FPT header
+  record is 512 bytes, the 8-byte prefix is enough for next-free/block-size
+  reporting, files shorter than 512 bytes warn as structurally suspicious, a
+  prefix shorter than 8 bytes warns as unreadable, and the stored block size
+  must simply be nonzero (0 is invalid; 1-32 select 512-byte units —
+  `SET BLOCKSIZE TO 0` stores 1 — and values above 32 are plain byte sizes,
+  so 64/96/16384 are valid). The previous power-of-two 64-4096 assumption is
+  removed
+- FPT health validation now runs only for FPT companions. DBT/SMT companions
+  (dBASE IV / HiPer-Six) are reported with their correct format and an
+  explicit "not supported" warning, and their headers are never interpreted
+  as FPT (no spurious "unreadable FPT header" warnings; exact warning sets
+  are covered by tests)
+- DBC backlink decoding uses the encoding resolved from the language driver
+  (or the explicit override) instead of forcing UTF-8. A non-empty backlink
+  that cannot be decoded keeps `dbc_bound = true`, reports
+  `dbc_backlink_path` as `null` (never raw bytes) and adds a diagnostic
+  warning naming the encoding; cp1250 backlinks with Polish characters
+  decode correctly
+- `TableSchema.memo_companion_format` reports the format implied by the DBF
+  version (e.g. FPT) even when the companion file itself is missing, as
+  long as memo fields or the memo table flag say a companion is expected;
+  presence, path, and size stay separate, honest fields
+- Companion metadata I/O is fully typed: every stat/open/read around a
+  companion file converts `OSError` into `DbfIoError` (`DBF_IO_ERROR`) with
+  path and JSON-safe context, and a single `read_schema` call opens a given
+  FPT header at most once (the same details feed the model and the
+  validation instead of reading the header twice)
 - Header table-flags byte (offset 28) is now treated as a bit mask
   (0x01 structural CDX / 0x02 memo / 0x04 database container); a memo-only
   0x02 value no longer implies a structural CDX. The raw value stays

@@ -20,7 +20,13 @@ from pathlib import Path
 
 from . import errors
 from .codecs import driver_to_encoding
-from .fields import classify_field, type_name
+from .fields import (
+    VFP_VERSIONS,
+    classify_field,
+    is_autoincrement_field,
+    is_nocptrans_field,
+    type_name,
+)
 
 DBF_HEADER = struct.Struct("<BBBBLHHHBBLLLBBH")
 FIELD_DESCRIPTOR = struct.Struct("<11scLBBHBBBB7sB")
@@ -39,6 +45,11 @@ MINIMUM_HEADER_LENGTH = 33
 #: must follow the field terminator in a VFP table.
 VFP_BACKLINK_SIZE = 263
 
+#: Size of a complete FPT header record.  The first 8 bytes carry the
+#: next-free block and the block size; files shorter than the full header
+#: record are structurally suspicious (warning, not an error).
+FPT_HEADER_RECORD_SIZE = 512
+
 DB_VERSION_NAMES: dict[int, str] = {
     0x02: "FoxBASE",
     0x03: "FoxBASE+/dBASE III Plus (no memo)",
@@ -56,7 +67,6 @@ DB_VERSION_NAMES: dict[int, str] = {
 }
 
 SUPPORTED_VERSIONS = frozenset(DB_VERSION_NAMES)
-VFP_VERSIONS = frozenset({0x30, 0x31, 0x32})
 
 #: Header "table flags" byte (offset 28) bit mask.
 TABLE_FLAG_STRUCTURAL_CDX = 0x01
@@ -104,6 +114,7 @@ class ParsedField:
     decimal_count: int
     address: int
     flags: int
+    dbversion_byte: int
     index_field_flag: int
     autoincrement_next_value: int
     autoincrement_step: int
@@ -128,13 +139,23 @@ class ParsedField:
 
     @property
     def nocptrans(self) -> bool:
-        """The descriptor's binary/NOCPTRANS flag (bit 0x04)."""
-        return bool(self.flags & 0x04)
+        """The descriptor's binary/NOCPTRANS flag (bit 0x04) where it is
+        meaningful — Character/Varchar and memo fields only.  Bit 0x04 is
+        part of the VFP autoincrement mask, so an autoincrement Integer
+        (or any other numeric column) is never reported as NOCPTRANS."""
+        return is_nocptrans_field(self.dbf_type, self.flags)
 
     @property
     def is_autoincrement(self) -> bool:
-        """Whether the field is an autoincrement field (type ``+``)."""
-        return self.dbf_type == "+"
+        """Whether the field is an autoincrement field.
+
+        Visual FoxPro derives this from the field-flags mask 0x0C on an
+        Integer (``I``) field.  The dBASE Level 7 type ``+`` is recognized
+        outside VFP only and never proves VFP semantics.
+        """
+        return is_autoincrement_field(
+            dbf_type=self.dbf_type, flags=self.flags, dbversion_byte=self.dbversion_byte
+        )
 
 
 @dataclass(frozen=True)
@@ -420,9 +441,12 @@ def parse_header(
         null_index = backlink_area.find(b"\x00")
         path_bytes = backlink_area if null_index == -1 else backlink_area[:null_index]
         if path_bytes:
+            # A non-empty backlink path means the table is DBC-bound even
+            # when the bytes cannot be decoded with the resolved encoding;
+            # the path is then reported as null (never raw bytes).
             dbc_bound = True
             try:
-                dbc_backlink_path = path_bytes.decode("utf-8")
+                dbc_backlink_path = path_bytes.decode(resolved_encoding, errors=decode_errors)
             except UnicodeDecodeError:
                 dbc_backlink_path = None
 
@@ -478,6 +502,10 @@ def _parse_field_descriptor(
     # VFP autoincrement bookkeeping: next value (4 bytes LE) then step.
     autoincrement_next_value = struct.unpack_from("<L", descriptor_data, 19)[0]
     autoincrement_step = descriptor_data[23]
+    # Bytes 24-31 are reserved in VFP.  Byte 31 was used by some dBASE-era
+    # writers as an "index field" marker; it is kept only for migration
+    # schema compatibility and is NOT reliable evidence that the field
+    # belongs to a CDX index.
     index_field_flag = descriptor_data[31]
 
     name_bytes = raw_name.split(b"\0", 1)[0]
@@ -505,6 +533,7 @@ def _parse_field_descriptor(
         decimal_count=decimal_count,
         address=address,
         flags=flags,
+        dbversion_byte=dbversion_byte,
         index_field_flag=index_field_flag,
         autoincrement_next_value=autoincrement_next_value,
         autoincrement_step=autoincrement_step,
@@ -530,29 +559,48 @@ def last_update_date(year: int, month: int, day: int) -> str | None:
 
 
 def fpt_header_details(path: Path | None) -> tuple[int | None, int | None, int | None]:
-    """Read an FPT companion's 8-byte file header (never its payload).
+    """Read one memo companion's size and header prefix (never its payload).
 
-    Returns ``(size_bytes, next_free_block, block_size)``; ``None`` entries
-    when the companion is absent or shorter than an FPT header.
+    For an ``.fpt`` companion the function reads the 8-byte header prefix —
+    enough for the next-free block (bytes 0-3, big-endian) and the block
+    size (bytes 6-7, big-endian).  A full FPT header record is 512 bytes,
+    which only the caller can validate against.  DBT/SMT companions are
+    stat-ed for their size but never interpreted as FPT headers.  Returns
+    ``(size_bytes, next_free_block, block_size)`` with ``None`` entries when
+    the companion is absent/is not regular or is shorter than the prefix.
+    Every ``stat``/``open``/``read`` failure becomes :class:`DbfIoError`
+    (``DBF_IO_ERROR``) with the path and a JSON-safe context.
     """
-    if path is None or not path.is_file():
+    if path is None:
         return None, None, None
-    size = path.stat().st_size
+    try:
+        stat_result = path.stat()
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None, None, None
+        raise _companion_io_error(exc, path, "stat") from exc
+    if not stat_module.S_ISREG(stat_result.st_mode):
+        return None, None, None
+    size: int = stat_result.st_size
     if path.suffix.lower() != ".fpt" or size < FPT_HEADER_PREFIX.size:
         return size, None, None
     try:
         with path.open("rb") as infile:
             header = infile.read(FPT_HEADER_PREFIX.size)
     except OSError as exc:
-        raise errors.DbfIoError(
-            f"Cannot read the FPT companion header: {path}",
-            path=path,
-            context={"errno": exc.errno},
-        ) from exc
+        raise _companion_io_error(exc, path, "read") from exc
     if len(header) != FPT_HEADER_PREFIX.size:
         return size, None, None
     next_free_block, _reserved, block_size = FPT_HEADER_PREFIX.unpack(header)
     return size, next_free_block, block_size
+
+
+def _companion_io_error(exc: OSError, path: Path, operation: str) -> errors.DbfIoError:
+    return errors.DbfIoError(
+        f"Cannot {operation} the memo companion file: {path}",
+        path=path,
+        context={"errno": exc.errno, "operation": operation},
+    )
 
 
 __all__ = [
@@ -563,6 +611,7 @@ __all__ = [
     "FIELD_DESCRIPTOR_SIZE",
     "FIELD_TERMINATOR",
     "FPT_HEADER_PREFIX",
+    "FPT_HEADER_RECORD_SIZE",
     "MEMO_COMPANION_EXTENSIONS",
     "MINIMUM_HEADER_LENGTH",
     "ParsedField",
