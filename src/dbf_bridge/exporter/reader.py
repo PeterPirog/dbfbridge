@@ -11,6 +11,7 @@ from dbfread.codepages import codepages
 from dbfread.dbversions import get_dbversion_string
 from dbfread.field_parser import FieldParser
 
+from ..core import backend as core_backend
 from ..core.codecs import (
     POLISH_FALLBACK_ENCODINGS,
     decode_with_polish_fallback,
@@ -40,6 +41,9 @@ class FieldParseError(ValueError):
 
 class LosslessText(str):
     """Decoded text retaining bytes when a fallback code page was required."""
+
+    raw_bytes: bytes
+    source_encoding: str | None
 
     def __new__(cls, value: str, raw_bytes: bytes, encoding: str | None) -> LosslessText:
         instance = super().__new__(cls, value)
@@ -175,16 +179,16 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
 def open_table(
     dbf_path: Path, config: ExportConfig, *, resolved_encoding: str | None = None
 ) -> DBF:
-    """Open a table for export.
+    """Open a table for export (delegates to the shared core backend).
 
     An explicit user override (``config.encoding``) always wins; otherwise the
     encoding already resolved from the header (e.g. the Mazovia driver 0x69)
     is passed to ``dbfread`` explicitly so it does not fall back to ASCII for
-    driver bytes it does not know.
+    driver bytes it does not know.  The Polish fallback field parser keeps the
+    historical export behaviour.
     """
-    return DBF(
+    return core_backend.dbfread_backend.open_table(
         dbf_path,
-        load=False,
         encoding=config.encoding or resolved_encoding,
         parserclass=LosslessFieldParser,
         char_decode_errors=config.decode_errors,
@@ -193,31 +197,16 @@ def open_table(
 
 
 def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool, bytes]]:
-    """Yield active and deleted records in their original on-disk order."""
+    """Stream physical records through the shared core backend loop.
 
-    with open(table.filename, "rb") as infile, table._open_memofile() as memofile:
-        infile.seek(table.header.headerlen)
-        parser = table.parserclass(table, memofile)
-        parse = parser.parse
-        for _record_index in range(table.header.numrecords):
-            marker = infile.read(1)
-            if marker not in {b" ", b"*"}:
-                if marker in {b"\x1a", b""}:
-                    break
-                raise ValueError(
-                    f"Unexpected DBF record marker {marker!r} in {Path(table.filename).name}."
-                )
-            raw_fields = [infile.read(field.length) for field in table.fields]
-            if any(
-                len(raw) != field.length
-                for raw, field in zip(raw_fields, table.fields, strict=True)
-            ):
-                raise ValueError(f"Truncated DBF record in {Path(table.filename).name}.")
-            items = [
-                (field.name, parse(field, raw))
-                for field, raw in zip(table.fields, raw_fields, strict=True)
-            ]
-            yield table.recfactory(items), marker == b"*", marker + b"".join(raw_fields)
+    Yields ``(record, is_deleted, raw_record)`` exactly as before — the
+    physical/decoded iteration itself lives in ``dbf_bridge.core.backend``
+    (one record loop in the codebase, dbfread as the reference backend).
+    """
+    for frame in core_backend.dbfread_backend.iter_physical_records(
+        table, projection=None, keep_raw=True, use_memofile=True
+    ):
+        yield table.recfactory(frame.items), frame.deleted, frame.raw  # type: ignore[arg-type]
 
 
 def read_raw_header(dbf_path: Path, config: ExportConfig) -> RawHeader:

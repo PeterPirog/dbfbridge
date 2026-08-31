@@ -25,6 +25,10 @@ class ErrorCode(str, enum.Enum):
     DBF_FORMAT_UNSUPPORTED = "DBF_FORMAT_UNSUPPORTED"
     ENCODING_UNKNOWN = "ENCODING_UNKNOWN"
     DBF_IO_ERROR = "DBF_IO_ERROR"
+    DBF_RECORD_INVALID = "DBF_RECORD_INVALID"
+    TEXT_DECODE_ERROR = "TEXT_DECODE_ERROR"
+    FPT_REQUIRED_MISSING = "FPT_REQUIRED_MISSING"
+    FPT_INVALID = "FPT_INVALID"
 
 
 def _json_safe(value: Any) -> Any:
@@ -122,13 +126,41 @@ class DbfIoError(DirectReadError):
     code = ErrorCode.DBF_IO_ERROR
 
 
+class DbfRecordInvalidError(DirectReadError):
+    """The physical record stream is inconsistent (invalid record marker)."""
+
+    code = ErrorCode.DBF_RECORD_INVALID
+
+
+class TextDecodeError(DirectReadError):
+    """A text value cannot be decoded with the resolved encoding (strict)."""
+
+    code = ErrorCode.TEXT_DECODE_ERROR
+
+
+class FptRequiredMissingError(DirectReadError):
+    """Memo values were requested but the memo companion file is missing."""
+
+    code = ErrorCode.FPT_REQUIRED_MISSING
+
+
+class FptInvalidError(DirectReadError):
+    """The memo companion exists but its content cannot be trusted."""
+
+    code = ErrorCode.FPT_INVALID
+
+
 __all__ = [
     "DbfFormatUnsupportedError",
     "DbfHeaderInvalidError",
     "DbfIoError",
     "DbfPathError",
+    "DbfRecordInvalidError",
     "DbfTruncatedError",
     "DirectReadError",
     "EncodingUnknownError",
     "ErrorCode",
+    "FptInvalidError",
+    "FptRequiredMissingError",
+    "TextDecodeError",
 ]
