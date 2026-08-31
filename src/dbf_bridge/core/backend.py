@@ -362,8 +362,7 @@ class DbfreadBackend:
                                     context={"field": field.name, "record_index": index},
                                 ) from exc
                             raise errors.DbfRecordInvalidError(
-                                f"Field {field.name!r} at record {index} cannot be "
-                                f"parsed: {exc}",
+                                f"Field {field.name!r} at record {index} cannot be parsed: {exc}",
                                 path=path,
                                 context={"field": field.name, "record_index": index},
                             ) from exc
