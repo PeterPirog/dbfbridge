@@ -1,0 +1,217 @@
+# Phase 1 full AFTER baseline measurement (temporary, provenance-bound workflow).
+#
+# This workflow runs ONLY on the pinned provenance commit (MEASURED_SHA below):
+# it never commits, never pushes, and never retargets the preserved Phase 0
+# BEFORE baseline.  The measured artifacts land in the workflow run's
+# RUNNER_TEMP (never in the worktree) and are published as run artifacts for
+# review; the runner and temporary storage provenance is recorded through
+# explicit labels.
+#
+# After the baseline trio (JSON + Markdown + manifest) has been reviewed, this
+# workflow can be removed again by an explicit commit — it is a temporary
+# measurement instrument, not a recurring pipeline.
+
+name: phase-1-full-baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/phase-1-record-read
+    paths:
+      - ".github/workflows/phase-1-full-baseline.yml"
+
+permissions:
+  contents: read
+
+# The provenance commit that defines the measured code state (commit A of the
+# provenance work).  Every run checks out exactly this SHA.
+env:
+  MEASURED_SHA: "3804f8195693108a6fb74101c6f23941fa4d8b70"
+
+jobs:
+  full-baseline:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Report provenance inputs
+        shell: pwsh
+        run: |
+          "MEASURED_SHA = $env:MEASURED_SHA"
+          "Runner OS    : $env:RUNNER_OS / $env:RUNNER_ARCH"
+          "Image        : $env:ImageOS $env:ImageVersion"
+
+      - name: Check out exactly MEASURED_SHA
+        uses: actions/checkout@v4
+        with:
+          ref: "3804f8195693108a6fb74101c6f23941fa4d8b70"
+          persist-credentials: false
+
+      - name: Confirm checked-out commit is MEASURED_SHA
+        shell: pwsh
+        run: |
+          $HEAD_SHA = git rev-parse HEAD
+          "HEAD = $HEAD_SHA"
+          if ("$HEAD_SHA" -ne "$env:MEASURED_SHA") {
+            throw "Checked-out commit is not the provenance commit (MEASURED_SHA)."
+          }
+          $dirty = git status --porcelain
+          if ($dirty) {
+            Write-Host $dirty
+            throw "worktree is dirty right after checkout"
+          }
+          "checkout verified: exactly MEASURED_SHA"
+
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Install project (dev) and pin measurement dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install --force-reinstall `
+            "dbf==0.99.11" `
+            "dbfread==2.0.7" `
+            "orjson==3.12.0" `
+            "polars==1.44.1" `
+            "openpyxl==3.1.5" `
+            "xlsxwriter==3.2.9" `
+            "psutil==7.2.2"
+          python -m pip freeze | Out-File -FilePath "$env:RUNNER_TEMP\pip-freeze.txt" -Encoding utf8
+          Get-Content "$env:RUNNER_TEMP\pip-freeze.txt"
+
+      - name: Preflight (tests, lint, build, clean worktree)
+        shell: pwsh
+        run: |
+          python -m pytest tests/ -q
+          python -m ruff check src tests benchmarks examples
+          python -m build
+          python -m twine check dist/*
+          git diff --check
+          "preflight OK" | Out-File -FilePath "$env:RUNNER_TEMP\preflight-summary.txt" -Encoding utf8
+          $dirty = git status --porcelain
+          if ($dirty) {
+            Write-Host $dirty
+            throw "worktree must stay clean before the baseline run"
+          }
+          "worktree clean before the run"
+
+      - name: Run the full Phase 1 AFTER baseline (exactly once)
+        shell: pwsh
+        run: >
+          python -m benchmarks.run_benchmark
+          --profile full
+          --warmup 1
+          --repetitions 3
+          --timeout 7200
+          --baseline
+          --storage-label github-actions-windows-temp
+          --runner-label github-actions-windows-2025-python-3.12.10
+          --work-dir "$env:RUNNER_TEMP\dbfbridge-benchmark-data"
+          --results-dir "$env:RUNNER_TEMP\dbfbridge-results"
+        timeout-minutes: 340
+
+      - name: Verify the published baseline trio
+        shell: pwsh
+        run: |
+          @'
+          import json, pathlib, sys
+
+          sys.path.insert(0, ".")
+          from benchmarks import contract  # noqa: E402
+
+          base = pathlib.Path("benchmarks") / "baselines"
+          names = sorted(p.name for p in base.iterdir() if p.name.startswith("phase-1"))
+          print("phase-1 artifact names:", names)
+          expected = {
+              "phase-1-direct-read-full.json",
+              "phase-1-direct-read-full.md",
+              "phase-1-direct-read-full.manifest.json",
+          }
+          assert expected <= set(names), f"missing artifacts: {expected - set(names)}"
+          payload = json.loads(
+              (base / "phase-1-direct-read-full.json").read_text(encoding="utf-8")
+          )
+          problems = contract.validate_saved_phase1_after(payload)
+          assert problems == [], problems
+          scenarios = payload["scenarios"]
+          measured = [s for s in scenarios if s["status"] == "MEASURED"]
+          assert len(measured) == 24 and len(scenarios) == 24
+          assert payload["environment"]["runner"] == (
+              "github-actions-windows-2025-python-3.12.10"
+          )
+          assert payload["environment"]["storage"] == "github-actions-windows-temp"
+          print("trio verified: 24 MEASURED, provenance bound, zero residue")
+          '@ | python -
+        if: always()
+
+      - name: BEFORE/AFTER comparison
+        shell: pwsh
+        run: >
+          python -m benchmarks.compare_baselines
+          benchmarks/baselines/phase-0-full.json
+          benchmarks/baselines/phase-1-direct-read-full.json
+          --json "$env:RUNNER_TEMP\phase-0-vs-phase-1.json"
+          --markdown "$env:RUNNER_TEMP\phase-0-vs-phase-1.md"
+
+      - name: Confirm Phase 0 BEFORE stayed untouched
+        shell: pwsh
+        run: |
+          @'
+          import hashlib, pathlib
+
+          expected = {
+              "phase-0-full.json": "d3b5ab454706b5e7085811c49fc06f8a421f127498695ae1178a1efc07453aa6",
+              "phase-0-full.md": "137ade61b31b1be2638a9fb081bf61097e78c04b9bc2860df48f6114f06eff0c",
+          }
+          for name, sha in expected.items():
+              current = hashlib.sha256(
+                  (pathlib.Path("benchmarks") / "baselines" / name).read_bytes()
+              ).hexdigest()
+              assert current == sha, (name, current)
+          print("Phase 0 BEFORE baseline is byte-identical")
+          '@ | python -
+        if: always()
+
+      - name: Collect checksums
+        shell: pwsh
+        run: |
+          Get-FileHash -Algorithm SHA256 `
+            "benchmarks/baselines/phase-1-direct-read-full.json", `
+            "benchmarks/baselines/phase-1-direct-read-full.md", `
+            "benchmarks/baselines/phase-1-direct-read-full.manifest.json", `
+            "$env:RUNNER_TEMP\phase-0-vs-phase-1.json", `
+            "$env:RUNNER_TEMP\phase-0-vs-phase-1.md" |
+            Format-Table | Out-File -FilePath "$env:RUNNER_TEMP\checksums-sha256.txt" -Encoding utf8
+          Get-Content "$env:RUNNER_TEMP\checksums-sha256.txt"
+        if: always()
+
+      - name: Upload Phase 1 baseline artifacts (also on failure)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-1-full-baseline-3804f81
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/phase-0-vs-phase-1.json
+            ${{ runner.temp }}/phase-0-vs-phase-1.md
+            ${{ runner.temp }}/pip-freeze.txt
+            ${{ runner.temp }}/preflight-summary.txt
+            ${{ runner.temp }}/checksums-sha256.txt
+            benchmarks/baselines/phase-1-direct-read-full.json
+            benchmarks/baselines/phase-1-direct-read-full.md
+            benchmarks/baselines/phase-1-direct-read-full.manifest.json
+
+      - name: Upload diagnostic logs (also on failure)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-1-full-baseline-diagnostic-logs-3804f81
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/dbfbridge-benchmark-data/logs/**
+            !${{ runner.temp }}/dbfbridge-benchmark-data/fixtures/**
