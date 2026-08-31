@@ -6,10 +6,14 @@ record access:
 
 - :func:`iter_records` / :func:`read_records` — decoded records with an
   optional physical raw image, field projection, and memo policies;
-- :func:`iter_raw_records` — every physical record (deleted included) with its
-  exact raw image, without opening the memo companion;
+- :func:`iter_raw_records` — a pure physical (forensic) stream: no field is
+  parsed or decoded, the FPT is never opened, and ``values`` is an empty
+  read-only mapping — damaged text bytes can never hide the raw record image;
+  decoded values alongside the raw image are available through
+  ``iter_records(..., raw=True)``;
 - :class:`DirectRecord` / :class:`RecordPage` / :class:`LazyMemoValue` —
-  immutable, typed, JSON-safe public models.
+  immutable, typed, JSON-safe public models (``values`` is a defensive,
+  read-only mapping in projection order).
 
 Streaming properties: iterators are O(1) in memory, ``read_records`` uses
 O(limit) memory, ``offset`` is a physical record index resolved by a seek, and
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import os
+import types
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -90,15 +95,24 @@ class DirectRecord:
 
     ``physical_index`` is the zero-based physical record index (deleted
     records included in the numbering).  ``values`` maps field names to the
-    decoded values in projection order; with ``raw=True`` only, ``raw_record``
-    also carries the exact physical record image (delete marker + field
-    bytes).  ``to_dict()`` is JSON-safe and never triggers a memo read.
+    decoded values in projection order; the constructor takes a **defensive
+    copy** wrapped in a read-only mapping, so later mutation of the caller's
+    dict never leaks into the record and item assignment is rejected.  With
+    ``raw=True`` only, ``raw_record`` also carries the exact physical record
+    image (delete marker + field bytes).  ``to_dict()`` is JSON-safe, never
+    triggers a memo read, and returns a fresh, independently mutable dict.
     """
 
     physical_index: int
     deleted: bool
     values: Mapping[str, Any]
     raw_record: bytes | None = None
+
+    def __post_init__(self) -> None:
+        # Defensive read-only snapshot: a private copy (projection order kept)
+        # wrapped in a MappingProxyType, so neither the caller's dict nor any
+        # field of this model can mutate the record afterwards.
+        object.__setattr__(self, "values", _frozen_values_mapping(self.values))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe representation (no ``Path``, no raw ``bytes``)."""
@@ -112,15 +126,24 @@ class DirectRecord:
         return payload
 
 
+def _frozen_values_mapping(values: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Snapshot *values* into an immutable, order-preserving mapping."""
+    try:
+        snapshot = dict(values)
+    except TypeError as exc:
+        raise TypeError("values must be a mapping of field names to values") from exc
+    return types.MappingProxyType(snapshot)
+
+
 @dataclass(frozen=True)
 class RecordPage:
     """One bounded page of direct-read records (from ``read_records``).
 
     ``offset`` is the requested physical start index, ``records`` the decoded
-    page, ``scanned`` the number of physical records consumed by the call
-    (deleted skips included), and ``next_offset`` the physical index of the
-    first record after the page (``None`` when exhausted).  Memory use is
-    O(limit): records beyond the page are never materialized.
+    page (always a tuple), ``scanned`` the number of physical records consumed
+    by the call (deleted skips included), and ``next_offset`` the physical
+    index of the first record after the page (``None`` when exhausted).
+    Memory use is O(limit): records beyond the page are never materialized.
     """
 
     offset: int
@@ -129,6 +152,11 @@ class RecordPage:
     scanned: int
     next_offset: int | None
     exhausted: bool
+
+    def __post_init__(self) -> None:
+        # Defensive snapshot: the page is an immutable tuple, whatever
+        # sequence the caller passed in.
+        object.__setattr__(self, "records", tuple(self.records))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe representation (no ``Path``, no ``bytes``)."""
@@ -199,8 +227,12 @@ class _RecordRequest:
     projection: frozenset[str]
     #: Selected memo fields accessed lazily through block pointers.
     memo_pointer_fields: frozenset[str]
-    #: Whether the backend loop opens the memo companion (inline only).
+    #: Selected memo fields that render as plain ``None`` (memo="null").
+    null_memo_fields: frozenset[str]
+    #: Whether the backend loop opens the memo companion (real inline only).
     use_memofile: bool
+    #: Whether the memo companion must exist at open time (real inline).
+    strict_memo_open: bool
     #: Resolved memo companion path when lazy loading may need it.
     memo_path: Path | None
     #: Companion format implied by the DBF version (FPT/DBT/SMT/None).
@@ -314,7 +346,12 @@ def _prepare(
     memoish = frozenset(
         f.name for f in header.fields if is_memo_pointer_field(f.dbf_type, header.dbversion_byte)
     )
-    unsupported = [f for f in header.fields if (f.name in selected) and not f.supported]
+    # The effective projection is what really gets decoded: memo fields
+    # removed by "skip" are excluded BEFORE the supported-type validation,
+    # so a skipped unsupported memo field (e.g. a VFP Blob "W") never blocks
+    # the read.  Every other selected field keeps the strict validation.
+    effective = selected - memoish if memo == "skip" else selected
+    unsupported = [f for f in header.fields if (f.name in effective) and not f.supported]
     if unsupported:
         details = [f"{f.name} ({f.dbf_type}): {f.unsupported_reason}" for f in unsupported]
         raise errors.FieldTypeUnsupportedError(
@@ -323,21 +360,30 @@ def _prepare(
             context={"unsupported": details},
         )
 
-    selected_memoish = selected & memoish
+    effective_memoish = effective & memoish
     memo_format = memo_companion_format(header.dbversion_byte)
     memo_path: Path | None = None
     pointer_fields: frozenset[str] = frozenset()
     use_memofile = False
+    strict_memo_open = False
     if memo == "inline":
-        memo_path = _require_memo_companion(dbf_path, header, memo_format)
-        use_memofile = bool(selected_memoish)
-    elif memo == "lazy" and selected_memoish:
+        if effective_memoish:
+            # Only an effective projection that really decodes memo values
+            # requires and opens the FPT; decoding only non-memo fields works
+            # with a missing companion as well.
+            memo_path = _require_memo_companion(dbf_path, header, memo_format)
+            use_memofile = True
+            strict_memo_open = True
+    elif memo == "lazy" and effective_memoish:
         # Only a typed companion lookup (no memo payload is opened or read);
         # a missing companion surfaces on lazy load, not here.
         memo_path = _discover_memo_path(dbf_path, header)
-        pointer_fields = selected_memoish
+        pointer_fields = effective_memoish
 
-    parse_set = selected - memoish if memo in {"skip", "lazy"} or not selected_memoish else selected
+    if memo in {"skip", "lazy", "null"} or not effective_memoish:
+        parse_set = selected - memoish
+    else:  # real inline with memo fields: parse through the opened memo file
+        parse_set = selected
 
     return _RecordRequest(
         dbf_path=dbf_path,
@@ -351,7 +397,9 @@ def _prepare(
         order=order,
         projection=parse_set,
         memo_pointer_fields=pointer_fields,
+        null_memo_fields=effective_memoish if memo == "null" else frozenset(),
         use_memofile=use_memofile,
+        strict_memo_open=strict_memo_open,
         memo_path=memo_path,
         memo_format=memo_format,
     )
@@ -447,7 +495,7 @@ def _lazy_loader(request: _RecordRequest, field: str, block: int) -> Callable[[]
     return _load
 
 
-def _build_values(request: _RecordRequest, frame: object) -> dict[str, Any]:
+def _build_values(request: _RecordRequest, frame: object) -> Mapping[str, Any]:
     """Assemble ``values`` in projection order for one physical frame."""
     frame_record = frame
     items = frame_record.items  # type: ignore[attr-defined]
@@ -470,6 +518,10 @@ def _build_values(request: _RecordRequest, frame: object) -> dict[str, Any]:
                     memo_format=request.memo_format,
                     _loader=_lazy_loader(request, name, block),
                 )
+        elif name in request.null_memo_fields:
+            # memo="null": the field stays present with a None value and the
+            # FPT payload is never read.
+            values[name] = None
         # memo == "skip": the field intentionally stays absent from values.
     return values
 
@@ -483,7 +535,10 @@ def _stream_records(
         request.dbf_path,
         encoding=request.encoding,
         char_decode_errors=request.decode_errors,
-        ignore_missing_memofile=True,
+        # Real memo="inline" opens the companion strictly: a companion that
+        # vanishes between the eager request validation and the first next()
+        # raises FPT_REQUIRED_MISSING instead of silently reading nulls.
+        ignore_missing_memofile=not request.strict_memo_open,
     )
     frames = dbfread_backend.iter_physical_records(
         table,
@@ -631,19 +686,19 @@ def read_records(
 
 
 def iter_raw_records(path: str | os.PathLike[str]) -> Iterator[DirectRecord]:
-    """Stream every physical record (deleted included) with its raw image.
+    """Stream every physical record as a pure forensic (raw) snapshot.
 
-    Records come in physical zero-based order; the memo companion is never
-    opened (memo fields are not decoded — their content lives in the raw
-    physical image).  Text fields are decoded with the language-driver
-    encoding; strict failures raise ``TEXT_DECODE_ERROR``.
+    This is clean physical streaming: **no field is parsed or decoded** (the
+    FPT is never opened, and even damaged text bytes cannot hide the record
+    image), while record-area truncation (`DBF_TRUNCATED`) and invalid
+    record markers (`DBF_RECORD_INVALID`) are still detected.  Each record
+    carries its zero-based ``physical_index``, the ``deleted`` flag, the
+    exact ``raw_record`` bytes (delete marker + field bytes) and an **empty
+    read-only** ``values`` mapping.  Decoded values together with the raw
+    image are available through :func:`iter_records` with ``raw=True``.
     """
     dbf_path = _as_dbf_path(path)
     header = parse_header(dbf_path)
-    memoish = {
-        f.name for f in header.fields if is_memo_pointer_field(f.dbf_type, header.dbversion_byte)
-    }
-    parse_names = tuple(f.name for f in header.fields if f.supported and f.name not in memoish)
     request = _RecordRequest(
         dbf_path=dbf_path,
         encoding=header.encoding,
@@ -653,10 +708,12 @@ def iter_raw_records(path: str | os.PathLike[str]) -> Iterator[DirectRecord]:
         raw=True,
         record_count=header.record_count,
         dbversion_byte=header.dbversion_byte,
-        order=parse_names,
-        projection=frozenset(parse_names),
+        order=(),
+        projection=frozenset(),
         memo_pointer_fields=frozenset(),
+        null_memo_fields=frozenset(),
         use_memofile=False,
+        strict_memo_open=False,
         memo_path=None,
         memo_format=None,
     )

@@ -606,3 +606,18 @@ remaining temporary files and bytes. The authoritative files are
 `benchmarks/baselines/phase-0-full.json` and
 `benchmarks/baselines/phase-0-full.md`; they are the BEFORE reference for the
 Direct Read Core work.
+
+## 17. Phase 0 versus Phase 1 (baseline status)
+
+- `benchmarks/baselines/phase-0-full.{json,md}` is the preserved **BEFORE**
+  snapshot. Its four `NOT_IMPLEMENTED` rows (`direct_read_bounded`,
+  `field_projection`, `memo_lazy`, `raw_mode_none`) were the *placeholders*
+  for the future Direct Read Core and are part of the frozen BEFORE artifact.
+- **Phase 1 (direct read core + record streaming) is the future AFTER**: its
+  scenarios became real `MEASURED` scenarios (fast contract 19, full contract
+  24 `MEASURED` / 0 `FAILED` / 0 `NOT_IMPLEMENTED`) and a future AFTER
+  baseline must carry `benchmark_contract == "phase-1-direct-read-v1"` (the
+  `--baseline` gate refuses anything else).
+- Until an AFTER baseline is saved, **no performance-improvement claim is
+  made**: fast-profile runs are local regression gates, and the BEFORE table
+  above may guide optimizations but never serves as a comparison result.

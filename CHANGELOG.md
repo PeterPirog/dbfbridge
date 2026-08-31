@@ -88,6 +88,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `raw_mode_none` (no raw bytes in any record); fast profile now reports
   **19 MEASURED / 0 NOT_IMPLEMENTED / 0 FAILED**, full contract 24 MEASURED
 - `examples/read_records.py` — executable streaming record-read example
+- Versioned benchmark report identity `benchmark_contract:
+  "phase-1-direct-read-v1"` in the environment payload; the `--baseline` gate
+  refuses a future Phase 1 AFTER snapshot without exactly this value
+  (documents Phase 0 as the preserved BEFORE and forbids any
+  performance-improvement claim before the AFTER baseline is saved)
+
+### Fixed
+- Phase 1B hardening: `memo="inline"` requires and opens the FPT only when the
+  effective projection really contains memo fields (a projection of non-memo
+  fields reads fine without any FPT), `memo="skip"` trims memo fields from the
+  effective projection **before** the supported-type validation (a skipped
+  unsupported memo field — e.g. a VFP Blob `W`, which is an FPT pointer —
+  never blocks the read), and `null` renders selected memo fields as `None`
+  without reading any payload
+- FPT open race closed: a real `memo="inline"` stream opens the companion
+  strictly (`ignore_missing_memofile=False`); a companion that vanishes
+  between the eager validation and the first `next()` raises
+  `FPT_REQUIRED_MISSING` (path + `policy` in the JSON-safe context) instead of
+  silently streaming nulls; `_open_memofile` also maps `MissingMemoFile` and
+  ENOENT to `FPT_REQUIRED_MISSING` while broken header/payload stays
+  `FPT_INVALID` (no raw dbfread/struct/OSError exceptions escape)
+- Premature record-area end (EOF or a `0x1A` marker before the header's
+  declared record count) is now `DBF_TRUNCATED` with `record_index`,
+  `declared_records` and `records_read` in the context; EOF is normal only
+  after the whole declared area, and invalid markers stay
+  `DBF_RECORD_INVALID`
+- `DirectRecord.values` takes a defensive read-only snapshot in projection
+  order (mutating the caller's dict no longer leaks into the record; item
+  assignment raises `TypeError`); `RecordPage.records` is always snapshotted
+  as a tuple; `to_dict()` remains a fresh, independently mutable, JSON-safe
+  dict
+- `iter_raw_records()` is a pure forensic stream: no field is parsed or
+  decoded (even damaged text bytes never hide the record image), the FPT is
+  never opened, `values` is an empty read-only mapping, and truncation/invalid
+  markers are still reported; decoded values plus the raw image stay
+  available via `iter_records(..., raw=True)`
+- The benchmark `field_projection` scenario no longer materializes 190k
+  tuples: the reference digest of the full unprojected read is computed once
+  (outside the measured window) and every warm-up/repetition accumulates an
+  O(1)-memory SHA-256 digest of the projected values only; `memo_lazy`
+  instruments the **real backend memo boundary** (memofile open with
+  `use_memofile=True`, explicit `read_memo_payload` calls, adapter-level FPT
+  opens — never just `Path.open`) and every counter must stay zero; all
+  instrumentation is restored in `finally`
 
 ### Fixed
 - VFP autoincrement semantics corrected: for Visual FoxPro tables (0x30/

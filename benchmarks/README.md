@@ -160,6 +160,9 @@ the following is true:
 
 - the profile is not `full`;
 - `psutil` is unavailable;
+- the payload does not carry exactly
+  `benchmark_contract == "phase-1-direct-read-v1"` (the versioned identity
+  separating a Phase 1 AFTER baseline from the preserved Phase 0 BEFORE);
 - any scenario is `FAILED`;
 - the run does not contain the full-profile scenario set (24 `MEASURED` since
   Phase 1 implements the former placeholders; the expected `NOT_IMPLEMENTED`
@@ -210,8 +213,21 @@ samples include peak RSS and report zero remaining temporary files/bytes.
 
 This is the **BEFORE** reference for Phase 1. It records the hosted runner and
 dependency versions verbatim and is not presented as a universal hardware
-claim. Direct read, field projection, lazy memo and `raw_mode="none"` remain
-explicitly `NOT_IMPLEMENTED` until their AFTER measurements are added.
+claim. Direct read, field projection, lazy memo and `raw_mode="none"` were
+explicitly `NOT_IMPLEMENTED` in this snapshot; they are `MEASURED` scenarios
+since Phase 1B.
+
+## Phase 0 BEFORE vs. Phase 1 AFTER
+
+- `benchmarks/baselines/phase-0-full.{json,md}` — the preserved **BEFORE**
+  snapshot (never modified, byte-identical to its source commit);
+- **Phase 1 (direct record read) is the future AFTER**: its full contract is
+  exactly **24 `MEASURED`, 0 `FAILED`, 0 `NOT_IMPLEMENTED`** with the versioned
+  report identity `benchmark_contract: "phase-1-direct-read-v1"`, and the
+  baseline gate refuses an AFTER snapshot without that contract;
+- until an AFTER baseline is actually saved, **no performance-improvement
+  claim** is made anywhere in this repository — fast-profile runs are local
+  regressions/gates only, never a comparison against the BEFORE numbers.
 
 ## Where results go
 

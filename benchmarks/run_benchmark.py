@@ -53,6 +53,12 @@ STATUS_FAILED = "FAILED"
 STATUS_MEASURED = "MEASURED"
 STATUS_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
 
+#: Versioned identity of the Phase 1 benchmark report contract (direct record
+#: read).  A future Phase 1 AFTER baseline is only accepted when the payload
+#: carries exactly this value, which visibly separates it from the preserved
+#: Phase 0 BEFORE baseline.
+BENCHMARK_CONTRACT = "phase-1-direct-read-v1"
+
 
 def git_state(root: Path) -> dict[str, str | bool]:
     def run(*args: str) -> str:
@@ -427,6 +433,12 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     if not isinstance(env_raw, dict):
         reasons.append("environment is missing or not a dict (malformed payload)")
     env = env_raw if isinstance(env_raw, dict) else {}
+    contract = env.get("benchmark_contract")
+    if contract != BENCHMARK_CONTRACT:
+        reasons.append(
+            f"benchmark_contract is {contract!r}; an AFTER baseline must carry "
+            f"exactly {BENCHMARK_CONTRACT!r}"
+        )
     git_raw = env.get("git")
     if not isinstance(git_raw, dict):
         reasons.append("environment.git is missing or not a dict (malformed payload)")
@@ -756,11 +768,13 @@ def main(argv: list[str] | None = None) -> int:
 
     results.extend(_not_implemented())
 
+    # ------------------------------------------------------------------ payload shape
     payload: dict[str, Any] = {
         "environment": {
             "git": git_state(REPO_ROOT),
             "system": system_info(),
             "packages": package_versions(),
+            "benchmark_contract": BENCHMARK_CONTRACT,
             "profile": args.profile,
             "repetitions": args.repetitions,
             "warmup": args.warmup,

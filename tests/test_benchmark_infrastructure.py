@@ -204,6 +204,98 @@ def test_shared_scenarios_identical_params_fast_vs_full(tmp_path: Path) -> None:
     assert fast.medium().name == full.medium().name == "medium.dbf"
 
 
+def test_field_projection_scenario_is_o1(tmp_path: Path) -> None:
+    """field_projection must not materialize a 190k list.
+
+    Evidence gathered in-process: every measured repetition digests the
+    projected stream in O(1) memory (no result list proportional to N), the
+    reference digest is computed exactly once and compared to every
+    repetition's digest, and output/temporary bytes stay zero.  The peak RSS
+    bound is a streaming sanity check (the previous list-based implementation
+    inflated RSS far beyond this bound).
+    """
+
+    from benchmarks import worker
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=3, warmup=1)
+    runner.run_scenario("field_projection")
+    assert runner.results, "scenario must record its result"
+    result = dict(runner.results[0])  # type: ignore[union-attr]
+    assert result["status"] == "MEASURED"
+
+    digests = result["projection_digests"]
+    assert isinstance(digests, list) and len(digests) == 4  # warm-up + 3 repetitions
+    assert len(set(digests)) == 1, "all warm-ups and repetitions share one digest"
+    records = result["projection_records"]
+    assert records == 190_000
+
+    aggregated = dict(result["aggregated"])  # type: ignore[arg-type]
+    assert aggregated["max_output_bytes"] == 0
+    assert aggregated["max_temporary_bytes_written"] == 0
+    peak_rss = aggregated["max_peak_rss_bytes"]
+    assert isinstance(peak_rss, int) and peak_rss > 0
+    # O(1) buffering: streaming the 190k table must not carry a per-record
+    # result list (the previous list-based scenario needed far more RSS).
+    assert peak_rss < 150 * (1 << 20), f"peak RSS {peak_rss} suggests O(N) materialization"
+
+
+def test_memo_lazy_guard_uses_the_real_backend_boundary(tmp_path: Path) -> None:
+    """The memo guard must cover the real backend boundary.
+
+    A controlled real memo read through ``LazyMemoValue.load()`` increments
+    the instrumented counters (proving the guard covers the true boundary,
+    not just some ``open()`` variant), and the scenario validation function
+    voids any sample/scenario state with a non-zero counter.  Restore is
+    verified explicitly.
+    """
+    import dbf_bridge.core.backend as core_backend
+    from benchmarks import worker
+    from dbf_bridge.core.records import LazyMemoValue
+    from dbfbridge import iter_records
+
+    runner = worker.Runner(Path.cwd(), "fast", tmp_path, repetitions=1, warmup=0)
+    source = runner.memo_heavy(2_000)
+
+    counters, restore = worker._install_memo_read_guard()
+    try:
+        # The lazy iteration itself must stay silent...
+        records = list(iter_records(str(source), memo="lazy"))
+        assert all(counter == 0 for counter in counters.values()), counters
+        # ...while a controlled real memo read IS detected.
+        memo_value = records[0].values["NOTATKA"]
+        assert isinstance(memo_value, LazyMemoValue)
+        memo_value.load()
+        assert counters["read_memo_payload_calls"] == 1
+        assert counters["adapter_fpt_opens"] == 1
+        assert counters["memofile_opens_use_memofile_true"] == 0
+    finally:
+        restore()
+
+    # restore() returns the real implementations.
+    assert core_backend.dbfread_backend.read_memo_payload.__qualname__.startswith("DbfreadBackend")
+    assert core_backend._open_memofile.__name__ == "_open_memofile"
+
+    # A nonzero memo counter voids the shared memo_lazy validation.
+    voided_state: dict[str, object] = {
+        "records": 2_000,
+        "lazy_values": 1_800,
+        "empty_values": 200,
+        "memo_guard": dict(counters),  # nonzero after the controlled read
+    }
+    empty_sample: dict[str, object] = {"output_bytes": 0, "temporary_bytes_written": 0}
+    with pytest.raises(RuntimeError) as error:
+        worker._validate_memo_lazy_state(voided_state, empty_sample)
+    assert "memo" in str(error.value).lower()
+    # The clean state passes (output bytes zero).
+    ok_state = {
+        "records": 2_000,
+        "lazy_values": 1_800,
+        "empty_values": 200,
+        "memo_guard": dict.fromkeys(counters, 0),
+    }
+    worker._validate_memo_lazy_state(ok_state, empty_sample)
+
+
 def test_worker_crash_maps_to_failed_and_controller_exits_nonzero(tmp_path: Path) -> None:
     # A worker crash (non-zero exit) must map to FAILED for the scenario, the
     # report must still be written, and the controller must exit non-zero.
@@ -1002,6 +1094,7 @@ def _full_gate_payload() -> dict:
     ]
     return {
         "environment": {
+            "benchmark_contract": run_benchmark.BENCHMARK_CONTRACT,
             "profile": "full",
             "warmup": 1,
             "repetitions": 3,
@@ -1037,6 +1130,14 @@ def test_baseline_gate_rejects_incomplete_runs(monkeypatch: pytest.MonkeyPatch) 
     p = _full_gate_payload()
     p["environment"]["profile"] = "fast"
     assert any("full" in r for r in run_benchmark.check_baseline_gate(p))
+
+    # a missing or unknown benchmark_contract is rejected.
+    p = _full_gate_payload()
+    del p["environment"]["benchmark_contract"]
+    assert any("benchmark_contract" in r for r in run_benchmark.check_baseline_gate(p))
+    p = _full_gate_payload()
+    p["environment"]["benchmark_contract"] = "phase-0-something-else-v9"
+    assert any("benchmark_contract" in r for r in run_benchmark.check_baseline_gate(p))
 
     # psutil absent is rejected.
     monkeypatch.setattr(run_benchmark, "psutil_available", lambda: False)

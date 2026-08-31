@@ -37,6 +37,7 @@ from dbfbridge import (
     FptInvalidError,
     FptRequiredMissingError,
     LazyMemoValue,
+    RecordPage,
     TableSchema,
     TextDecodeError,
     iter_raw_records,
@@ -597,6 +598,316 @@ def test_lazy_to_dict_does_not_read(memo_table: Path, monkeypatch) -> None:
         monkeypatch.setattr(Path, "open", real_open)
 
 
+# ---------------------------------------------------------------------------
+# projection x memo dependency (hardened contracts)
+# ---------------------------------------------------------------------------
+
+
+def test_inline_without_memo_fields_needs_no_fpt(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "NOFPT2.dbf", "KOD N(4,0); NAZWA C(20); NOTATKA M", [{"KOD": 1, "NAZWA": "x"}]
+    )
+    # The companion is genuinely missing; the projection only selects
+    # non-memo fields, so memo="inline" must not require or open the FPT.
+    (tmp_path / "NOFPT2.fpt").unlink()
+    real_open = Path.open
+
+    def forbidden_fpt_open(self: Path, *args, **kwargs):
+        if Path(self).suffix.lower() == ".fpt":
+            raise AssertionError("inline without memo fields must not open the FPT")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", forbidden_fpt_open)
+    try:
+        page = read_records(dbf_path, limit=5, fields=["KOD", "NAZWA"], memo="inline")
+    finally:
+        monkeypatch.setattr(Path, "open", real_open)
+    assert page.records[0].values == {"KOD": 1, "NAZWA": "x"}
+    assert "NOTATKA" not in page.records[0].values
+
+
+def test_inline_race_missing_fpt_after_eager_check_is_typed(memo_table: Path) -> None:
+    # The eager companion check passes at iter_records() time; the companion
+    # then vanishes before the first next(): the race must raise
+    # FPT_REQUIRED_MISSING (never a silent null read).
+    stream = iter_records(memo_table, memo="inline")
+    memo_table.with_suffix(".fpt").unlink()
+    with pytest.raises(FptRequiredMissingError) as error:
+        next(stream)
+    assert error.value.code is ErrorCode.FPT_REQUIRED_MISSING
+    assert error.value.context["policy"] == "inline"
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_skip_removes_unsupported_memo_field(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "WFIELD.dbf",
+        "KOD N(4,0); BLOTEK C(10); NOTATKA M",
+        [{"KOD": 1, "BLOTEK": "x", "NOTATKA": "memo"}],
+    )
+    # VFP Blob: an unsupported memo pointer field that lives in the FPT.
+    _patch_field_type(dbf_path, 2, "W")
+
+    # memo="skip" removes memo fields from the effective projection BEFORE
+    # the supported-type validation, and memo="skip" needs no FPT.
+    with_fpt = tmp_path / "WFIELD.fpt"
+    fpt_backup = with_fpt.read_bytes()
+    with_fpt.unlink()
+    try:
+        records = list(iter_records(dbf_path, memo="skip", fields=None))
+    finally:
+        with_fpt.write_bytes(fpt_backup)
+    assert [record.values["KOD"] for record in records] == [1]
+    assert "NOTATKA" not in records[0].values
+
+    # A really selected unsupported field still raises the typed error.
+    with pytest.raises(FieldTypeUnsupportedError):
+        next(iter_records(dbf_path, memo="lazy", fields=["NOTATKA"]))
+    with pytest.raises(FieldTypeUnsupportedError):
+        next(iter_records(dbf_path, memo="null", fields=None))
+
+
+def test_null_memo_field_is_none_without_fpt_read(memo_table: Path, monkeypatch) -> None:
+    real_open = Path.open
+
+    def forbidden_fpt_open(self: Path, *args, **kwargs):
+        if Path(self).suffix.lower() == ".fpt":
+            raise AssertionError("memo=null must not open the FPT")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", forbidden_fpt_open)
+    try:
+        records = list(iter_records(memo_table, memo="null", fields=["KOD", "NOTATKA"]))
+    finally:
+        monkeypatch.setattr(Path, "open", real_open)
+    assert [record.values for record in records] == [
+        {"KOD": 1, "NOTATKA": None},
+        {"KOD": 2, "NOTATKA": None},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# premature EOF is truncation (hardened record boundary)
+# ---------------------------------------------------------------------------
+
+
+def _marker_patch_reader(monkeypatch, dbf_path: Path, marker_replacement: bytes | None) -> Any:
+    """Wrap the DBF handle so the marker read at *record 1* is controlled.
+
+    ``marker_replacement=None`` feeds EOF (b"") for that marker read; any
+    other value replaces the marker bytes.  Works on Windows and POSIX.
+    """
+    import builtins
+
+    real_open = builtins.open
+    header_length, record_length, record_count = _layout(dbf_path)
+    target = header_length + record_length  # record 1's marker
+
+    class _ControlledReader:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def read(self, size: int = -1):
+            if size == 1 and self._handle.tell() == target:
+                return marker_replacement if marker_replacement is not None else b""
+            return self._handle.read(size)
+
+        def seek(self, *args, **kwargs):
+            return self._handle.seek(*args, **kwargs)
+
+        def tell(self) -> int:
+            return self._handle.tell()
+
+        def close(self) -> None:
+            self._handle.close()
+
+        def __enter__(self) -> _ControlledReader:
+            return self
+
+        def __exit__(self, *args) -> bool:
+            self._handle.close()
+            return False
+
+    def controlled_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if str(file).lower().endswith(".dbf") and "b" in mode:
+            return _ControlledReader(handle)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", controlled_open)
+    return monkeypatch
+
+
+def test_premature_empty_marker_is_truncation(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "PREOF.dbf", "KOD N(6,0)", [{"KOD": i} for i in range(3)]
+    )
+    _marker_patch_reader(monkeypatch, dbf_path, marker_replacement=None)
+    stream = iter_records(dbf_path)
+    assert next(stream).physical_index == 0
+    with pytest.raises(DbfTruncatedError) as error:
+        next(stream)  # record 1: marker read returns EOF before the last record
+    monkeypatch.undo()
+    assert error.value.code is ErrorCode.DBF_TRUNCATED
+    assert error.value.context["record_index"] == 1
+    assert error.value.context["declared_records"] == 3
+    assert error.value.context["records_read"] == 1
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_premature_eof_marker_0x1a_is_truncation(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "PRE1A.dbf", "KOD N(6,0)", [{"KOD": i} for i in range(3)]
+    )
+    data = bytearray(dbf_path.read_bytes())
+    header_length, record_length, _count = _layout(dbf_path)
+    data[header_length + record_length] = 0x1A  # terminator before the last record
+    dbf_path.write_bytes(bytes(data))
+
+    stream = iter_records(dbf_path)
+    assert next(stream).physical_index == 0
+    with pytest.raises(DbfTruncatedError) as error:
+        next(stream)
+    assert error.value.code is ErrorCode.DBF_TRUNCATED
+    assert error.value.context["declared_records"] == 3
+    assert error.value.context["records_read"] == 1
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_short_field_payload_is_truncation_with_context(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "TRUNC.dbf", "KOD N(6,0)", [{"KOD": i} for i in range(3)]
+    )
+    real_open = builtins.open
+    header_length, record_length, record_count = _layout(dbf_path)
+    cut_pos = header_length + record_length * (record_count - 1) + record_length - 2
+
+    class _ShortTailReader:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+            self._short = False
+
+        def read(self, size: int = -1):
+            if size > 0 and not self._short and self._handle.tell() + size >= cut_pos:
+                self._short = True
+                return self._handle.read(max(1, size - 2))
+            return self._handle.read(size)
+
+        def seek(self, *args, **kwargs):
+            return self._handle.seek(*args, **kwargs)
+
+        def tell(self) -> int:
+            return self._handle.tell()
+
+        def close(self) -> None:
+            self._handle.close()
+
+        def __enter__(self) -> _ShortTailReader:
+            return self
+
+        def __exit__(self, *args) -> bool:
+            self._handle.close()
+            return False
+
+    def cutting_open(file, mode="r", *args, **kwargs):
+        handle = real_open(file, mode, *args, **kwargs)
+        if str(file).lower().endswith(".dbf") and "b" in mode:
+            return _ShortTailReader(handle)
+        return handle
+
+    monkeypatch.setattr(builtins, "open", cutting_open)
+    try:
+        stream = iter_records(dbf_path)
+        assert next(stream).physical_index == 0
+        assert next(stream).physical_index == 1
+        with pytest.raises(DbfTruncatedError) as error:
+            next(stream)  # the last record's field read comes up short
+    finally:
+        monkeypatch.setattr(builtins, "open", real_open)
+    assert error.value.context["record_index"] == 2
+    assert error.value.context["declared_records"] == 3
+    assert error.value.context["records_read"] == 2
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_full_record_area_reads_to_normal_eof(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "FULLEOF.dbf", "KOD N(6,0)", [{"KOD": i} for i in range(4)]
+    )
+    # The file may end with a normal 0x1A terminator after ALL records; the
+    # declared record count matches the file, so the stream ends cleanly.
+    page = read_records(dbf_path, limit=10)
+    assert len(page.records) == 4
+    assert page.exhausted is True
+    assert page.next_offset is None
+
+
+# ---------------------------------------------------------------------------
+# public model immutability (hardened contracts)
+# ---------------------------------------------------------------------------
+
+
+def test_direct_record_values_are_read_only_and_decoupled(tmp_path: Path) -> None:
+    source: dict[str, Any] = {"KOD": 1, "NAZWA": "a"}
+    record = DirectRecord(physical_index=0, deleted=False, values=source)
+
+    with pytest.raises(TypeError):
+        record.values["X"] = 42  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del record.values["KOD"]  # type: ignore[attr-defined]
+
+    source["INJECTED"] = "later"  # mutating the input dict must not leak in
+    assert dict(record.values) == {"KOD": 1, "NAZWA": "a"}
+    assert "INJECTED" not in record.values
+
+    payload = record.to_dict()
+    payload["values"]["KOD"] = 999  # to_dict copies are independent
+    assert record.values["KOD"] == 1
+    assert isinstance(payload, dict)
+    _assert_json_safe(payload)
+
+
+def test_record_page_records_stay_a_tuple(memo_table: Path) -> None:
+    page = read_records(memo_table, limit=2)
+    assert isinstance(page.records, tuple)
+
+    coerced = RecordPage(
+        offset=0,
+        limit=2,
+        records=list(page.records),  # any sequence must be snapshotted as a tuple
+        scanned=2,
+        next_offset=2,
+        exhausted=False,
+    )
+    assert isinstance(coerced.records, tuple)
+    assert list(coerced.records) == list(page.records)
+    with pytest.raises(TypeError):
+        coerced.records[0].values["X"] = 1  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------------
+# forensic raw split (hardened contracts)
+# ---------------------------------------------------------------------------
+
+
+def test_iter_raw_records_never_decodes_damaged_text(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "RECOVER.dbf", "NAZWA C(20)", [{"NAZWA": "ok"}])
+    data = bytearray(dbf_path.read_bytes())
+    header_length, record_length, _count = _layout(dbf_path)
+    data[header_length + 3 : header_length + 6] = b"\x81\x83\x88"  # bad bytes after 'ok'
+    dbf_path.write_bytes(bytes(data))
+
+    with pytest.raises(TextDecodeError):
+        next(iter_records(dbf_path, decode_errors="strict"))
+
+    # The forensic path never decodes: the raw record is fully recoverable.
+    raw = next(iter(iter_raw_records(dbf_path)))
+    full = dbf_path.read_bytes()
+    assert raw.physical_index == 0
+    assert raw.raw_record == full[header_length : header_length + record_length]
+    assert dict(raw.values) == {}
+
+
 def test_missing_fpt_inline_is_fpt_required_missing(tmp_path: Path) -> None:
     dbf_path = _create_vfp_table(
         tmp_path / "NOFPT.dbf", "KOD N(4,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
@@ -710,9 +1021,9 @@ def test_iter_raw_records_returns_everything_in_physical_order(
         monkeypatch.setattr(Path, "open", real_open)
     assert [(record.physical_index, record.deleted) for record in raws] == [(0, False), (1, True)]
     assert all(record.raw_record is not None for record in raws)
-    # Memo fields are not decoded here: the raw image carries them.
-    assert "NOTATKA" not in raws[0].values
-    assert raws[0].values["NAZWA"] == "ala"
+    # Pure forensic streaming: no field is parsed or decoded at all.
+    assert dict(raws[0].values) == {}
+    _assert_json_safe(raws[0].to_dict())
 
 
 def test_iter_raw_records_bytes_match_the_file(tmp_path: Path) -> None:
