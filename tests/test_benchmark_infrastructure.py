@@ -157,7 +157,11 @@ def test_reconstruction_names_are_distinct() -> None:
         "reconstruction_memo_190k",
         "jsonl_conversion_xlsx",
     }
-    assert len(full) == 20
+    assert len(full) == 24
+    # The Phase 1 Direct Read scenarios live in BOTH profiles.
+    for name in ("direct_read_bounded", "field_projection", "memo_lazy", "raw_mode_none"):
+        assert name in fast
+        assert name in full
     # No name may appear in both profiles.
     assert not (fast & (full - fast))
 
@@ -221,11 +225,8 @@ def test_worker_crash_maps_to_failed_and_controller_exits_nonzero(tmp_path: Path
     assert scenario["worker_exit_code"] == 13
     assert "diagnostic_log" in scenario
     # The report (JSON + Markdown) was still written — the controller kept
-    # going after the FAILED scenario and appended the NOT_IMPLEMENTED entries.
+    # going after the FAILED scenario.
     assert (tmp_path / "results" / "phase-0-fast-encoding_cp1250.md").is_file()
-    statuses = {s["scenario"]: s["status"] for s in payload["scenarios"]}
-    for name in ("direct_read_bounded", "field_projection", "memo_lazy", "raw_mode_none"):
-        assert statuses[name] == "NOT_IMPLEMENTED"
 
 
 def test_worker_malformed_json_maps_to_failed(tmp_path: Path) -> None:
@@ -951,7 +952,7 @@ def _full_gate_payload() -> dict:
     from benchmarks import run_benchmark
 
     full_names = list(run_benchmark._scenario_names("full"))
-    assert len(full_names) == 20
+    assert len(full_names) == 24
     good_sha = "a" * 40
     sample = {
         "status": "MEASURED",
@@ -998,10 +999,6 @@ def _full_gate_payload() -> dict:
             "warmup_samples": [dict(warmup) for _ in range(1)],
         }
         for name in full_names
-    ]
-    scenarios += [
-        {"scenario": n, "status": "NOT_IMPLEMENTED"}
-        for n in ("direct_read_bounded", "field_projection", "memo_lazy", "raw_mode_none")
     ]
     return {
         "environment": {
@@ -1069,9 +1066,10 @@ def test_baseline_gate_rejects_incomplete_runs(monkeypatch: pytest.MonkeyPatch) 
     p["scenarios"].append(dict(p["scenarios"][0]))
     assert any("duplicate" in r for r in run_benchmark.check_baseline_gate(p))
 
-    # a NOT_IMPLEMENTED entry missing is rejected.
+    # an unexpected NOT_IMPLEMENTED entry is rejected (the expected set is
+    # empty since Phase 1 implements the former placeholders).
     p = _full_gate_payload()
-    p["scenarios"] = [s for s in p["scenarios"] if s["scenario"] != "memo_lazy"]
+    p["scenarios"].append({"scenario": "not_yet_a_feature", "status": "NOT_IMPLEMENTED"})
     assert any("NOT_IMPLEMENTED" in r for r in run_benchmark.check_baseline_gate(p))
 
     # a non-40-hex commit is rejected.
@@ -1162,10 +1160,15 @@ def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
 
-    # duplicate NOT_IMPLEMENTED -> rejected.
+    # duplicate NOT_IMPLEMENTED entries -> rejected.
     p = _full_gate_payload()
-    p["scenarios"].append({"scenario": "memo_lazy", "status": "NOT_IMPLEMENTED"})
-    assert any("duplicate" in r for r in run_benchmark.check_baseline_gate(p))
+    p["scenarios"] += [
+        {"scenario": "memo_lazy", "status": "NOT_IMPLEMENTED"},
+        {"scenario": "memo_lazy", "status": "NOT_IMPLEMENTED"},
+    ]
+    reasons = run_benchmark.check_baseline_gate(p)
+    assert any("duplicate" in r for r in reasons)
+    assert any("NOT_IMPLEMENTED" in r for r in reasons)
 
     # duplicate FAILED -> rejected.
     p = _full_gate_payload()

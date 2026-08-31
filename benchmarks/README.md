@@ -161,7 +161,9 @@ the following is true:
 - the profile is not `full`;
 - `psutil` is unavailable;
 - any scenario is `FAILED`;
-- the run does not contain the full-profile scenario set (20 `MEASURED`);
+- the run does not contain the full-profile scenario set (24 `MEASURED` since
+  Phase 1 implements the former placeholders; the expected `NOT_IMPLEMENTED`
+  set is empty);
 - the report is not exactly the full contract: any unknown status, any
   duplicate scenario name, any name outside the contract, or the same name in
   more than one status category;
@@ -229,14 +231,14 @@ explicitly `NOT_IMPLEMENTED` until their AFTER measurements are added.
 
 | Status | Meaning |
 |---|---|
-| `MEASURED` | The code path exists in `dbfbridge 0.1.0` and was executed successfully; metrics are real. |
+| `MEASURED` | The code path exists and was executed successfully; metrics are real. |
 | `FAILED` | The scenario crashed or raised.  Reports the exit code and diagnostic log; **no metrics are invented.** |
-| `NOT_IMPLEMENTED` | The feature does not exist in `dbfbridge 0.1.0` (e.g. direct read, field projection, `memo="lazy"`, `raw_mode="none"`).  Listed verbatim, never simulated. |
+| `NOT_IMPLEMENTED` | A planned scenario has no implementation yet.  The Phase 0 baseline listed four Phase 1 placeholders verbatim; since Phase 1B they are `MEASURED` scenarios, and any unexpected `NOT_IMPLEMENTED` entry would still be reported verbatim, never simulated. |
 | `NOT_AVAILABLE` | The platform / optional dependency could not provide a specific metric (e.g. RSS without `psutil`).  Rendered `NOT_AVAILABLE` in Markdown, `null` in JSON.  Never fabricated. |
 
-Direct Read, field projection, `memo="lazy"` and the `raw_mode` split are
-**NOT_IMPLEMENTED** in `dbfbridge 0.1.0` and belong to Phase 1 / 0.2.0; they
-are listed verbatim and are never simulated.
+Direct Read, field projection, `memo="lazy"` and the `raw_mode` split were
+`NOT_IMPLEMENTED` in the Phase 0 baseline and are real `MEASURED` scenarios
+since Phase 1B.
 
 ## Measurement boundary
 
@@ -291,13 +293,32 @@ to expected counts, sizes and SHA-256.
 
 ## Profiles
 
-`fast` is the control profile (**15 `MEASURED`** scenarios + 4 `NOT_IMPLEMENTED`).
+`fast` is the control profile (**19 `MEASURED`** scenarios, 0 `NOT_IMPLEMENTED`).
 `full` **extends** `fast` with five additional, distinctly-named scenarios
 (`export_1m_records`, `memo_heavy_190k`, `reconstruction_190k`,
 `reconstruction_memo_190k`, `jsonl_conversion_xlsx`) and never changes the
 parameters of a scenario it shares with `fast` — a scenario name means the same
 thing in both profiles. A complete full run therefore reports exactly
-**20 `MEASURED`** + 4 `NOT_IMPLEMENTED` (+ 0 `FAILED`).
+**24 `MEASURED`** + 0 `NOT_IMPLEMENTED` (+ 0 `FAILED`).
+
+The Phase 1 Direct Read scenarios (in both profiles):
+
+
+- `direct_read_bounded` — `read_records(limit=100)` over the 190k fixture:
+  O(limit) streaming with a fixed-record-count; the post-validation checks that
+  `output_bytes`/`temporary_bytes_written` stay **0** and that the measured
+  read amplification is well below 1 (the table is NOT scanned for a 100-record
+  page);
+- `field_projection` — `iter_records(fields=(ID, NAZWA, KWOTA))` over the 190k
+  fixture; post-validation re-runs the unprojected stream outside the measured
+  window and requires **the same logical result**;
+- `memo_lazy` — `iter_records(memo="lazy")` over the 2,000-record memo fixture;
+  a guard counts every FPT `open` across warm-ups and repetitions (outside the
+  measured window) and post-validation requires **zero** FTP payload opens,
+  zero output bytes and one lazy-or-empty memo value per record;
+- `raw_mode_none` — `iter_records(raw=False)` over the 190k fixture;
+  post-validation requires every record to carry `raw_record is None` (no raw
+  bytes anywhere in the report) plus zero output/temporary bytes.
 
 - `reconstruction_190k` is the **flat / memo-free** reconstruction: 190,000
   records, no memo field, **no FPT** is produced. The fast

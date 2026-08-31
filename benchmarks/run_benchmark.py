@@ -13,7 +13,10 @@ Scenario statuses are never invented:
 - ``FAILED``            - the scenario raised, a repetition failed, the worker
                           crashed, produced malformed output, or timed out
                           (exit code + diagnostic log included; no metrics invented);
-- ``NOT_IMPLEMENTED``   - the feature does not exist in dbfbridge 0.1.0;
+- ``NOT_IMPLEMENTED``   - a scenario in the profile contract is not implemented
+                          (the list is empty since Phase 1 implements the direct
+                          record paths; any unexpected NOT_IMPLEMENTED entry is
+                          reported verbatim, never simulated);
 - ``NOT_AVAILABLE``     - a specific metric could not be provided (e.g. RSS without
                           ``psutil``); recorded as ``null`` / ``NOT_AVAILABLE``.
 
@@ -278,30 +281,7 @@ def run_scenario(
     return result
 
 
-NOT_IMPLEMENTED = (
-    {
-        "scenario": "direct_read_bounded",
-        "description": (
-            "read_records()/iter_records() do not exist in dbfbridge 0.1.0; "
-            "the planned Direct Read Core is a Phase 1 feature."
-        ),
-    },
-    {
-        "scenario": "field_projection",
-        "description": "No fields= projection option exists in dbfbridge 0.1.0.",
-    },
-    {
-        "scenario": "memo_lazy",
-        "description": 'memo="lazy" does not exist in dbfbridge 0.1.0 (skip/inline/null only).',
-    },
-    {
-        "scenario": "raw_mode_none",
-        "description": (
-            'raw_mode="none" does not exist in dbfbridge 0.1.0; the raw-record '
-            "property is always written to JSON/JSONL."
-        ),
-    },
-)
+NOT_IMPLEMENTED: tuple[dict[str, str], ...] = ()
 
 
 def _not_implemented() -> list[dict[str, Any]]:
@@ -423,8 +403,9 @@ def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
     - the report contains only ``MEASURED`` / ``FAILED`` / ``NOT_IMPLEMENTED``
       entries, every scenario name exactly once, all names inside the full
       profile contract (``reconstruction_memo_190k`` included);
-    - exactly the full-profile set of MEASURED scenarios (20), the exact
-      NOT_IMPLEMENTED set (4), zero FAILED;
+    - exactly the full-profile set of MEASURED scenarios (24), the exact
+      NOT_IMPLEMENTED set (Phase 1 implements the former placeholders, so the
+      expected set is empty), zero FAILED;
     - for every MEASURED scenario: ``len(samples) == environment["repetitions"]``
       and **every** sample is ``MEASURED`` with all required metrics and zero
       remaining atomic-write temporary files;
