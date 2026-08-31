@@ -32,6 +32,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
@@ -188,6 +189,10 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
         "encoding_mazovia",
         "reconstruction_jsonl_to_dbf",
         "roundtrip_quality",
+        "direct_read_bounded",
+        "field_projection",
+        "memo_lazy",
+        "raw_mode_none",
     )
     if profile != "full":
         return fast
@@ -823,6 +828,236 @@ class Runner:
             )
         )
 
+    # -------------------------------------------------------- phase 1B ----
+
+    def scenario_direct_read_bounded(self) -> None:
+        """read_records(limit=100) on the 190k fixture: bounded, zero-output."""
+        from dbfbridge import read_records
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {}
+
+        def make(out: Path):
+            def run() -> None:
+                state["page"] = read_records(str(source_dbf), offset=0, limit=100)
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            page: Any = state["page"]
+            if page.offset != 0 or page.limit != 100:
+                raise RuntimeError("unexpected read_records parameters")
+            if len(page.records) != 100:
+                raise RuntimeError(f"expected 100 records, got {len(page.records)}")
+            if [record.physical_index for record in page.records] != list(range(100)):
+                raise RuntimeError("physical order violated")
+            if page.next_offset != 100 or page.exhausted:
+                raise RuntimeError("page must continue at physical offset 100")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+            amplification = sample.get("read_amplification")
+            if (
+                isinstance(amplification, (int, float))
+                and not isinstance(amplification, bool)
+                and amplification >= 1.0
+            ):
+                raise RuntimeError(
+                    "read_records(limit=100) must not scan the whole table "
+                    f"(read amplification {amplification})"
+                )
+
+        self.results.append(
+            self._measure(
+                "direct_read_bounded",
+                "Direct Read: read_records(limit=100) over the 190k table (bounded, zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=100,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_field_projection(self) -> None:
+        """iter_records(fields=...) matches the unprojected logical result."""
+        from dbfbridge import iter_records
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        fields = ("ID", "NAZWA", "KWOTA")
+        state: dict[str, object] = {}
+
+        def make(out: Path):
+            def run() -> None:
+                projected: list[tuple[object, ...]] = []
+                decode_calls = 0
+                for record in iter_records(str(source_dbf), fields=fields, memo="null"):
+                    decode_calls += 1
+                    projected.append(tuple(record.values[name] for name in fields))
+                state["projected"] = projected
+                state["decode_calls"] = decode_calls
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            projected = state["projected"]  # type: ignore[assignment]
+            reference = [
+                tuple(record.values[name] for name in fields)
+                for record in iter_records(str(source_dbf), memo="null")
+            ]
+            if len(projected) != len(reference) or len(projected) != 190_000:  # type: ignore[arg-type]
+                raise RuntimeError("projection scenario must cover all 190k records")
+            if projected != reference:  # type: ignore[comparison-overlap]
+                raise RuntimeError("field projection returned a different logical result")
+
+        self.results.append(
+            self._measure(
+                "field_projection",
+                f"Direct Read: iter_records(fields={list(fields)}) over the 190k table "
+                "(same logical result as the unprojected stream)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_memo_lazy(self) -> None:
+        """iter_records(memo="lazy"): FPT payloads are never read."""
+        from dbfbridge import LazyMemoValue, iter_records
+
+        source_dbf = self.memo_heavy(2_000)
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"fpt_opens": 0, "lazy_values": 0, "records": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                lazy_values = 0
+                empty_values = 0
+                records = 0
+                for record in iter_records(str(source_dbf), memo="lazy"):
+                    records += 1
+                    value = record.values["NOTATKA"]
+                    if isinstance(value, LazyMemoValue):
+                        metadata = value.to_dict()  # pure metadata, no payload read
+                        if metadata["field"] != "NOTATKA":
+                            raise RuntimeError("lazy memo value for the wrong field")
+                        lazy_values += 1
+                    elif value is not None:
+                        raise RuntimeError(f"unexpected non-lazy memo value {value!r}")
+                    else:
+                        empty_values += 1
+                state["lazy_values"] = lazy_values
+                state["empty_values"] = empty_values
+                state["records"] = records
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            lazy_values = state["lazy_values"]  # type: ignore[assignment]
+            empty_values = state["empty_values"]  # type: ignore[assignment]
+            if not isinstance(records, int) or records != 2_000:
+                raise RuntimeError(f"memo_lazy must stream exactly 2,000 records, got {records}")
+            if not isinstance(lazy_values, int) or not isinstance(empty_values, int):
+                raise RuntimeError("memo_lazy scenario did not collect its counters")
+            if lazy_values + empty_values != records:
+                raise RuntimeError(
+                    f"every record must expose a lazy or empty memo, got "
+                    f"{lazy_values} lazy + {empty_values} empty"
+                )
+            if state["fpt_opens"] != 0:  # type: ignore[comparison-overlap]
+                raise RuntimeError('memo="lazy" must not read any FPT payloads')
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        # Guard every FPT open across warm-ups and measured repetitions; the
+        # guard lives OUTSIDE the measured call so only real reads are timed.
+        import contextlib
+
+        real_open = Path.open
+
+        @contextlib.contextmanager
+        def guarded_open():
+            def _open(self: Path, *args, **kwargs):
+                if self.suffix.lower() == ".fpt":
+                    state["fpt_opens"] = int(state["fpt_opens"]) + 1  # type: ignore[arg-type]
+                return real_open(self, *args, **kwargs)
+
+            Path.open = _open  # type: ignore[method-assign]
+            try:
+                yield
+            finally:
+                Path.open = real_open  # type: ignore[method-assign]
+
+        with guarded_open():
+            self.results.append(
+                self._measure(
+                    "memo_lazy",
+                    'Direct Read: iter_records(memo="lazy") over the 2,000-record memo table '
+                    "(zero FPT payload reads, zero output)",
+                    make,
+                    input_bytes=input_bytes,
+                    input_records=2_000,
+                    post_validate=post_validate,
+                )
+            )
+
+    def scenario_raw_mode_none(self) -> None:
+        """iter_records(raw=False): no raw record images are kept."""
+        from dbfbridge import iter_records
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "raw_bytes": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                raw_count = 0
+                total_values = 0
+                for record in iter_records(str(source_dbf), memo="null", raw=False):
+                    records += 1
+                    total_values += len(record.values)
+                    if record.raw_record is not None:
+                        raw_count += 1
+                state["records"] = records
+                state["raw_count"] = raw_count
+                state["total_values"] = total_values
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            raw_count = state["raw_count"]  # type: ignore[assignment]
+            if not isinstance(records, int) or not isinstance(raw_count, int):
+                raise RuntimeError("raw_mode_none scenario did not collect its counters")
+            if records != 190_000:
+                raise RuntimeError(f"expected 190,000 records, got {records}")
+            if raw_count != 0:
+                raise RuntimeError(f"raw=False kept {raw_count} raw record images")
+            if state["total_values"] == 0:  # type: ignore[comparison-overlap]
+                raise RuntimeError("no field values were decoded")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                "raw_mode_none",
+                "Direct Read: iter_records(raw=False) over the 190k table (no raw bytes kept)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
     # ------------------------------------------------------------------ dispatch
 
     def run_scenario(self, name: str) -> None:
@@ -890,6 +1125,14 @@ class Runner:
             )
         elif name == "roundtrip_quality":
             self.scenario_roundtrip()
+        elif name == "direct_read_bounded":
+            self.scenario_direct_read_bounded()
+        elif name == "field_projection":
+            self.scenario_field_projection()
+        elif name == "memo_lazy":
+            self.scenario_memo_lazy()
+        elif name == "raw_mode_none":
+            self.scenario_raw_mode_none()
         elif name == "export_1m_records":
             self.scenario_export(
                 name,
@@ -912,46 +1155,6 @@ class Runner:
     def run_profile(self) -> list[dict[str, object]]:
         for name in _scenario_names(self.profile):
             self.run_scenario(name)
-        self.results.extend(
-            [
-                {
-                    "scenario": "direct_read_bounded",
-                    "description": (
-                        "read_records()/iter_records() do not exist in dbfbridge 0.1.0; "
-                        "the planned Direct Read Core is a Phase 1 feature."
-                    ),
-                    "status": STATUS_NOT_IMPLEMENTED,
-                    "parameters": {},
-                    "metrics": {},
-                },
-                {
-                    "scenario": "field_projection",
-                    "description": "No fields= projection option exists in dbfbridge 0.1.0.",
-                    "status": STATUS_NOT_IMPLEMENTED,
-                    "parameters": {},
-                    "metrics": {},
-                },
-                {
-                    "scenario": "memo_lazy",
-                    "description": (
-                        'memo="lazy" does not exist in dbfbridge 0.1.0 (skip/inline/null only).'
-                    ),
-                    "status": STATUS_NOT_IMPLEMENTED,
-                    "parameters": {},
-                    "metrics": {},
-                },
-                {
-                    "scenario": "raw_mode_none",
-                    "description": (
-                        'raw_mode="none" does not exist in dbfbridge 0.1.0; the raw-record '
-                        "property is always written to JSON/JSONL."
-                    ),
-                    "status": STATUS_NOT_IMPLEMENTED,
-                    "parameters": {},
-                    "metrics": {},
-                },
-            ]
-        )
         return self.results
 
     def payload(self) -> dict[str, object]:
