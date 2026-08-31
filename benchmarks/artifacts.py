@@ -236,22 +236,34 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
     target_md = target_dir / md_name
     target_manifest = target_dir / manifest_name
 
-    # The Markdown must belong to the same run as the JSON (run identifier
-    # and contract must appear in the rendered report).
+    # The Markdown must belong to the same run as the JSON: run_id, contract,
+    # profile, generated_at, commit and the runner/storage provenance must all
+    # appear in it.  This is the pre-publication part of the shared trio
+    # validation — the failure observed in workflow run 33400522593 (Markdown
+    # without the runner/storage provenance) is caught HERE, before anything
+    # is staged or published, and not only by the comparator.
     data_md = _read_bytes(source_md)
     md_text = data_md.decode("utf-8", errors="replace")
-    consistency_problems = []
-    if run_id not in md_text:
-        consistency_problems.append("the Markdown does not carry the run_id of this report")
-    if str(contract) not in md_text:
-        consistency_problems.append("the Markdown does not mention the benchmark contract")
-    if str(profile) not in md_text:
-        consistency_problems.append("the Markdown does not mention the run profile")
-    if git_commit and git_commit not in md_text:
-        consistency_problems.append("the Markdown does not mention the git commit")
-    if consistency_problems:
+    identity_problems = [
+        (part, present)
+        for part, present in (
+            ("run_id", run_id not in md_text),
+            ("benchmark contract", str(contract) not in md_text),
+            ("profile", str(profile) not in md_text),
+            ("git commit", bool(git_commit) and git_commit not in md_text),
+            ("generated_at", bool(generated_at) and generated_at not in md_text),
+            ("runner", bool(runner) and runner not in md_text),
+            ("storage", bool(storage) and storage not in md_text),
+        )
+        if present
+    ]
+    if identity_problems:
         raise BaselinePublishError(
-            "The Markdown report does not match the JSON run: " + "; ".join(consistency_problems)
+            "The Markdown report does not match the JSON run: "
+            + "; ".join(f"missing {name}" for name, _ok in identity_problems)
+            + ".  The published Markdown must render the full run identity "
+            "(run_benchmark.render_markdown carries run_id, benchmark_contract, "
+            "profile, commit, generated_at, runner and storage)."
         )
 
     # An existing baseline is protected: re-baselining is an explicit

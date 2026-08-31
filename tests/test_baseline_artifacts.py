@@ -1006,6 +1006,137 @@ def manifest_problems_checked(manifest: dict[str, Any], published: dict[str, Any
     )
 
 
+# ---------------------------------------------------------------------------
+# renderer provenance binding (regression for workflow run 33400522593)
+# ---------------------------------------------------------------------------
+
+
+def test_render_markdown_carries_full_run_identity() -> None:
+    payload = _phase1_payload(
+        runner="github-actions-windows-2025-python-3.12.10",
+        storage="github-actions-windows-temp",
+    )
+    env = payload["environment"]
+    markdown = run_benchmark.render_markdown(payload)
+    for exact in (
+        env["run_id"],
+        env["benchmark_contract"],
+        env["profile"],
+        env["git"]["commit"],
+        env["generated_at"],
+        "github-actions-windows-2025-python-3.12.10",
+        "github-actions-windows-temp",
+    ):
+        assert exact in markdown, exact
+
+
+def test_render_markdown_without_provenance_shows_not_available() -> None:
+    payload = _phase1_payload()
+    for key in ("runner", "storage"):
+        payload["environment"][key] = None
+    markdown = run_benchmark.render_markdown(payload)
+    assert "Runner: NOT_AVAILABLE" in markdown
+    assert "Storage: NOT_AVAILABLE" in markdown
+
+
+# ---------------------------------------------------------------------------
+# trio → comparator integration (Markdown must carry the run identity)
+# ---------------------------------------------------------------------------
+
+
+def _publish_and_render(tmp_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    json_path, md_path = _write_reports(tmp_path, "results-report", payload)
+    target_dir = tmp_path / "baselines"
+    published = artifacts.publish_baseline_pair(json_path, md_path, target_dir)
+    published["markdown_text"] = published["markdown"].read_text(encoding="utf-8")
+    return published
+
+
+def test_verify_after_manifest_accepts_the_published_trio(tmp_path: Path) -> None:
+    """Production path: payload → renderer → publisher → real comparator check.
+
+    Proves JSON, Markdown and manifest belong to ONE run (runner/storage
+    present in the Markdown), not merely that the manifest hashes match.
+    """
+    import benchmarks.compare_baselines as compare_module
+
+    payload = _phase1_payload(
+        runner="github-actions-windows-2025-python-3.12.10",
+        storage="github-actions-windows-temp",
+    )
+    published = _publish_and_render(tmp_path, payload)
+    # Must not raise:
+    compare_module._verify_after_manifest(published["json"], payload)
+
+
+def test_verify_after_manifest_rejects_runner_or_storage_edits(tmp_path: Path, monkeypatch) -> None:
+    from benchmarks import compare_baselines as compare_module
+    from benchmarks.compare_baselines import ComparisonError
+
+    payload = _phase1_payload(
+        runner="github-actions-windows-2025-python-3.12.10",
+        storage="github-actions-windows-temp",
+    )
+    published = _publish_and_render(tmp_path, payload)
+    before_payload = _phase0_payload()
+
+    # The comparator itself must accept the pristine trio...
+    compare_module._verify_after_manifest(published["json"], payload)
+
+    # ...and refuse ANY edited Markdown with a readable ComparisonError.  An
+    # edit always breaks at least one binding: the manifest SHA-256 of the
+    # published Markdown, or its run identity (runner/storage lines).
+    md_text = published["markdown_text"]
+    edited_md = published["markdown"]
+
+    edited_md.write_text(
+        md_text.replace("github-actions-windows-2025-python-3.12.10", ""), encoding="utf-8"
+    )
+    with pytest.raises(ComparisonError) as runner_error:
+        compare_module._verify_after_manifest(published["json"], payload)
+    refusal_runner = str(runner_error.value)
+    assert "does not match the published file" in refusal_runner or "run identity" in refusal_runner
+
+    # Storage removed from the Markdown is refused as well.
+    edited_md.write_text(md_text.replace("github-actions-windows-temp", ""), encoding="utf-8")
+    with pytest.raises(ComparisonError) as storage_error:
+        compare_module._verify_after_manifest(published["json"], payload)
+    refusal_storage = str(storage_error.value)
+    assert (
+        "does not match the published file" in refusal_storage or "run identity" in refusal_storage
+    )
+
+    # A replaced Markdown line for storage (different value) is refused too.
+    edited_md.write_text(
+        md_text.replace("github-actions-windows-temp", "different-volume"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ComparisonError) as storage_changed:
+        compare_module._verify_after_manifest(published["json"], payload)
+    assert str(storage_changed.value)
+
+    # Restored Markdown passes again.
+    edited_md.write_text(md_text, encoding="utf-8")
+    compare_module._verify_after_manifest(published["json"], payload)
+
+    # The CLI reports the refusal with exit 2 when the Markdown is edited
+    # (tampering provenance is always a controlled refusal).
+    edited_md.write_text(
+        md_text.replace("github-actions-windows-2025-python-3.12.10", "other-runner"),
+        encoding="utf-8",
+    )
+    before_json = _write_before_pair(tmp_path / "before", before_payload)
+    completed = _run_compare(before_json, published["json"], tmp_path)
+    monkeypatch.undo()
+    assert completed.returncode == 2
+    assert "COMPARISON REFUSED" in completed.stderr
+    # The refusal must be explicit about the Markdown identity or its hash.
+    assert (
+        "run identity" in completed.stderr
+        or "does not match the published file" in completed.stderr
+    )
+
+
 def test_publish_refuses_mismatched_markdown(tmp_path: Path) -> None:
     target_dir = tmp_path / "baselines-other"
     payload = _phase1_payload(run_id="run-mdcheck")

@@ -461,14 +461,29 @@ def render_markdown(payload: dict[str, Any]) -> str:
     env: dict[str, Any] = payload["environment"]
     git: dict[str, Any] = env["git"]
     scenarios: list[dict[str, Any]] = list(payload["scenarios"])
+    # Provenance of the run (runner/storage) is rendered verbatim from the
+    # payload environment: _verify_after_manifest proves the JSON/Markdown/
+    # manifest triple belongs to one run by finding these exact values in the
+    # Markdown.  Legacy/non-versioned reports may omit them (NOT_AVAILABLE),
+    # while the baseline gate still requires non-empty values.
+    run_id = env.get("run_id") or "n/a"
+    benchmark_contract_text = str(env.get("benchmark_contract") or "legacy-phase-0")
+    runner_text = env.get("runner") if isinstance(env.get("runner"), str) else None
+    storage_text = env.get("storage") if isinstance(env.get("storage"), str) else None
+    runner_display = f"`{runner_text}`" if runner_text else "NOT_AVAILABLE"
+    storage_display = f"`{storage_text}`" if storage_text else "NOT_AVAILABLE"
     lines = [
         "# dbfbridge benchmark report",
         "",
-        f"- run_id: `{env.get('run_id', 'n/a')}` (identical in JSON, Markdown and the manifest)",
-        f"- benchmark_contract: `{env.get('benchmark_contract', 'legacy-phase-0')}`",
+        f"- run_id: `{run_id}` (identical in JSON, Markdown and the manifest)",
+        f"- benchmark_contract: `{benchmark_contract_text}`",
         f"- Profile: `{env['profile']}`",
         f"- Commit: `{git['commit']}` (origin/main: `{git['origin_main']}`)",
         f"- Worktree: {'dirty' if git['worktree_dirty'] else 'clean'} on branch `{git['branch']}`",
+        f"- generated_at: `{env.get('generated_at', 'n/a')}` (timezone-aware UTC, "
+        "identical in JSON, Markdown and the manifest)",
+        f"- Runner: {runner_display}",
+        f"- Storage: {storage_display}",
         f"- Warm-up: {env['warmup']} (excluded from results); Repetitions: {env['repetitions']} (measured)",
         "- Aggregation: median of measured repetitions (all samples preserved in JSON)",
         f"- Python: {env['system']['python']}",
