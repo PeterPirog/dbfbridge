@@ -98,10 +98,18 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _load_json(path: Path) -> dict[str, Any]:
+def _load_json(path: Path, role: str = "baseline") -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except FileNotFoundError as exc:
+        raise ComparisonError(f"Cannot read baseline {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ComparisonError(f"The {role} artifact {path} is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise ComparisonError(
+            f"Cannot read the {role} artifact {path}: {type(exc).__name__}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
         raise ComparisonError(f"Cannot read baseline {path}: {type(exc).__name__}: {exc}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("scenarios"), list):
         raise ComparisonError(
@@ -186,16 +194,6 @@ def _environment_summary(env: dict[str, Any]) -> dict[str, Any]:
 
 def _artifact_meta(side: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {"side": side, "environment": _environment_summary(_env(payload))}
-
-
-def _environment_differences(
-    before_summary: dict[str, Any], after_summary: dict[str, Any]
-) -> list[str]:
-    differences: list[str] = []
-    for key in (*_ENV_FIELDS, "packages", "benchmark_contract"):
-        if before_summary.get(key) != after_summary.get(key):
-            differences.append(key)
-    return differences
 
 
 def comparability_differences(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
@@ -450,8 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quiet", action="store_true", help="Do not print the report to stdout")
     args = parser.parse_args(argv)
     try:
-        before_payload = _load_json(Path(args.before))
-        after_payload = _load_json(Path(args.after))
+        before_payload = _load_json(Path(args.before), role="BEFORE baseline")
+        after_payload = _load_json(Path(args.after), role="AFTER baseline")
         report = compare_payloads(before_payload, after_payload)
         report["before"]["sha256"] = _sha256_file(Path(args.before))
         report["after"]["sha256"] = _sha256_file(Path(args.after))
@@ -474,8 +472,10 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
 
     A committed Phase 1 AFTER baseline is complete only when a valid manifest
     corroborates the published trio (names, contract, profile, run id,
-    generated_at, git commit, SHA-256 keys) against the ACTUAL bytes of the
-    artifacts.  Every absence or mismatch is a controlled refusal.
+    generated_at, git commit, runner/storage provenance, SHA-256 keys) against
+    the ACTUAL bytes of the artifacts.  Every absence or mismatch — including
+    a file that disappears between an ``is_file()`` check and the actual
+    read/hash — is a controlled refusal, never a raw tracebacks.
     """
     from benchmarks import artifacts as bench_artifacts
 
@@ -489,17 +489,47 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
             f"The AFTER baseline file must be named {json_name!r}, got {after_path.name!r}."
         )
     manifest_path = after_path.with_name(manifest_name)
+    md_path = after_path.with_name(md_name)
+    for role, path in (("Markdown", md_path), ("manifest", manifest_path)):
+        if not path.is_file() and path.exists():
+            # Directory or other non-regular artifact.
+            raise ComparisonError(f"The {role} artifact {path} is not a regular file.")
     if not manifest_path.is_file():
         raise ComparisonError(
             f"the publication manifest {manifest_name} is missing next to {after_path.name}"
         )
-    md_path = after_path.with_name(md_name)
     if not md_path.is_file():
         raise ComparisonError(
             f"the Markdown artifact {md_name} is missing next to {after_path.name}"
         )
+
+    def _read_bytes(path: Path, role: str) -> bytes:
+        try:
+            return path.read_bytes()
+        except FileNotFoundError as exc:
+            raise ComparisonError(
+                f"The {role} artifact {path} vanished while being read (read race)."
+            ) from exc
+        except OSError as exc:
+            raise ComparisonError(f"Cannot read the {role} artifact {path}: {exc}") from exc
+
+    def _sha256_safe(path: Path, role: str) -> str:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as infile:
+                for chunk in iter(lambda: infile.read(1 << 20), b""):
+                    digest.update(chunk)
+        except FileNotFoundError as exc:
+            raise ComparisonError(
+                f"The {role} artifact {path} vanished while being hashed (read race)."
+            ) from exc
+        except OSError as exc:
+            raise ComparisonError(f"Cannot hash the {role} artifact {path}: {exc}") from exc
+        return digest.hexdigest()
+
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_data = _read_bytes(manifest_path, "manifest")
+        manifest = json.loads(manifest_data.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise ComparisonError(f"The manifest {manifest_path} is not valid JSON: {exc}") from exc
     except OSError as exc:
@@ -507,17 +537,24 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
     run_id = str(_env(after_payload).get("run_id") or "")
     git_commit = str(((_env(after_payload).get("git") or {}).get("commit")) or "")
     generated_at = str(_env(after_payload).get("generated_at") or "")
+    runner = str(_env(after_payload).get("runner") or "")
+    storage = _env(after_payload).get("storage")
+    storage_text = storage if isinstance(storage, str) else ""
+    json_sha = _sha256_safe(after_path, "AFTER baseline JSON")
+    md_sha = _sha256_safe(md_path, "Markdown")
     problems = manifest_problems(
         manifest,
         expected_json_name=json_name,
-        expected_json_sha256=_sha256_file(after_path),
+        expected_json_sha256=json_sha,
         expected_markdown_name=md_name,
-        expected_markdown_sha256=_sha256_file(md_path),
+        expected_markdown_sha256=md_sha,
         expected_run_id=run_id,
         expected_contract=CONTRACT_PHASE_1,
         expected_profile=profile,
         expected_git_commit=git_commit,
         expected_generated_at=generated_at,
+        expected_runner=runner,
+        expected_storage=storage_text,
     )
     if problems:
         raise ComparisonError(
@@ -525,6 +562,7 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
             "artifacts: " + "; ".join(problems)
         )
     # The Markdown companion must also belong to the same run.
+    md_text = _read_bytes(md_path, "Markdown").decode("utf-8", errors="replace")
     try:
         md_text = md_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -532,7 +570,9 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
     except OSError as exc:
         raise ComparisonError(f"Cannot read the Markdown {md_path}: {exc}") from exc
     missing = [
-        part for part in (run_id, contract, profile, git_commit) if part and part not in md_text
+        part
+        for part in (run_id, contract, profile, git_commit, runner, storage_text)
+        if part and part not in md_text
     ]
     if missing:
         raise ComparisonError(

@@ -440,8 +440,9 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
 RUN_ID_RE = re.compile(r"^run-[0-9a-f]{32}$")
 
 #: Accepted ``generated_at`` format: timezone-aware UTC ISO 8601 with
-#: microseconds and a ``+00:00``/``Z`` offset.
-GENERATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+(?:00:00|Z)$")
+#: microseconds and a ``+00:00`` or ``Z`` offset — never ``+Z``, a local
+#: offset, or a value without microseconds.
+GENERATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}(?:\+00:00|Z)$")
 
 
 def generate_run_id(
@@ -579,8 +580,15 @@ def manifest_problems(
     expected_profile: str,
     expected_git_commit: str = "",
     expected_generated_at: str = "",
+    expected_runner: str = "",
+    expected_storage: str = "",
 ) -> list[str]:
-    """Validate a publication manifest against the actually published bytes."""
+    """Validate a publication manifest against the actually published bytes.
+
+    ``expected_runner``/``expected_storage`` bind the manifest to the runner
+    and storage provenance recorded in the AFTER JSON; a manifest without a
+    non-empty, matching runner or storage voids the published baseline.
+    """
     problems: list[str] = []
     if not isinstance(manifest, dict):
         return ["baseline manifest is missing or not a JSON object"]
@@ -605,6 +613,16 @@ def manifest_problems(
         problems.append(
             f"manifest generated_at {manifest.get('generated_at')!r} does not match the "
             f"run timestamp {expected_generated_at!r}"
+        )
+    if not expected_runner or manifest.get("runner") != expected_runner:
+        problems.append(
+            f"manifest runner {manifest.get('runner')!r} does not match the "
+            f"run provenance {expected_runner!r}"
+        )
+    if manifest.get("storage") != expected_storage:
+        problems.append(
+            f"manifest storage {manifest.get('storage')!r} does not match the "
+            f"run provenance {expected_storage!r}"
         )
     artifacts_blob = manifest.get("artifacts")
     if not isinstance(artifacts_blob, dict):
