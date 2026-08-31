@@ -1061,7 +1061,9 @@ def _full_gate_payload() -> dict:
     good_sha = "a" * 40
     sample = {
         "status": "MEASURED",
+        "warmup": False,
         "input_bytes": 1000,
+        "input_records": 100,
         "output_bytes": 2000,
         "wall_seconds": 1.0,
         "cpu_seconds": 0.5,
@@ -1082,20 +1084,29 @@ def _full_gate_payload() -> dict:
         "temporary_publish_count": 2,
         "temporary_bytes_written": 14_000,
     }
-    warmup = {"status": "MEASURED"}
+    warmup = {**{k: v for k, v in sample.items() if k != "warmup"}, "warmup": True}
+    aggregated_common = {
+        "valid_baseline": True,
+        "median_wall_seconds": 1.0,
+        "median_cpu_seconds": 0.5,
+        "median_records_per_second": 100.0,
+        "median_source_mib_per_second": 1.0,
+        "max_peak_rss_bytes": 2048,
+        "max_output_bytes": 2000,
+        "max_temporary_bytes_written": 0,
+    }
+    aggregated_memo = {
+        **aggregated_common,
+        "max_output_dbf_bytes": 5_000,
+        "max_output_fpt_bytes": 9_000,
+        "median_fpt_mib_per_second": 0.5,
+    }
     scenarios = [
         {
             "scenario": name,
             "status": "MEASURED",
             "aggregated": (
-                {
-                    "valid_baseline": True,
-                    "max_output_dbf_bytes": 5_000,
-                    "max_output_fpt_bytes": 9_000,
-                    "median_fpt_mib_per_second": 0.5,
-                }
-                if name == "reconstruction_memo_190k"
-                else {"valid_baseline": True}
+                aggregated_memo if name == "reconstruction_memo_190k" else aggregated_common
             ),
             "samples": [
                 dict(memo_sample if name == "reconstruction_memo_190k" else sample)
@@ -1108,6 +1119,7 @@ def _full_gate_payload() -> dict:
     return {
         "environment": {
             "benchmark_contract": run_benchmark.BENCHMARK_CONTRACT,
+            "run_id": "run-gate",
             "profile": "full",
             "warmup": 1,
             "repetitions": 3,
@@ -1125,7 +1137,16 @@ def _full_gate_payload() -> dict:
                 "cpu_count": 8,
                 "physical_memory_bytes": 64 * (1 << 30),
             },
-            "packages": {"dbfbridge": "0.1.0"},
+            "packages": {
+                "dbfbridge": "0.1.0",
+                "dbf": "0.99.11",
+                "dbfread": "2.0.7",
+                "orjson": "3.12.0",
+                "polars": "1.44.1",
+                "openpyxl": "3.1.5",
+                "xlsxwriter": "3.2.9",
+                "psutil": "7.2.2",
+            },
         },
         "scenarios": scenarios,
     }
@@ -1173,7 +1194,7 @@ def test_baseline_gate_rejects_incomplete_runs(monkeypatch: pytest.MonkeyPatch) 
     # a MEASURED scenario without valid_baseline is rejected.
     p = _full_gate_payload()
     p["scenarios"][0]["aggregated"] = {"valid_baseline": False}
-    assert any("valid baseline" in r for r in run_benchmark.check_baseline_gate(p))
+    assert any("valid_baseline" in r for r in run_benchmark.check_baseline_gate(p))
 
     # duplicate scenario names are rejected.
     p = _full_gate_payload()
@@ -1220,7 +1241,7 @@ def test_baseline_gate_requires_every_sample_complete(monkeypatch: pytest.Monkey
         # Keep the first sample complete, break exactly the second one.
         scenario["samples"][1] = {k: v for k, v in scenario["samples"][1].items() if k != key}
         reasons = run_benchmark.check_baseline_gate(p)
-        assert any("samples" in r or "warm" in r for r in reasons), (
+        assert any("sample" in r or "warm" in r for r in reasons), (
             f"missing {key} in one of the samples must be rejected, got {reasons}"
         )
 
@@ -1274,7 +1295,8 @@ def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(run_benchmark, "psutil_available", lambda: True)
 
-    # duplicate NOT_IMPLEMENTED entries -> rejected.
+    # duplicate NOT_IMPLEMENTED entries -> rejected: the AFTER contract has an
+    # EMPTY NOT_IMPLEMENTED set, so no duplicated legacy row can survive.
     p = _full_gate_payload()
     p["scenarios"] += [
         {"scenario": "memo_lazy", "status": "NOT_IMPLEMENTED"},
@@ -1282,7 +1304,6 @@ def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -
     ]
     reasons = run_benchmark.check_baseline_gate(p)
     assert any("duplicate" in r for r in reasons)
-    assert any("NOT_IMPLEMENTED" in r for r in reasons)
 
     # duplicate FAILED -> rejected.
     p = _full_gate_payload()
@@ -1292,14 +1313,18 @@ def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -
     ]
     reasons = run_benchmark.check_baseline_gate(p)
     assert any("duplicate" in r for r in reasons)
+    # A genuinely FAILED scenario row (unknown name) is reported verbatim.
+    p = _full_gate_payload()
+    p["scenarios"].append({"scenario": "brand_new_row", "status": "FAILED"})
+    reasons = run_benchmark.check_baseline_gate(p)
     assert any("FAILED" in r for r in reasons)
 
     # an unknown status -> rejected.
     p = _full_gate_payload()
-    p["scenarios"].append({"scenario": "roundtrip_quality", "status": "SKIPPED"})
+    p["scenarios"].append({"scenario": "unknown_status_row", "status": "SKIPPED"})
     reasons = run_benchmark.check_baseline_gate(p)
-    assert any("unknown" in r for r in reasons)
-    assert any("duplicate" in r for r in reasons)
+    assert any("failed or unknown" in r for r in reasons)
+    assert any("unknown scenario outside the frozen name contract" in r for r in reasons)
 
     # a name outside the full-profile contract -> rejected.
     p = _full_gate_payload()
@@ -1312,7 +1337,10 @@ def test_baseline_gate_scenario_set_hardening(monkeypatch: pytest.MonkeyPatch) -
     p["scenarios"].append({"scenario": "export_1m_records", "status": "FAILED"})
     reasons = run_benchmark.check_baseline_gate(p)
     assert any("duplicate" in r for r in reasons)
-    assert any("FAILED" in r for r in reasons)
+    # The surviving map entry is the (MEASURED) original; the duplicate is
+    # always rejected, so the FAILED variant can survive only under a truly
+    # new name (checked above).
+    assert all("has status 'FAILED'" not in r for r in reasons)
 
 
 def test_baseline_gate_memo_scenario_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1365,19 +1393,19 @@ def test_baseline_gate_rejects_malformed_scenarios(monkeypatch: pytest.MonkeyPat
     p = _full_gate_payload()
     p["scenarios"].append(None)
     reasons = run_benchmark.check_baseline_gate(p)
-    assert any("not a dict" in r for r in reasons)
+    assert any("malformed" in r for r in reasons)
 
     # a dict without a usable scenario name -> rejected.
     p = _full_gate_payload()
     p["scenarios"].append({"status": "MEASURED"})
     reasons = run_benchmark.check_baseline_gate(p)
-    assert any("scenario name" in r for r in reasons)
+    assert any("malformed" in r for r in reasons)
 
     # scenarios not a list -> rejected.
     p = _full_gate_payload()
     p["scenarios"] = "not-a-list"
     reasons = run_benchmark.check_baseline_gate(p)
-    assert any("not a list" in r for r in reasons)
+    assert any("scenarios" in r for r in reasons)
 
     # environment not a dict -> rejected.
     p = _full_gate_payload()

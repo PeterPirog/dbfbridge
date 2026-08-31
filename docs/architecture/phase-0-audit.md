@@ -622,20 +622,32 @@ Direct Read Core work.
   scenarios became real `MEASURED` scenarios (fast contract 19, full contract
   24 `MEASURED` / 0 `FAILED` / 0 `NOT_IMPLEMENTED`) and a future AFTER
   baseline must carry `benchmark_contract == "phase-1-direct-read-v1"` (the
-  `--baseline` gate refuses anything else).
+  `--baseline` gate refuses anything else). A stable `run_id` is embedded in
+  the JSON, the Markdown, the publication manifest and the publication
+  message.
 - Phase 1 artifacts use their own contract-derived names
-  (`benchmarks/results/phase-1-direct-read-<profile>...` and
-  `benchmarks/baselines/phase-1-direct-read-full.{json,md}`); the legacy
-  `phase-0-*` names are reserved for the BEFORE pair and a Phase 1
-  publication is refused from ever targeting them. Publication is atomic
-  (staged `.partial`, back-to-back publish, post-write SHA-256 verification)
-  and refuses to overwrite an existing baseline — re-baselining requires an
-  explicit, separate decision.
+  (`benchmarks/results/phase-1-direct-read-<profile>...` and the AFTER trio
+  `benchmarks/baselines/phase-1-direct-read-full.{json,md}` +
+  `phase-1-direct-read-full.manifest.json`); the LEGACY names
+  (`phase-0-*`) are reserved for the BEFORE pair and a Phase 1 publication
+  is refused from ever targeting them. Publication is an **exception-safe
+  transaction** (staged `.partial`, back-to-back publish, post-write
+  SHA-256/manifest/re-validation pass that removes everything new on any
+  failure) and refuses to overwrite an existing baseline — re-baselining
+  requires an explicit, separate decision. A committed AFTER baseline is
+  complete ONLY when JSON, Markdown and a corroborating manifest all exist
+  (this crash-consistency marker covers the gap that two independent
+  `os.replace` calls cannot be crash-atomic between themselves).
 - The stdlib-only `benchmarks/compare_baselines.py` exists for the day the
-  AFTER baseline is published: it compares common `MEASURED` scenarios only,
-  marks the four former `NOT_IMPLEMENTED` rows as **NEWLY_MEASURED (no
-  invented speedup)**, surfaces environment differences, and never calls any
-  change an improvement across unlike environments. No committed comparison
+  AFTER baseline is published: BOTH sides pass the full frozen validators
+  (`benchmarks/contract.py`) before comparing, the AFTER manifest and file
+  naming are verified, only the 20 common `MEASURED` scenarios are compared,
+  the four former `NOT_IMPLEMENTED` rows are **NEWLY_MEASURED (no invented
+  speedup)**, and the environment verdict is three-valued
+  (`COMPARABLE` / `PARTIALLY_COMPARABLE` / `NOT_COMPARABLE` — contract,
+  commit, branch and the dbfbridge version are never environment
+  mismatches; missing storage provenance (true for this legacy Phase 0
+  file) can only ever yield PARTIALLY_COMPARABLE). No committed comparison
   report exists yet.
 - Until an AFTER baseline is saved, **no performance-improvement claim is
   made**: fast-profile runs are local regression gates, and the BEFORE table

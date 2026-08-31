@@ -43,8 +43,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-#: Phase 1 AFTER contract (single source: benchmarks.artifacts).
-CONTRACT_PHASE_1 = "phase-1-direct-read-v1"
+from .contract import (
+    CONTRACT_PHASE_1,
+    PHASE0_PLACEHOLDER_NAMES,
+    environment_comparability,
+    manifest_problems,
+    validate_saved_phase0_before,
+    validate_saved_phase1_after,
+)
 
 #: Metric rows: (key inside ``aggregated``, human label, presentation hint).
 METRIC_COLUMNS: tuple[tuple[str, str, str], ...] = (
@@ -192,10 +198,27 @@ def _environment_differences(
     return differences
 
 
-def compare_payloads(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    """Build the comparison report payload from two validated report payloads.
+def comparability_differences(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Human-readable field list of the runtime environment differences."""
+    _verdict, differences = environment_comparability(before, after)
+    return differences
 
-    Raises :class:`ComparisonError` for swapped, broken or incomplete pairs.
+
+def _comparability_verdict(before: dict[str, Any], after: dict[str, Any]) -> str:
+    verdict, _reasons = environment_comparability(before, after)
+    return verdict
+
+
+def compare_payloads(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Build the comparison report payload from two fully validated payloads.
+
+    Raises :class:`ComparisonError` for swapped, broken, incomplete or
+    non-conforming artifacts.  Both sides are fully validated with the shared
+    saved-artifact validators BEFORE any comparison; the comparator works on
+    the frozen name contract only (no unknown, duplicate, extra or missing
+    scenario names; NEWLY_MEASURED is limited to the four former
+    ``NOT_IMPLEMENTED`` placeholders; the remaining 20 scenarios must be
+    ``MEASURED`` on both sides).
     """
 
     def _raw_env(payload: dict[str, Any]) -> Any:
@@ -214,31 +237,57 @@ def compare_payloads(before: dict[str, Any], after: dict[str, Any]) -> dict[str,
             f"the AFTER baseline must carry exactly {CONTRACT_PHASE_1!r}."
         )
 
+    # Full saved-artifact validation of BOTH sides, host-independent.
+    before_problems = validate_saved_phase0_before(before)
+    if before_problems:
+        raise ComparisonError(
+            "The BEFORE artifact does not satisfy the frozen Phase 0 contract: "
+            + "; ".join(before_problems[:8])
+        )
+    after_problems = validate_saved_phase1_after(after)
+    if after_problems:
+        raise ComparisonError(
+            "The AFTER artifact does not satisfy the Phase 1 contract: "
+            + "; ".join(after_problems[:8])
+        )
+
     before_map = _scenario_map(before)
     after_map = _scenario_map(after)
-    before_summary = _environment_summary(_env(before))
-    after_summary = _environment_summary(_env(after))
-    differences = _environment_differences(before_summary, after_summary)
-    comparable = not differences
+    common_measured = [
+        name
+        for name, entry in after_map.items()
+        if entry.get("status") == "MEASURED" and before_map[name].get("status") == "MEASURED"
+    ]
+    if len(common_measured) != len(after_map) - 4:
+        raise ComparisonError(
+            f"The comparison requires exactly {len(after_map) - 4} common "
+            f"MEASURED scenarios (both sides), found {len(common_measured)}."
+        )
+
+    verdict, comparability_reasons = environment_comparability(before, after)
     warnings: list[str] = []
-    if not comparable:
+    if verdict == "NOT_COMPARABLE":
         warnings.append(
             "ENVIRONMENT MISMATCH in: "
-            + ", ".join(differences)
+            + ", ".join(comparability_differences(before, after))
             + ". The numbers were measured on different systems or dependency "
             "versions; this report must NOT label any change an 'improvement'."
+        )
+    elif verdict == "PARTIALLY_COMPARABLE":
+        warnings.append(
+            "PARTIALLY COMPARABLE: "
+            + "; ".join(comparability_differences(before, after))
+            + ". Numbers and ratios are shown, but I/O-sensitive results do not "
+            "prove improvement without a shared storage provenance."
         )
 
     newly_measured: list[str] = []
     comparisons: list[dict[str, Any]] = []
     for name, after_entry in after_map.items():
-        before_entry = before_map.get(name)
+        before_entry = before_map[name]
         after_status = after_entry.get("status")
-        before_entry_status = (
-            before_entry.get("status") if before_entry else "NOT_PRESENT_IN_BEFORE"
-        )
+        before_entry_status = before_entry.get("status")
         if before_entry_status == "MEASURED" and after_status == "MEASURED":
-            assert before_entry is not None
             before_agg: dict[str, Any] = before_entry.get("aggregated") or {}
             after_agg: dict[str, Any] = after_entry.get("aggregated") or {}
             metrics = {
@@ -247,6 +296,13 @@ def compare_payloads(before: dict[str, Any], after: dict[str, Any]) -> dict[str,
             }
             comparisons.append({"scenario": name, "status": "SAME_MEASURED", "metrics": metrics})
         elif after_status == "MEASURED":
+            # After the full validation the only possible non-common MEASURED
+            # scenario is one of the four former NOT_IMPLEMENTED placeholders.
+            if name not in PHASE0_PLACEHOLDER_NAMES:
+                raise ComparisonError(
+                    f"Scenario {name!r} has no BEFORE counterpart; only the four "
+                    "documented Phase 1 placeholders may be NEWLY_MEASURED."
+                )
             newly_measured.append(name)
             comparisons.append(
                 {
@@ -262,24 +318,19 @@ def compare_payloads(before: dict[str, Any], after: dict[str, Any]) -> dict[str,
                     ),
                 }
             )
-        elif before_entry_status == "MEASURED" and after_status != "MEASURED":
-            comparisons.append(
-                {
-                    "scenario": name,
-                    "status": "MEASURED_NO_LONGER_IN_AFTER",
-                    "before_status": before_entry_status,
-                    "after_status": after_status,
-                    "note": "A previously measured scenario lost its AFTER measurement.",
-                }
-            )
+
+    before_run_id = _env(before).get("run_id")
+    after_run_id = _env(after).get("run_id")
 
     return {
         "comparison": "phase-0-before-vs-phase-1-after",
         "before": _artifact_meta("before", before),
         "after": _artifact_meta("after", after),
+        "before_run_id": before_run_id,
+        "after_run_id": after_run_id,
         "newly_measured": newly_measured,
-        "environments_comparable": comparable,
-        "environment_differences": differences,
+        "environment_comparability": _comparability_verdict(before, after),
+        "environment_differences": comparability_differences(before, after),
         "comparisons": comparisons,
         "warnings": warnings,
     }
@@ -304,17 +355,30 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     lines.append("")
     lines.append("## Environment comparability")
-    if report["environments_comparable"]:
+    verdict = report["environment_comparability"]
+    differences = report["environment_differences"]
+    lines.append(f"Verdict: **{verdict}**")
+    if verdict == "COMPARABLE":
         lines.append(
-            "Passed: the BEFORE and AFTER environments match on all summary "
-            "fields; the deltas below may be read as *like-for-like*."
+            "The BEFORE and AFTER environments match on all summary fields and "
+            "carry consistent storage provenance; the deltas below may be read "
+            "as *like-for-like*."
+        )
+    elif verdict == "PARTIALLY_COMPARABLE":
+        lines.append(
+            "**PARTIALLY COMPARABLE**: " + "; ".join(differences) + ". Numbers and "
+            "ratios are shown, but I/O-sensitive results do not prove improvement "
+            "without a shared storage provenance."
         )
     else:
         lines.append(
             "**WARNING: the environments are NOT comparable** (differing: "
-            + ", ".join(report["environment_differences"])
+            + ", ".join(differences)
             + "). No change below may be called an 'improvement'."
         )
+    lines.append("")
+    lines.append(f"- BEFORE run_id: `{report.get('before_run_id') or 'N/A (legacy Phase 0)'}`")
+    lines.append(f"- AFTER run_id: `{report.get('after_run_id') or 'N/A'}`")
     lines.append("")
     lines.append("| field | BEFORE | AFTER |")
     lines.append("|---|---|---|")
@@ -391,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         report = compare_payloads(before_payload, after_payload)
         report["before"]["sha256"] = _sha256_file(Path(args.before))
         report["after"]["sha256"] = _sha256_file(Path(args.after))
+        _verify_after_manifest(Path(args.after), after_payload)
     except ComparisonError as exc:
         print(f"COMPARISON REFUSED: {exc}", file=sys.stderr)
         return 2
@@ -402,6 +467,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.markdown is not None:
         args.markdown.write_text(render_markdown(report), encoding="utf-8")
     return 0
+
+
+def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> None:
+    """Verify the publication manifest next to a versioned AFTER baseline.
+
+    A committed Phase 1 AFTER baseline is complete only when a valid manifest
+    corroborates the published JSON (names, contract, profile, run id, SHA-256).
+    """
+    from benchmarks import artifacts as bench_artifacts
+
+    contract = str(_env(after_payload).get("benchmark_contract") or "")
+    profile = str(_env(after_payload).get("profile"))
+    if not contract:
+        raise ComparisonError("The AFTER payload carries no benchmark_contract.")
+    json_name, md_name, manifest_name = bench_artifacts.baseline_target_paths(contract, profile)
+    if after_path.name != json_name:
+        raise ComparisonError(
+            f"The AFTER baseline file must be named {json_name!r}, got {after_path.name!r}."
+        )
+    manifest_path = after_path.with_name(manifest_name)
+    if not manifest_path.is_file():
+        raise ComparisonError(
+            f"the publication manifest {manifest_name} is missing next to {after_path.name}"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ComparisonError(f"Cannot read the manifest {manifest_path}: {exc}") from exc
+    run_id = str(_env(after_payload).get("run_id") or "")
+    problems = manifest_problems(
+        manifest,
+        expected_json_name=json_name,
+        expected_json_sha256=_sha256_file(after_path),
+        expected_markdown_name=md_name,
+        expected_markdown_sha256=_sha256_file(after_path.with_name(md_name)),
+        expected_run_id=run_id,
+        expected_contract=CONTRACT_PHASE_1,
+        expected_profile=profile,
+    )
+    if problems:
+        raise ComparisonError(
+            "The AFTER baseline manifest does not corroborate the published "
+            "artifacts: " + "; ".join(problems)
+        )
 
 
 if __name__ == "__main__":
