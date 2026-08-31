@@ -572,7 +572,7 @@ def _fixture_manifest(work_dir: Path) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=["fast", "full"], default="fast")
+    parser.add_argument("--profile", choices=["fast", "full", "phase3"], default="fast")
     parser.add_argument(
         "--work-dir",
         type=Path,
@@ -780,3 +780,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
