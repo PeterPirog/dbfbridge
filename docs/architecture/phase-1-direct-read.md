@@ -155,8 +155,15 @@ Semantics:
   `.cdx` companion without the flag is reported as a companion but never
   sets `has_structural_cdx`;
 - companion `.fpt`/`.cdx` discovery is case-insensitive, at most one
-  directory scan per call (direct exact-name paths first), and a failed
-  directory scan is a typed I/O error, never a silent "missing";
+  directory scan per call (direct exact-name paths first). The whole
+  discovery boundary is typed: the exact-path candidate check uses
+  explicitly protected `stat`, and during the scan both `os.scandir` and
+  `DirEntry.is_file()` failures raise `DbfIoError` (`DBF_IO_ERROR`)
+  reporting the specific offending path (the companion candidate or the
+  scanned entry) with a JSON-safe context (`errno`, `operation`).
+  Missing and inaccessible are different states: ENOENT/ENOTDIR on a
+  candidate means "companion absent" (`present=False`), while every other
+  `OSError` — incl. access denied — is an error, never a silent "missing";
 - `dbc_bound` is derived from the VFP database-container backlink stored in
   the 263-byte header extension after the field terminator: the first byte
   is 0x00 for a standalone table, otherwise the area holds a null-terminated
@@ -189,9 +196,10 @@ backlink area that does not fit before the record area, zero record length,
 field-length/record-length inconsistency, physical record area shorter than
 the header count, unknown DBF version, and unknown language driver.
 
-Raw filesystem failures (open, stat, header read, FPT header read, directory
-scan) are converted to a typed error instead of leaking
-`PermissionError`/`OSError`.
+Raw filesystem failures — companion exact-path stat, `os.scandir`,
+`DirEntry.is_file()`, open, header read, FPT header read — are converted to a
+typed `DbfIoError` instead of leaking `PermissionError`/`OSError`. A missing
+companion (ENOENT/ENOTDIR) is reported as absent, not denied.
 
 Machine codes (stable): `PATH_NOT_FOUND`, `DBF_HEADER_INVALID`,
 `DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`, `ENCODING_UNKNOWN`,
@@ -218,7 +226,10 @@ Consequently the benchmark scenarios `direct_read_bounded`,
 
 ## 7. Verification
 
-- `tests/test_direct_read_schema.py` — 59 integration tests against real
+Verification status: local results only — Phase 1A is **not** declared
+verified until the full GitHub CI run on this branch is green.
+
+- `tests/test_direct_read_schema.py` — 65 integration tests against real
   fixture DBF/FPT files (happy paths, table-flags bitmask values plus the
   raw `table_flags` exposure, DBC backlink path semantics including
   codepage-resolved decoding and undecodable backlinks, 1900+year date
@@ -226,10 +237,11 @@ Consequently the benchmark scenarios `direct_read_bounded`,
   semantics with the 0x0C mask plus G/P binary memos, Mazovia LDID 0x69
   end-to-end export, DBT/SMT format reporting with exact warning sets,
   FPT block-size/nonzero and 512-byte header-record warnings, missing-FPT
-  format reporting, typed companion I/O errors and the single-FPT-read
-  guarantee, JSON-safe error payloads, read-only guarantees,
-  fresh-interpreter import side effects, codec-on-demand registration,
-  exporter delegation);
+  format reporting, typed companion I/O errors across exact-path stat /
+  scandir / `DirEntry.is_file()` (missing vs. access-denied), the
+  single-FPT-read guarantee, JSON-safe error payloads, read-only
+  guarantees, fresh-interpreter import side effects, codec-on-demand
+  registration, exporter delegation);
 - full pre-existing suite stays green (export, reconstruction, Polish codecs,
   benchmark infrastructure);
 - `ruff check` + `ruff format --check` clean; `python -m build` +

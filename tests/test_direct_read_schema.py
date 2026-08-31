@@ -7,6 +7,7 @@ by patching individual header bytes of real tables.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1016,6 +1017,107 @@ def test_forced_fpt_stat_failure_is_a_typed_io_error(tmp_path: Path, monkeypatch
     assert not isinstance(error.value, OSError)
     assert error.value.path is not None
     assert "IOSTAT.fpt" in error.value.path
+    _assert_json_safe(error.value.to_dict())
+
+
+def _break_exact_companion_stat(monkeypatch, extension: str) -> None:
+    """Make ``Path.stat`` raise PermissionError for one companion extension.
+
+    Real permission changes are not portable, so the failure is injected
+    through a controlled monkeypatch (works on Windows and POSIX alike).
+    """
+    real_stat = Path.stat
+
+    def broken_stat(self: Path, *args, **kwargs):
+        if self.suffix.lower() == extension:
+            raise PermissionError(13, "access denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", broken_stat)
+
+
+@pytest.mark.parametrize(
+    ("version_patch", "extension"),
+    (
+        (None, ".fpt"),  # VFP memo table -> FPT companion candidate
+        (None, ".cdx"),  # flat VFP table -> CDX companion candidate
+        (b"\x8b", ".dbt"),  # dBASE IV memo table -> DBT companion
+        (b"\xe5", ".smt"),  # HiPer-Six memo table -> SMT companion
+    ),
+)
+def test_exact_path_companion_stat_failure_is_a_typed_io_error(
+    tmp_path: Path, monkeypatch, version_patch: bytes | None, extension: str
+) -> None:
+    if extension == ".cdx":
+        dbf_path = _create_vfp_table(tmp_path / "CSTAT.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    else:
+        dbf_path = _create_vfp_table(
+            tmp_path / "CSTAT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+        )
+        if version_patch is not None:
+            _patch_header_bytes(dbf_path, {0: version_patch})
+    (tmp_path / f"CSTAT{extension}").write_bytes(b"\x00" * 32)
+
+    _break_exact_companion_stat(monkeypatch, extension)
+    # Access denial on the exact companion candidate is a typed I/O error
+    # with the specific companion path — never "missing", never raw OSError.
+    with pytest.raises(DbfIoError) as error:
+        read_schema(dbf_path)
+    assert not isinstance(error.value, OSError)
+    assert error.value.code is ErrorCode.DBF_IO_ERROR
+    assert error.value.path is not None
+    assert f"CSTAT{extension}" in error.value.path
+    assert error.value.context["operation"] == "stat"
+    assert error.value.context["errno"] == 13
+    json.loads(json.dumps(error.value.to_dict()))
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_absent_companion_is_missing_not_denied(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "ABSENT.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    # ENOENT on every candidate: absent companions stay present=False
+    # (missing is not access-denied) and never raise.
+    schema = read_schema(dbf_path)
+    assert schema.memo_companion_present is False
+    assert schema.companion_cdx_present is False
+    assert schema.memo_companion_path is None
+    assert schema.warnings == ()
+    payload = json.loads(json.dumps(schema.to_dict()))
+    assert payload["memo_companion"]["present"] is False
+    assert payload["companion_cdx"]["present"] is False
+
+
+def test_dir_entry_is_file_failure_is_a_typed_io_error(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "ENTRY.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    # Remove the exact-name companion so the direct lookup fails and the
+    # case-insensitive scan must run; the scan then yields one matching
+    # entry whose is_file() check fails.
+    (tmp_path / "ENTRY.fpt").unlink(missing_ok=True)
+
+    class _BrokenDirEntry:
+        name = "ENTRY.FPT"
+        path = str(tmp_path / "ENTRY.FPT")
+
+        def is_file(self) -> bool:
+            raise PermissionError(13, "access denied", self.path)
+
+    @contextlib.contextmanager
+    def fake_scandir(directory=None):
+        yield [_BrokenDirEntry()]
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+    with pytest.raises(DbfIoError) as error:
+        read_schema(dbf_path)
+    assert not isinstance(error.value, OSError)
+    assert error.value.code is ErrorCode.DBF_IO_ERROR
+    # The error reports the concrete entry path, not only the directory.
+    assert error.value.path is not None
+    assert error.value.path.casefold().endswith("entry.fpt")
+    assert error.value.context["operation"] == "stat"
+    assert error.value.context["errno"] == 13
+    json.loads(json.dumps(error.value.to_dict()))
     _assert_json_safe(error.value.to_dict())
 
 

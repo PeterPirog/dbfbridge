@@ -9,7 +9,9 @@ source, or create any file.
 
 from __future__ import annotations
 
+import errno
 import os
+import stat as stat_module
 from pathlib import Path
 
 from . import errors
@@ -31,27 +33,64 @@ MemoDetails = tuple[int | None, int | None, int | None]
 _NO_MEMO_DETAILS: MemoDetails = (None, None, None)
 
 
+def _companion_file_exists(candidate: Path) -> bool:
+    """Protected exact-path check of one companion candidate.
+
+    ``candidate.stat()`` is wrapped explicitly: ENOENT/ENOTDIR mean the
+    companion is absent (``False``), a regular file means found (``True``),
+    and any other OSError (access denied, I/O error, ...) becomes a typed
+    :class:`~dbf_bridge.core.errors.DbfIoError` carrying the specific
+    companion path — an access failure is never disguised as "missing".
+    """
+    try:
+        stat_result = candidate.stat()
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return False
+        raise errors.DbfIoError(
+            f"Cannot stat the companion file: {candidate}",
+            path=candidate,
+            context={"errno": exc.errno, "operation": "stat"},
+        ) from exc
+    return stat_module.S_ISREG(stat_result.st_mode)
+
+
 def _find_companions(directory: Path, stem: str, extensions: tuple[str, ...]) -> dict[str, Path]:
     """Find ``<stem><ext>`` companions in *directory* (case-insensitive).
 
-    Direct exact-name paths are checked first so the common case performs no
-    directory scan; at most one case-insensitive scan is performed per call.
-    A directory-scan failure is a typed I/O error, never a silent "missing".
+    Direct exact-name paths are checked first (via protected stat) so the
+    common case performs no directory scan; at most one case-insensitive scan
+    is performed per call.  Every filesystem failure is typed: an exact-path
+    stat, the directory scan itself, and ``DirEntry.is_file()`` of a matching
+    entry all raise :class:`~dbf_bridge.core.errors.DbfIoError` carrying the
+    offending path and a JSON-safe context — never a raw OSError, and never
+    a silent "missing".
     """
     found: dict[str, Path] = {}
     for ext in extensions:
         candidate = directory / f"{stem}{ext}"
-        if candidate.is_file():
+        if _companion_file_exists(candidate):
             found[ext] = candidate
     if len(found) == len(extensions):
         return found
     wanted = {f"{stem}{ext}".casefold(): ext for ext in extensions if ext not in found}
+    expected = [f"{stem}{ext}" for ext in extensions]
     try:
         with os.scandir(directory) as entries:
             for entry in entries:
                 name = entry.name.casefold()
                 ext = wanted.get(name)
-                if ext is not None and entry.is_file():
+                if ext is None:
+                    continue
+                try:
+                    entry_is_file = entry.is_file()
+                except OSError as exc:
+                    raise errors.DbfIoError(
+                        f"Cannot stat the companion file entry: {entry.path}",
+                        path=entry.path,
+                        context={"errno": exc.errno, "operation": "stat"},
+                    ) from exc
+                if entry_is_file:
                     found[ext] = Path(entry.path)
                     del wanted[name]
                     if not wanted:
@@ -60,7 +99,7 @@ def _find_companions(directory: Path, stem: str, extensions: tuple[str, ...]) ->
         raise errors.DbfIoError(
             f"Cannot scan {directory} for companion files.",
             path=directory,
-            context={"errno": exc.errno, "expected": [f"{stem}{ext}" for ext in extensions]},
+            context={"errno": exc.errno, "operation": "scandir", "expected": expected},
         ) from exc
     return found
 
