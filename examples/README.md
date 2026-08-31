@@ -12,6 +12,8 @@ instalacją pakietu.
 | `export_from_file_to_dbf.py` | `dbf-bridge-import` | rekonstrukcja DBF/FPT z jednego formatu |
 | `check_conversion_quality.py` | `dbf-bridge-quality` | diagnostyczny DBF → JSONL → DBF |
 | `python_api.py` | publiczne API | kompletny przepływ przez `from dbfbridge import ...` |
+| `inspect_table.py` | publiczne API (Phase 1A) | tylko do odczytu inspekcja nagłówka i schematu |
+| `read_records.py` | publiczne API (Phase 1B) | streaming odczyt rekordów (projekcja, memo policje, raw) |
 
 ## Uruchomienie w PowerShell
 
@@ -52,6 +54,19 @@ Pełny test jakości:
 ```powershell
 python examples/check_conversion_quality.py --source "K:\dbf_source" `
   --output "K:\dbf_quality" --overwrite --progress
+```
+
+Inspekcja jednej tabeli (tylko nagłówek, Phase 1A):
+
+```powershell
+python examples/inspect_table.py --dbf "K:\dbf_source\klienci.dbf" --json
+```
+
+Streaming odczyt rekordów (stronicowanie, projekcja pól, memo policje, raw; Phase 1B):
+
+```powershell
+python examples/read_records.py --dbf "K:\dbf_source\klienci.dbf" `
+  --offset 0 --limit 20 --memo lazy --fields ID_KL,NAZWA,NOTATKA
 ```
 
 Każdy skrypt udostępnia pełną listę parametrów przez `--help`. Te same argumenty można
