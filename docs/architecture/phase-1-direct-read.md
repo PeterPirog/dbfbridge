@@ -1,28 +1,33 @@
-# dbfbridge — Phase 1A: Direct Read Core (inspection and schema)
+# dbfbridge — Phase 1: Direct Read Core (inspection, schema, record streaming)
 
 - Base commit (Phase 0 end): `49500785444ffa2e798146c14a158d926c158c34`
   (branch `bench/phase-0-baseline`, stacked on unmerged PR #1)
 - Package: `dbfbridge 0.1.0` (alpha), Python >= 3.10, MIT
-- Scope: **Phase 1A only** — `inspect_table()` / `read_schema()` and the
-  `dbf_bridge.core` foundation. Record reading, field projection, and lazy memo
-  are explicitly out of scope (next step).
+- Scope: **Phase 1A** — `inspect_table()` / `read_schema()` and the
+  `dbf_bridge.core` foundation; **Phase 1B** (this document's record layer) —
+  `iter_records()` / `read_records()` / `iter_raw_records()` streaming over
+  the backend abstraction. Lazy memo payload *reading* exists only through the
+  explicit `LazyMemoValue.load()`; there is still no bulk "read whole memo
+  ahead" mode.
 
 This document records the architectural contract implemented in this phase and
 links it to the code.
 
-## 1. What Phase 1A delivers
+## 1. What Phase 1A and 1B deliver
 
 | Symbol | Kind | Home |
 |---|---|---|
 | `inspect_table(path)` | function | `src/dbf_bridge/core/inspect.py` |
 | `read_schema(path)` | function | `src/dbf_bridge/core/inspect.py` |
-| `TableInfo` | frozen dataclass | `src/dbf_bridge/core/models.py` |
-| `TableSchema` | frozen dataclass | `src/dbf_bridge/core/models.py` |
-| `FieldInfo` | frozen dataclass | `src/dbf_bridge/core/models.py` |
-| `ErrorCode` | str enum (machine codes) | `src/dbf_bridge/core/errors.py` |
-| `DirectReadError` + typed subclasses | exceptions | `src/dbf_bridge/core/errors.py` |
+| `iter_records(path, ...)` | function (Phase 1B) | `src/dbf_bridge/core/records.py` |
+| `read_records(path, ...)` | function (Phase 1B) | `src/dbf_bridge/core/records.py` |
+| `iter_raw_records(path)` | function (Phase 1B) | `src/dbf_bridge/core/records.py` |
+| `DirectRecord` / `RecordPage` / `LazyMemoValue` | frozen dataclasses (Phase 1B) | `src/dbf_bridge/core/records.py` |
+| `TableInfo` / `TableSchema` / `FieldInfo` | frozen dataclasses | `src/dbf_bridge/core/models.py` |
+| `ErrorCode` + typed errors | str enum (machine codes) | `src/dbf_bridge/core/errors.py` |
+| backend protocols + dbfread adapter | internal boundary (Phase 1B) | `src/dbf_bridge/core/backend.py` |
 
-Both entry points are exported from `dbfbridge` and the historical
+All entry points are exported from `dbfbridge` and the historical
 `dbf_bridge` namespace (`src/dbfbridge/__init__.py`,
 `src/dbf_bridge/__init__.py`) with synchronized `__all__` lists.
 
@@ -30,13 +35,16 @@ Both entry points are exported from `dbfbridge` and the historical
 
 ```
 src/dbf_bridge/core/
-├── __init__.py     public core surface (inspect_table, read_schema, models, errors)
-├── errors.py       ErrorCode + DirectReadError subclasses (JSON-safe to_dict)
-├── codecs.py       Mazovia/PIAST table + registration + driver resolution
-├── fields.py       pure field classification (memo/binary/supported) + type names
-├── header.py       single pure DBF header parser (O(header), read-only)
-├── models.py       FieldInfo / TableInfo / TableSchema (frozen, to_dict)
-└── inspect.py      public inspect_table / read_schema + companion discovery
+├── __init__.py       public core surface (inspection, schema, record streaming, models, errors)
+├── errors.py         ErrorCode + DirectReadError subclasses (JSON-safe to_dict)
+├── codecs.py         Mazovia/PIAST table + registration + driver resolution
+├── fields.py         pure field classification (memo/binary/supported) + type names
+├── header.py         single pure DBF header parser (O(header), read-only)
+├── models.py         FieldInfo / TableInfo / TableSchema (frozen, to_dict)
+├── backend.py        Phase 1B backend boundary: capability protocols + dbfread reference adapter
+├── records.py        Phase 1B: DirectRecord / RecordPage / LazyMemoValue + iter_records /
+│                     read_records / iter_raw_records
+└── inspect.py        public inspect_table / read_schema + companion discovery
 ```
 
 Hard rules for the core layer:
@@ -56,10 +64,17 @@ Hard rules for the core layer:
 - no duplicate parser: the migration exporter delegates to
   `core.header.parse_header` (`src/dbf_bridge/exporter/reader.py`), and the
   Mazovia table exists in exactly one place (`core/codecs.py`;
-  `exporter/polish_codecs.py` is a compatibility re-export).
+  `exporter/polish_codecs.py` is a compatibility re-export);
+- **one record loop** (Phase 1B): the physical/decoded record streaming lives
+  exactly once, in `core/backend.py` (the dbfread reference adapter). The
+  migration exporter's `iter_physical_records` delegates to it, producing the
+  same `(record, is_deleted, raw_image)` tuples as before. Private `dbfread`
+  API (`DBF._open_memofile`, the `dbfread.memo` submodule,
+  `FieldParser._parse_memo_index`) is confined to `core/backend.py`; no other
+  module — including the exporter — may reach into it.
 
 `src/dbfbridge` remains a thin public facade; there is no second, parallel
-header parser.
+header parser and no second record loop.
 
 ## 3. Import side-effect contract
 
@@ -185,6 +200,74 @@ Semantics:
   Polish characters even though dbfread falls back to ASCII for driver bytes
   it does not know.
 
+## 4b. Phase 1B: streaming direct record read
+
+`core/backend.py` defines the internal backend boundary as **capability
+protocols** — header inspection, physical record streaming, and memo payload
+reading — whose reference implementation is the dbfread adapter
+(`DbfreadBackend`). Private `dbfread` API is confined there, `core` never
+imports `exporter`, and the exporter delegates its physical record
+iteration to the backend (one shared record loop; no second parser).
+
+`core/records.py` composes the public streaming API:
+
+- `iter_records(path, *, fields=None, include_deleted=False, memo="lazy",
+  raw=False, encoding="auto", decode_errors="strict")` — O(1) streaming of
+  `DirectRecord`(s);
+- `read_records(path, *, offset=0, limit=100, ...)` — one physical page
+  (`RecordPage`) with O(limit) memory;
+- `iter_raw_records(path)` — every physical record (deleted included) with
+  its exact raw image; the FPT is never opened.
+
+Contract:
+
+- `physical_index`, `offset`, and `next_offset` are **zero-based physical
+  record indices**; `offset` is resolved by seek (records before it are not
+  scanned), and the record order stays physical;
+- `limit` must be positive and `offset` non-negative (`ARGUMENT_INVALID`
+  otherwise); `read_records` materializes only O(limit) records — nothing
+  beyond the page is parsed or decoded;
+- `include_deleted=False` skips deleted records **within the same pass** (a
+  deleted record costs one physical scan without parsing, never a second
+  run-through); `iter_raw_records` returns all records, deleted included, and
+  never opens the FPT (memo fields are not decoded there — the raw image
+  carries them);
+- `fields` is a projection: validated case-insensitively, values use schema
+  names in the caller's order, unselected fields are **never parsed**;
+  unknown or duplicate names raise `FIELD_PROJECTION_INVALID`; a selected
+  unsupported field raises `FIELD_TYPE_UNSUPPORTED` while an unsupported
+  unselected field never blocks the read;
+- memo policy semantics: `skip` — the memo field is absent from `values`;
+  `null` — the field is present with `None`; `lazy` — the value is a
+  `LazyMemoValue` (table/field/physical block) and the FPT is not opened
+  during iteration; `inline` — the payload is read through the backend
+  immediately. `skip`/`null`/`lazy` never open or read any FPT payload;
+  `inline` without an FPT raises `FPT_REQUIRED_MISSING`, a broken FPT raises
+  `FPT_INVALID` — and `LazyMemoValue.load()` raises the same typed errors;
+- costs: `lazy` iteration never touches the FPT; only explicit `load()`
+  performs a short per-value read through the backend, so lazy is the right
+  default for bounded scans and inspection, while `inline` trades payload
+  reads for immediate values (the migration exporter's `inline` export keeps
+  its historic behaviour);
+- `raw=False` stores no raw bytes anywhere (`raw_record is None`,
+  `to_dict()` contains no raw/base64 record payload); `raw=True` keeps the
+  exact physical record image (delete marker + field bytes);
+- `encoding="auto"` uses the Phase 1A language-driver resolution; a manual
+  override wins; strict decode failures raise `TEXT_DECODE_ERROR` (never a
+  raw `UnicodeDecodeError`); `replace`/`ignore` are passed through;
+- resource guarantees: the DBF and FPT handles live inside the generator and
+  are closed after the full pass, on error, on `iterator.close()` (and via
+  garbage collection only as a safety net); after `close()` the DBF can be
+  moved/removed even on Windows; inspection and record reads create no files
+  and leave the source byte-identical (SHA-256 covered by tests).
+
+The four Phase 1 benchmark scenarios (`direct_read_bounded`,
+`field_projection`, `memo_lazy`, `raw_mode_none`) measure these contracts:
+the bounded scenario proves `limit=100` does not scan the 190k table (read
+amplification far below 1), `memo_lazy` enforces zero FPT payload opens with
+an open-guard, `field_projection` verifies the same logical result as the
+unprojected stream, and `raw_mode_none` verifies no raw bytes in any record.
+
 ## 5. Structured errors
 
 Tainted or unsupported files never yield a partially-trusted model. Detected
@@ -199,11 +282,17 @@ the header count, unknown DBF version, and unknown language driver.
 Raw filesystem failures — companion exact-path stat, `os.scandir`,
 `DirEntry.is_file()`, open, header read, FPT header read — are converted to a
 typed `DbfIoError` instead of leaking `PermissionError`/`OSError`. A missing
-companion (ENOENT/ENOTDIR) is reported as absent, not denied.
+companion (ENOENT/ENOTDIR) is reported as absent, not denied. During record
+streaming the same boundary holds for open/seek/read, memo payload reads
+(`FPT_INVALID` for broken companions, `FPT_REQUIRED_MISSING` for absent ones)
+and strict text decoding (`TEXT_DECODE_ERROR`, including
+`LazyMemoValue.load()`).
 
 Machine codes (stable): `PATH_NOT_FOUND`, `DBF_HEADER_INVALID`,
 `DBF_TRUNCATED`, `DBF_FORMAT_UNSUPPORTED`, `ENCODING_UNKNOWN`,
-`DBF_IO_ERROR`.
+`DBF_IO_ERROR`, `DBF_RECORD_INVALID`, `TEXT_DECODE_ERROR`,
+`FPT_REQUIRED_MISSING`, `FPT_INVALID`, `ARGUMENT_INVALID`,
+`FIELD_PROJECTION_INVALID`, `FIELD_TYPE_UNSUPPORTED`.
 
 Every exception carries `code`, `path`, a readable `message`, and a JSON-safe
 `context` mapping; `to_dict()` is JSON-serializable even when the context
@@ -212,22 +301,27 @@ form). No generic `RuntimeError`; MCP never needs to parse error text.
 
 ## 6. Explicit non-goals of this phase
 
-- `iter_records`, `read_records`, field projection, lazy memo payload
-  reading, `iter_raw_records` — next step;
+- bulk memo prefetching (a "read whole memo ahead" mode beyond the explicit
+  `LazyMemoValue.load()`), field-index acceleration, and a second (native)
+  read backend — possible later steps, justified only by benchmarks;
 - new writer, CDX tag-expression parser, MCP adapter;
 - package version change (stays `0.1.0`);
-- re-running the full benchmark profile or saving a new `--baseline`.
-
-Consequently the benchmark scenarios `direct_read_bounded`,
-`field_projection`, `memo_lazy`, and `raw_mode_none` remain
-`NOT_IMPLEMENTED`, and `benchmarks/baselines/phase-0-full.json` /
-`phase-0-full.md` are unchanged and remain the **BEFORE** reference
-(see `phase-0-audit.md`).
+- re-running the full benchmark profile or saving a Phase 1 `--baseline` (the
+  stored Phase 0 baseline stays unchanged and remains the **BEFORE**
+  reference; a Phase 1 AFTER baseline does not exist yet).
 
 ## 7. Verification
 
-Verification status: local results only — Phase 1A is **not** declared
-verified until the full GitHub CI run on this branch is green.
+Phase 1A historical record: when Phase 1A landed,
+`tests/test_direct_read_schema.py` carried 65 direct-read schema tests and the
+full suite was 157 tests; GitHub Actions CI run **#18** on
+`feat/phase-1-inspect-schema` is green
+(https://github.com/PeterPirog/dbfbridge/actions/runs/33363553636).
+
+Phase 1B verification status: local results on
+`feat/phase-1-record-read`; the GitHub CI green run for this branch is still
+pending (Phase 1A is not re-declared verified here, and Phase 1B will not be
+declared verified until its full CI run is green).
 
 - `tests/test_direct_read_schema.py` — 65 integration tests against real
   fixture DBF/FPT files (happy paths, table-flags bitmask values plus the
@@ -242,9 +336,26 @@ verified until the full GitHub CI run on this branch is green.
   single-FPT-read guarantee, JSON-safe error payloads, read-only
   guarantees, fresh-interpreter import side effects, codec-on-demand
   registration, exporter delegation);
-- full pre-existing suite stays green (export, reconstruction, Polish codecs,
-  benchmark infrastructure);
+- `tests/test_direct_read_records.py` — 45 streaming record tests against
+  real fixtures (empty/single/multi-record tables, active+deleted physical
+  order in a single pass, offset/limit/`next_offset`/`exhausted` pages,
+  O(limit) non-materialization, projection that provably skips the parser,
+  unknown/duplicate projection errors, `FIELD_TYPE_UNSUPPORTED` vs.
+  unselected-unsupported, all supported VFP value types with NULL/empty
+  values, cp1250/cp852/Mazovia diacritics, decode `strict`/`replace`/
+  `ignore`, all four memo policies with the FPT-open guard, lazy-vs-inline
+  and exporter parity, missing/broken FPT, binary memo bytes, raw split
+  with exact-byte checks, invalid record marker, mid-stream truncation,
+  typed open/read I/O errors, early break/gc handle release, SHA-256 and
+  no-output guarantees, JSON-safe payloads, exporter parity, fresh
+  interpreter, both namespaces);
+- full suite: 202 tests green (the pre-existing export, reconstruction,
+  Polish codecs, benchmark infrastructure suites stay green and the exporter
+  produces the same results after the backend refactor);
 - `ruff check` + `ruff format --check` clean; `python -m build` +
-  `twine check` clean; both CLI `--help` entry points start;
-- fast benchmark regression: 15 MEASURED / 0 FAILED / 4 NOT_IMPLEMENTED,
-  exit code 0 (no `--baseline`).
+  `twine check` clean; all four CLI `--help` entry points start;
+- fast benchmark regression: **19 MEASURED / 0 FAILED / 0 NOT_IMPLEMENTED**,
+  exit code 0 (no `--baseline`); the Phase 0 baseline
+  `benchmarks/baselines/phase-0-full.json` / `phase-0-full.md` remain the
+  **BEFORE** reference and are byte-identical to commit 4950078; a Phase 1
+  full AFTER baseline does not exist yet.

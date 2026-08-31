@@ -45,6 +45,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/inspect_table.py` — executable direct read example
 - `docs/architecture/phase-1-direct-read.md` — Phase 1A architecture contract
 
+### Added
+- Phase 1B streaming direct record read: read-only `iter_records()` /
+  `read_records()` / `iter_raw_records()` with immutable, JSON-safe models
+  `DirectRecord` (zero-based `physical_index`, `deleted`, `values`, optional
+  `raw_record` only with `raw=True`), `RecordPage` (`offset`, `limit`,
+  `records`, `scanned`, `next_offset`, `exhausted`) and `LazyMemoValue`
+  (table/field/physical memo block; creation and `to_dict()` read no memo
+  payload, explicit `load()` goes through the backend)
+- Internal backend boundary in `dbf_bridge.core`: capability protocols
+  (header inspection, physical record streaming, memo payloads) with the
+  **dbfread reference backend** as the only adapter allowed to touch private
+  `dbfread` API; one shared physical/decoded record loop (the migration
+  exporter delegates its `iter_physical_records` to it — no second loop, no
+  second header/type parser)
+- Streaming semantics: `physical_index`/`offset`/`next_offset` are zero-based
+  physical record indices resolved by seek; `iter_records` is O(1),
+  `read_records` is O(limit) with positive `limit`/non-negative `offset`
+  (`ARGUMENT_INVALID` otherwise); `include_deleted=False` skips deleted
+  records in the same pass; `iter_raw_records` returns every record (deleted
+  included) in physical order without opening the FPT; `raw=False` keeps no
+  raw bytes anywhere
+- Memo policies `skip`/`null`/`lazy`/`inline`: only `inline` reads the FPT
+  (missing → `FPT_REQUIRED_MISSING`, broken → `FPT_INVALID`); `lazy` returns
+  `LazyMemoValue` without any FPT I/O during iteration; `load()`/`read()`
+  raises the same typed errors; `skip`/`null`/`lazy` never open or read the
+  FPT payload
+- Field projection: validated case-insensitively, result uses schema names in
+  the caller's order, unselected fields are never parsed; unknown/duplicate
+  names → `FIELD_PROJECTION_INVALID`, selected unsupported types →
+  `FIELD_TYPE_UNSUPPORTED` (an unsupported unselected field never blocks the
+  read)
+- New machine codes (previous codes kept): `DBF_RECORD_INVALID`,
+  `TEXT_DECODE_ERROR` (strict failures never leak a raw
+  `UnicodeDecodeError`), `ARGUMENT_INVALID`, `FIELD_PROJECTION_INVALID`,
+  `FIELD_TYPE_UNSUPPORTED`
+- Real Phase 1 benchmark scenarios replacing the four `NOT_IMPLEMENTED`
+  placeholders: `direct_read_bounded` (seek + `limit=100` over the 190k
+  fixture, read amplification far below 1, zero output/temporary bytes),
+  `field_projection` (same logical result as the unprojected stream),
+  `memo_lazy` (zero FPT payload reads enforced by an open-guard),
+  `raw_mode_none` (no raw bytes in any record); fast profile now reports
+  **19 MEASURED / 0 NOT_IMPLEMENTED / 0 FAILED**, full contract 24 MEASURED
+- `examples/read_records.py` — executable streaming record-read example
+
 ### Fixed
 - VFP autoincrement semantics corrected: for Visual FoxPro tables (0x30/
   0x31/0x32) `is_autoincrement` is derived from the field-flags mask 0x0C on

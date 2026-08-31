@@ -336,11 +336,6 @@ except DirectReadError as error:
 
 Phase 1A scope notes:
 
-- record reading (`iter_records`/`read_records`), field projection, and lazy
-  memo reading are the next step and are **not** implemented yet;
-- the benchmark scenarios `direct_read_bounded`, `field_projection`,
-  `memo_lazy`, and `raw_mode_none` therefore remain `NOT_IMPLEMENTED` in the
-  Phase 0 baseline;
 - CDX presence is reported structurally (`has_structural_cdx`,
   `companion_cdx`); CDX tag expressions are **not** parsed;
 - export honors the Mazovia language driver (0x69): the header-resolved
@@ -351,6 +346,83 @@ Phase 1A scope notes:
 
 A complete executable example is in
 [`examples/inspect_table.py`](examples/inspect_table.py).
+
+#### Streaming direct record read (Phase 1B)
+
+Phase 1B adds read-only record streaming on top of the Phase 1A contracts.
+The implementation is backed by the **dbfread reference backend** isolated in
+`dbf_bridge.core.backend` (the only module allowed to use private `dbfread`
+API); the migration exporter delegates its physical record loop to the same
+backend, so there is exactly one record loop and one header parser in the
+codebase.
+
+```python
+from dbfbridge import (
+    DirectRecord,
+    LazyMemoValue,
+    RecordPage,
+    iter_raw_records,
+    iter_records,
+    read_records,
+)
+
+# Streaming iteration (O(1) memory); close() releases the file handles.
+for record in iter_records("K:/dbf_source/klienci.dbf", memo="lazy"):
+    value = record.values["NOTATKA"]
+    if isinstance(value, LazyMemoValue):
+        meta = value.to_dict()          # table, field, physical memo block
+        text = value.load()             # explicit read through the backend
+    print(record.physical_index, record.deleted, record.values.keys())
+
+# One bounded physical page: O(limit) memory.
+page = read_records("K:/dbf_source/klienci.dbf", offset=200, limit=100, fields=["ID_KL", "NAZWA"])
+print(page.offset, page.limit, page.scanned, page.next_offset, page.exhausted)
+
+# Every physical record (deleted included) with its exact raw bytes, no FPT.
+raws = [(r.physical_index, r.deleted, r.raw_record) for r in iter_raw_records("K:/dbf_source/klienci.dbf")]
+```
+
+Contract:
+
+- `physical_index` is the zero-based **physical** record index (deleted
+  records keep their index); `offset`/`next_offset` use the same physical
+  space; a page seek jumps to `offset` without scanning earlier records;
+- `iter_records()` streams with O(1) memory; `read_records()` uses O(limit)
+  memory; `limit` must be positive and `offset` non-negative
+  (`ARGUMENT_INVALID` otherwise);
+- `include_deleted=False` skips deleted records **in the same pass** (no
+  second read of the record area); `iter_raw_records` returns *all* records,
+  deleted included, in physical order and never opens the FPT;
+- `fields` is validated case-insensitively while `values` use schema names in
+  the caller's order; unselected fields are **never parsed**; unknown or
+  duplicate names raise `FIELD_PROJECTION_INVALID` and a selected unsupported
+  field raises `FIELD_TYPE_UNSUPPORTED` — an unsupported field left unselected
+  never blocks reading;
+- memo policies: `skip` (field absent from `values`), `null` (field present
+  with `None`), `lazy` (a `LazyMemoValue`; the FPT is not opened during
+  iteration — loading it later costs a small per-value read), `inline` (the
+  payload is read through the backend immediately). `skip`/`null`/`lazy` never
+  open or read the FPT; `inline` without an FPT raises `FPT_REQUIRED_MISSING`
+  and a damaged FPT raises `FPT_INVALID`;
+- `raw=False` stores no raw bytes anywhere; `raw=True` keeps the exact
+  physical record image in `raw_record`;
+- `encoding="auto"` resolves from the language driver, an explicit override
+  wins; strict decode failures raise `TEXT_DECODE_ERROR`, never a raw
+  `UnicodeDecodeError`;
+- Direct Read only opens the sources read-only: it never creates a directory,
+  lock, report, or `.partial`, never touches CDX, and never modifies the
+  source.
+- typed errors carry `ErrorCode`, `path`, and a JSON-safe `context` — including
+  `ARGUMENT_INVALID`, `FIELD_PROJECTION_INVALID`, `FIELD_TYPE_UNSUPPORTED`,
+  `FPT_REQUIRED_MISSING`, `FPT_INVALID`, `TEXT_DECODE_ERROR`,
+  `DBF_RECORD_INVALID`, `DBF_IO_ERROR`.
+
+The benchmark scenarios `direct_read_bounded`, `field_projection`, `memo_lazy`,
+and `raw_mode_none` are real `MEASURED` scenarios since Phase 1B (fast profile:
+19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`).
+The Phase 0 baseline remains the BEFORE reference and is unchanged; a Phase 1
+AFTER baseline does not exist yet. A complete executable example is in
+[`examples/read_records.py`](examples/read_records.py).
 
 #### Export and incremental export
 
