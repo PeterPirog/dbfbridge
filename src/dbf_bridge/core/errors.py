@@ -29,6 +29,9 @@ class ErrorCode(str, enum.Enum):
     TEXT_DECODE_ERROR = "TEXT_DECODE_ERROR"
     FPT_REQUIRED_MISSING = "FPT_REQUIRED_MISSING"
     FPT_INVALID = "FPT_INVALID"
+    ARGUMENT_INVALID = "ARGUMENT_INVALID"
+    FIELD_PROJECTION_INVALID = "FIELD_PROJECTION_INVALID"
+    FIELD_TYPE_UNSUPPORTED = "FIELD_TYPE_UNSUPPORTED"
 
 
 def _json_safe(value: Any) -> Any:
@@ -150,7 +153,26 @@ class FptInvalidError(DirectReadError):
     code = ErrorCode.FPT_INVALID
 
 
+class ArgumentInvalidError(DirectReadError):
+    """A call argument is invalid (offset/limit/policy/encoding value)."""
+
+    code = ErrorCode.ARGUMENT_INVALID
+
+
+class FieldProjectionInvalidError(DirectReadError):
+    """A field projection lists an unknown or duplicate field name."""
+
+    code = ErrorCode.FIELD_PROJECTION_INVALID
+
+
+class FieldTypeUnsupportedError(DirectReadError):
+    """A selected field uses a type unsafe to decode in Direct Read."""
+
+    code = ErrorCode.FIELD_TYPE_UNSUPPORTED
+
+
 __all__ = [
+    "ArgumentInvalidError",
     "DbfFormatUnsupportedError",
     "DbfHeaderInvalidError",
     "DbfIoError",
@@ -160,6 +182,8 @@ __all__ = [
     "DirectReadError",
     "EncodingUnknownError",
     "ErrorCode",
+    "FieldProjectionInvalidError",
+    "FieldTypeUnsupportedError",
     "FptInvalidError",
     "FptRequiredMissingError",
     "TextDecodeError",
