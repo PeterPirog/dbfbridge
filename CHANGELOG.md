@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phase 1 AFTER baseline recorded from GitHub Actions
+  ([run 33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
+  SUCCESS, measured at commit `df035de662f2d78a7a8d9d9a141a8235e1161382`):
+  Windows Server 2025, Python 3.12.10, runner
+  `github-actions-windows-2025-python-3.12.10`, storage
+  `github-actions-windows-temp`, warm-up 1 + repetitions 3 per scenario,
+  `run_id run-ceaf809d8b52a2b6873d7594dff4a769`; exactly **24 MEASURED /
+  0 FAILED / 0 NOT_IMPLEMENTED**, `valid_baseline=true` everywhere, available
+  peak RSS and zero temporary residue. Versioned as
+  `benchmarks/baselines/phase-1-direct-read-full.{json,md,manifest.json}`
+  with the comparison pair `phase-0-vs-phase-1.{json,md}`; the BEFORE/AFTER
+  verdict is **PARTIALLY_COMPARABLE** (system/Python/dependency versions
+  match; the legacy Phase 0 BEFORE carries no runner/storage descriptors and
+  is never retro-fitted, so numbers and ratios are diagnostic only — they do
+  not prove a performance improvement; the four Direct Read scenarios are
+  NEWLY_MEASURED against a `NOT_IMPLEMENTED` BEFORE row, so no speedup is
+  claimed for them and no blanket claim is made for pre-existing scenarios)
 - Phase 1A direct read core: `inspect_table()` and `read_schema()` — read-only
   inspection of one DBF table (DBF read bounded by the declared header
   length, independent of the record count, plus a companion-file lookup) with

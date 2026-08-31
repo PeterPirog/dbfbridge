@@ -1372,12 +1372,25 @@ def test_phase0_before_is_never_touched_by_the_cli(tmp_path: Path) -> None:
         assert completed.returncode != 0
         assert "phase" in completed.stderr.lower()
     finally:
+        # The Phase 0 BEFORE pair must stay byte-identical; the Phase 1 AFTER
+        # trio and the comparison pair are now recorded in the same directory
+        # and were imported from the approved workflow artifacts.
         assert _sha256_bytes(before_json.read_bytes()) == _BEFORE_SHA256
         assert _sha256_bytes(before_md.read_bytes()) == _BEFORE_MD_SHA256
         baseline_names = {
-            entry.name for entry in repo_baselines.iterdir() if entry.name.startswith("phase-")
+            entry.name
+            for entry in repo_baselines.iterdir()
+            if entry.name.startswith("phase-0-full")
         }
         assert baseline_names == {"phase-0-full.json", "phase-0-full.md"}
+        after_entries = {
+            entry.name for entry in repo_baselines.iterdir() if entry.name.startswith("phase-1")
+        }
+        assert after_entries == {
+            "phase-1-direct-read-full.json",
+            "phase-1-direct-read-full.md",
+            "phase-1-direct-read-full.manifest.json",
+        }
 
 
 # ---------------------------------------------------------------------------
