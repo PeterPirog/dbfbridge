@@ -227,8 +227,54 @@ def test_missing_fpt_is_a_structured_warning_not_an_error(sample_input_dir: Path
         assert len(info.warnings) == 1
         assert "fpt" in info.warnings[0].lower()
         assert "NOTATKA" in info.warnings[0]
+
+        schema = read_schema(dbf_path)
+        # The missing companion is still described: the format follows the
+        # DBF version while presence/path/size stay honest (separate fields).
+        assert schema.has_memo is True
+        assert schema.memo_companion_format == "FPT"
+        assert schema.memo_companion_present is False
+        assert schema.memo_companion_path is None
+        assert schema.memo_companion_size_bytes is None
+        assert schema.memo_block_size is None
+        assert schema.memo_next_free_block is None
+        assert schema.warnings == info.warnings
     finally:
         fpt_path.write_bytes(backup)
+
+
+def test_memo_table_flag_reports_expected_companion_format(tmp_path: Path) -> None:
+    # Memo table flag (0x02) without memo fields and without a companion:
+    # the expected format from the DBF version is still reported.
+    dbf_path = _create_vfp_table(tmp_path / "FLAGMEMO.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    _patch_header_bytes(dbf_path, {28: b"\x02"})
+    schema = read_schema(dbf_path)
+    assert schema.has_memo is False
+    assert schema.has_memo_flag is True
+    assert schema.memo_companion_format == "FPT"
+    assert schema.memo_companion_present is False
+    assert schema.memo_companion_path is None
+
+
+def test_table_flags_raw_value_is_exposed(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    _patch_header_bytes(dbf_path, {28: b"\x05"})  # structural CDX + database
+    try:
+        info = inspect_table(dbf_path)
+        schema = read_schema(dbf_path)
+    finally:
+        _patch_header_bytes(dbf_path, {28: b"\x00"})
+    assert info.table_flags == 0x05
+    assert schema.table_flags == 0x05
+    info_dict = info.to_dict()
+    schema_dict = schema.to_dict()
+    for payload in (info_dict, schema_dict):
+        assert payload["table_flags"] == 5
+        assert payload["table_flags_hex"] == "0x05"
+    # The derived booleans stay intact alongside the raw value.
+    assert info.has_structural_cdx is True
+    assert info.is_database_container is True
+    assert info.has_memo_flag is False
 
 
 def test_memo_field_and_companion_fpt_are_distinct(tmp_path: Path) -> None:
@@ -311,11 +357,56 @@ def test_dbc_bound_comes_from_the_vfp_backlink_not_a_dbc_file(sample_input_dir: 
             bounded = read_schema(dbf_path)
             assert bounded.dbc_bound is True
             assert bounded.dbc_backlink_path == "..\\data\\app.dbc"
-            assert bounded.dbc_backlink_path.encode("utf-8") == path_bytes.rstrip(b"\x00")
+            assert bounded.dbc_backlink_path.encode("cp1250") == path_bytes.rstrip(b"\x00")
         finally:
             _patch_header_bytes(dbf_path, {terminator_offset: original})
     finally:
         dbc_file.unlink(missing_ok=True)
+
+
+def test_dbc_backlink_decodes_with_the_resolved_header_encoding(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    assert inspect_table(dbf_path).encoding == "cp1250"
+    terminator_offset = 32 + 32 * _field_count(dbf_path) + 1
+    original = dbf_path.read_bytes()[terminator_offset : terminator_offset + 263]
+    try:
+        # A backlink path with Polish characters stored in cp1250 (the
+        # encoding resolved from the language driver) must decode correctly.
+        unicode_path = "..\\dane\\ąęŚŹ\\baza.dbc"
+        path_bytes = unicode_path.encode("cp1250") + b"\x00"
+        assert path_bytes[: len(unicode_path.encode("cp1250"))] != unicode_path.encode("utf-8")
+        _patch_header_bytes(
+            dbf_path, {terminator_offset: path_bytes + b"\x00" * (263 - len(path_bytes))}
+        )
+        schema = read_schema(dbf_path)
+        assert schema.dbc_bound is True
+        assert schema.dbc_backlink_path == unicode_path
+        assert schema.warnings == ()
+        _assert_json_safe(schema.to_dict())
+    finally:
+        _patch_header_bytes(dbf_path, {terminator_offset: original})
+
+
+def test_undecodable_backlink_still_reports_dbc_bound(sample_input_dir: Path) -> None:
+    dbf_path = sample_input_dir / "zamowienia" / "zamowienia.dbf"
+    terminator_offset = 32 + 32 * _field_count(dbf_path) + 1
+    original = dbf_path.read_bytes()[terminator_offset : terminator_offset + 263]
+    try:
+        # Bytes 0x81/0x83/0x88 are undefined in cp1250: decoding must fail,
+        # but the DBC binding itself must stay visible.
+        _patch_header_bytes(dbf_path, {terminator_offset: b"\x81\x83\x88app.dbc" + b"\x00" * 253})
+        schema = read_schema(dbf_path)
+        assert schema.dbc_bound is True
+        assert schema.dbc_backlink_path is None
+        assert len(schema.warnings) == 1
+        assert "backlink" in schema.warnings[0].lower()
+        assert "cp1250" in schema.warnings[0]
+        payload = json.loads(json.dumps(schema.to_dict()))
+        assert payload["dbc_bound"] is True
+        assert payload["dbc_backlink_path"] is None
+        _assert_json_safe(schema.to_dict())
+    finally:
+        _patch_header_bytes(dbf_path, {terminator_offset: original})
 
 
 def test_vfp_field_flags_nullable_binary_and_memo(tmp_path: Path) -> None:
@@ -329,6 +420,7 @@ def test_vfp_field_flags_nullable_binary_and_memo(tmp_path: Path) -> None:
 
     assert fields["KOD"].nullable is True
     assert fields["KOD"].flags & 0x02
+    assert fields["KOD"].nocptrans is False
     assert fields["DANE"].nocptrans is True
     assert fields["DANE"].flags & 0x04
     assert fields["DANE"].is_binary is True
@@ -337,6 +429,17 @@ def test_vfp_field_flags_nullable_binary_and_memo(tmp_path: Path) -> None:
     assert fields["TEKST"].supported is True
     assert fields["NOTATKA"].is_memo is True
     assert any("DANE" in warning for warning in info.warnings)
+
+    # A real 0x04 flag on a Memo field keeps the NOCPTRANS semantics.
+    notatkaflags_offset = 32 + 3 * 32 + 18
+    original_flags = dbf_path.read_bytes()[notatkaflags_offset]
+    try:
+        _patch_header_bytes(dbf_path, {notatkaflags_offset: b"\x04"})
+        fields = {field.name: field for field in inspect_table(dbf_path).fields}
+        assert fields["NOTATKA"].nocptrans is True
+        assert fields["NOTATKA"].is_memo is True
+    finally:
+        _patch_header_bytes(dbf_path, {notatkaflags_offset: bytes([original_flags])})
 
 
 def test_language_drivers_cp1250_cp852_and_mazovia(tmp_path: Path) -> None:
@@ -658,16 +761,19 @@ def test_truncated_vfp_backlink_area_is_rejected(sample_input_dir: Path) -> None
         _patch_header_bytes(dbf_path, {8: struct.pack("<H", header_length)})
 
 
-def test_vfp_autoincrement_descriptor_is_exposed(tmp_path: Path) -> None:
+def test_vfp_autoincrement_integer_with_mask_is_exposed(tmp_path: Path) -> None:
     dbf_path = _create_vfp_table(
-        tmp_path / "AINC.dbf", "KOD N(6,0); NAZWA C(40)", [{"KOD": 1, "NAZWA": "x"}]
+        tmp_path / "AINC.dbf", "KOD N(4,0); NAZWA C(40)", [{"KOD": 7, "NAZWA": "x"}]
     )
     # Properly constructed VFP autoincrement descriptor for field 1 (KOD):
-    # type byte 11 -> '+', bytes 19-22 -> next value (LE), byte 23 -> step.
+    # version 0x31 (autoincrement enabled), physical type Integer 'I',
+    # field-flags mask 0x0C, next value in bytes 19-22 (LE), step in byte 23.
     _patch_header_bytes(
         dbf_path,
         {
-            32 + 11: b"+",
+            0: b"\x31",
+            32 + 11: b"I",
+            32 + 18: b"\x0c",
             32 + 19: struct.pack("<L", 42),
             32 + 23: b"\x02",
         },
@@ -676,17 +782,55 @@ def test_vfp_autoincrement_descriptor_is_exposed(tmp_path: Path) -> None:
     fields = {field.name: field for field in info.fields}
 
     assert fields["KOD"].is_autoincrement is True
-    assert fields["KOD"].dbf_type == "+"
+    assert fields["KOD"].dbf_type == "I"
+    assert fields["KOD"].flags & 0x0C == 0x0C
     assert fields["KOD"].autoincrement_next_value == 42
     assert fields["KOD"].autoincrement_step == 2
+    # Bit 0x04 inside the autoincrement mask is not NOCPTRANS/binary.
+    assert fields["KOD"].nocptrans is False
+    assert fields["KOD"].is_binary is False
+    assert fields["KOD"].supported is True
+    # A plain Character field in the same table is not autoincrement.
     assert fields["NAZWA"].is_autoincrement is False
     assert fields["NAZWA"].autoincrement_next_value == 0
     assert fields["NAZWA"].autoincrement_step == 0
-    payload = json.dumps(info.to_dict())
-    assert (
-        '"autoincrement_next_value": 42' in payload
-        or json.loads(payload)["fields"][0]["autoincrement_next_value"] == 42
+    payload = json.loads(json.dumps(info.to_dict()))
+    autoinc = next(item for item in payload["fields"] if item["name"] == "KOD")
+    assert autoinc["autoincrement_next_value"] == 42
+    assert autoinc["autoincrement_step"] == 2
+    assert autoinc["is_autoincrement"] is True
+
+
+def test_vfp_integer_without_autoincrement_mask_is_not_autoincrement(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "PLAINI.dbf", "KOD N(4,0); NAZWA C(40)", [{"KOD": 7, "NAZWA": "x"}]
     )
+    _patch_header_bytes(dbf_path, {32 + 11: b"I"})  # Integer type, no 0x0C mask
+    fields = {field.name: field for field in inspect_table(dbf_path).fields}
+    assert fields["KOD"].dbf_type == "I"
+    assert fields["KOD"].flags & 0x0C == 0
+    assert fields["KOD"].is_autoincrement is False
+
+
+def test_plus_type_is_never_vfp_autoincrement_evidence(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(tmp_path / "PLUS.dbf", "KOD N(6,0)", [{"KOD": 1}])
+    _patch_header_bytes(dbf_path, {0: b"\x31", 32 + 11: b"+"})
+    fields = {field.name: field for field in inspect_table(dbf_path).fields}
+    # The dBASE Level 7 '+' type is not evidence of VFP autoincrement.
+    assert fields["KOD"].dbf_type == "+"
+    assert fields["KOD"].is_autoincrement is False
+
+    # Even with the autoincrement mask set, VFP requires the Integer type.
+    _patch_header_bytes(dbf_path, {32 + 18: b"\x0c"})
+    fields = {field.name: field for field in inspect_table(dbf_path).fields}
+    assert fields["KOD"].is_autoincrement is False
+
+    # Outside VFP (dBASE Level 7 territory), physical type '+' remains the
+    # autoincrement marker (migration compatibility, not VFP semantics).
+    _patch_header_bytes(dbf_path, {0: b"\x03"})
+    fields = {field.name: field for field in inspect_table(dbf_path).fields}
+    assert fields["KOD"].dbf_type == "+"
+    assert fields["KOD"].is_autoincrement is True
 
 
 def test_general_and_picture_memos_are_semantic_binary(tmp_path: Path) -> None:
@@ -723,8 +867,14 @@ def test_dbt_memo_version_is_marked_unsupported_for_direct_read(tmp_path: Path) 
     assert schema.memo_companion_format == "DBT"
     assert schema.memo_companion_present is True
     assert schema.memo_companion_path is not None
-    assert schema.memo_block_size is None  # not an FPT: no FPT block details
-    assert any("DBT" in w and "not supported" in w for w in schema.warnings)
+    assert schema.memo_companion_size_bytes == 16
+    assert schema.memo_block_size is None  # DBT: never interpreted as an FPT header
+    assert schema.memo_next_free_block is None
+    # Exactly one diagnostic: the format report, no FPT-header warnings.
+    assert schema.warnings == (
+        "Memo companion format DBT ('DBT.dbt') is not supported for reading in "
+        "Direct Read; only FPT (VFP/FoxPro) is supported.",
+    )
 
 
 def test_smt_memo_version_uses_smt_companion(tmp_path: Path) -> None:
@@ -736,7 +886,12 @@ def test_smt_memo_version_uses_smt_companion(tmp_path: Path) -> None:
     schema = read_schema(dbf_path)
     assert schema.memo_companion_format == "SMT"
     assert schema.memo_companion_present is True
-    assert any("SMT" in w and "not supported" in w for w in schema.warnings)
+    assert schema.memo_block_size is None  # SMT: never interpreted as an FPT header
+    # Exactly one diagnostic: the format report, no FPT-header warnings.
+    assert schema.warnings == (
+        "Memo companion format SMT ('SMT.smt') is not supported for reading in "
+        "Direct Read; only FPT (VFP/FoxPro) is supported.",
+    )
 
 
 def test_short_fpt_header_is_a_diagnostic_warning(tmp_path: Path) -> None:
@@ -745,23 +900,58 @@ def test_short_fpt_header_is_a_diagnostic_warning(tmp_path: Path) -> None:
         "KOD N(6,0); NOTATKA M",
         [{"KOD": 1, "NOTATKA": "x"}],
     )
-    (tmp_path / "SHORTFPT.fpt").write_bytes(b"\x00" * 4)  # shorter than an FPT header
+    (tmp_path / "SHORTFPT.fpt").write_bytes(b"\x00" * 4)  # shorter than the 8-byte prefix
     schema = read_schema(dbf_path)
     assert schema.memo_companion_present is True
     assert schema.memo_companion_size_bytes == 4
     assert schema.memo_block_size is None
-    assert any("FPT" in w and "8-byte" in w for w in schema.warnings)
+    # Exactly one warning: the unreadable 8-byte prefix.
+    assert len(schema.warnings) == 1
+    assert "FPT" in schema.warnings[0] and "8-byte" in schema.warnings[0]
 
 
-def test_invalid_fpt_block_size_is_a_diagnostic_warning(tmp_path: Path) -> None:
+def test_sub_512_fpt_file_is_structurally_suspicious(tmp_path: Path) -> None:
     dbf_path = _create_vfp_table(
-        tmp_path / "BADFPT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+        tmp_path / "THINfpt.dbf",
+        "KOD N(6,0); NOTATKA M",
+        [{"KOD": 1, "NOTATKA": "x"}],
     )
-    # 8-byte FPT header with a non power-of-two block size.
-    (tmp_path / "BADFPT.fpt").write_bytes(struct.pack(">LHH", 1, 0, 96) + b"\x00" * 8)
+    # 8-byte prefix readable (valid block size), but the full FPT header
+    # record is 512 bytes: a shorter file is structurally suspicious.
+    (tmp_path / "THINfpt.fpt").write_bytes(struct.pack(">LHH", 1, 0, 64) + b"\x00" * 56)
     schema = read_schema(dbf_path)
-    assert schema.memo_block_size == 96
-    assert any("block" in w.lower() and "96" in w for w in schema.warnings)
+    assert schema.memo_companion_size_bytes == 64
+    assert schema.memo_block_size == 64
+    # Exactly one warning: the structurally suspicious length.
+    assert len(schema.warnings) == 1
+    assert "FPT" in schema.warnings[0] and "512" in schema.warnings[0]
+
+
+def test_fpt_block_sizes_are_not_restricted_to_powers_of_two(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "BLOCKS.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    # SET BLOCKSIZE TO 0 stores 1; values 1-32 select 512-byte units and
+    # values above 32 are plain byte sizes (e.g. 64, 96).  A full FPT header
+    # record is 512 bytes; accepted sizes stay warning-free.
+    for block_size in (1, 64, 96, 512, 4096, 16384):
+        (tmp_path / "BLOCKS.fpt").write_bytes(struct.pack(">LHH", 5, 0, block_size) + b"\x00" * 504)
+        schema = read_schema(dbf_path)
+        assert schema.memo_block_size == block_size, block_size
+        assert schema.memo_next_free_block == 5, block_size
+        assert schema.warnings == (), (block_size, schema.warnings)
+
+
+def test_fpt_block_size_zero_is_a_diagnostic_warning(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "ZEROBLOCK.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    (tmp_path / "ZEROBLOCK.fpt").write_bytes(struct.pack(">LHH", 1, 0, 0) + b"\x00" * 504)
+    schema = read_schema(dbf_path)
+    assert schema.memo_block_size == 0
+    # Exactly one warning: the invalid block size.
+    assert len(schema.warnings) == 1
+    assert "block size 0" in schema.warnings[0]
 
 
 def test_structural_cdx_flag_without_companion_warns(tmp_path: Path) -> None:
@@ -804,6 +994,51 @@ def test_scandir_failure_is_a_typed_io_error(tmp_path: Path, monkeypatch) -> Non
     assert error.value.code is ErrorCode.DBF_IO_ERROR
     assert error.value.path is not None
     _assert_json_safe(error.value.to_dict())
+
+
+def test_forced_fpt_stat_failure_is_a_typed_io_error(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "IOSTAT.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    (tmp_path / "IOSTAT.fpt").write_bytes(struct.pack(">LHH", 1, 0, 64) + b"\x00" * 504)
+    real_stat = Path.stat
+
+    def broken_stat(self: Path, *args, **kwargs):
+        if self.suffix.lower() == ".fpt":
+            raise PermissionError(13, "access denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", broken_stat)
+    with pytest.raises(DbfIoError) as error:
+        read_schema(dbf_path)
+    assert error.value.code is ErrorCode.DBF_IO_ERROR
+    # A typed DirectReadError, never the raw OSError.
+    assert not isinstance(error.value, OSError)
+    assert error.value.path is not None
+    assert "IOSTAT.fpt" in error.value.path
+    _assert_json_safe(error.value.to_dict())
+
+
+def test_read_schema_opens_fpt_header_at_most_once(tmp_path: Path, monkeypatch) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "ONCE.dbf", "KOD N(6,0); NOTATKA M", [{"KOD": 1, "NOTATKA": "x"}]
+    )
+    fpt_path = tmp_path / "ONCE.fpt"
+    fpt_path.write_bytes(struct.pack(">LHH", 1, 0, 64) + b"\x00" * 504)
+
+    opened: list[str] = []
+    real_open = Path.open
+
+    def counting_open(self: Path, *args, **kwargs):
+        if self.suffix.lower() == ".fpt":
+            opened.append(str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    schema = read_schema(dbf_path)
+    assert len(opened) == 1, opened  # one read_schema -> one FPT header read
+    assert schema.memo_block_size == 64
+    assert schema.warnings == ()
 
 
 def test_error_to_dict_is_json_safe_with_hostile_context(tmp_path: Path) -> None:

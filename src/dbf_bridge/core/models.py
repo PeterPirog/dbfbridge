@@ -13,7 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .header import ParsedField, ParsedHeader, fpt_header_details, last_update_date
+from .fields import is_autoincrement_field, is_nocptrans_field
+from .header import (
+    ParsedField,
+    ParsedHeader,
+    fpt_header_details,
+    last_update_date,
+    memo_companion_format,
+)
 
 
 @dataclass(frozen=True)
@@ -26,7 +33,13 @@ class CompanionFile:
 
 @dataclass(frozen=True)
 class FieldInfo:
-    """Physical and logical properties of one DBF field."""
+    """Physical and logical properties of one DBF field.
+
+    ``index_field_flag`` (descriptor byte 31) is kept only for migration
+    schema compatibility: VFP reserves descriptor bytes 24-31, so the byte
+    is not reliable information about whether the field belongs to a CDX
+    index.
+    """
 
     ordinal: int
     name: str
@@ -42,6 +55,11 @@ class FieldInfo:
     is_binary: bool
     supported: bool
     unsupported_reason: str | None = None
+    #: DBF version byte of the parent table (0 when unknown).  It decides
+    #: how ``is_autoincrement`` is interpreted: Visual FoxPro marks
+    #: autoincrement with the field-flags mask 0x0C on an Integer field,
+    #: while dBASE Level 7 uses the physical type ``+``.
+    dbversion_byte: int = 0
 
     @property
     def dbf_type_name(self) -> str:
@@ -62,13 +80,25 @@ class FieldInfo:
 
     @property
     def nocptrans(self) -> bool:
-        """The descriptor's binary/NOCPTRANS flag (bit 0x04)."""
-        return bool(self.flags & 0x04)
+        """The descriptor's binary/NOCPTRANS flag (bit 0x04) where it is
+        meaningful: for Character/Varchar and memo fields only.  Bit 0x04 is
+        part of the VFP autoincrement mask 0x0C, so an autoincrement Integer
+        (or other numeric column) is never reported as NOCPTRANS."""
+        return is_nocptrans_field(self.dbf_type, self.flags)
 
     @property
     def is_autoincrement(self) -> bool:
-        """Whether the field is an autoincrement field (type ``+``)."""
-        return self.dbf_type == "+"
+        """Whether the field is an autoincrement field.
+
+        Visual FoxPro derives this from the field-flags mask 0x0C on an
+        Integer (``I``) field (``autoincrement_next_value``/..._step come
+        from descriptor bytes 19-22 LE and 23).  The dBASE Level 7 type
+        ``+`` is recognized only outside VFP and never proves VFP
+        autoincrement semantics.
+        """
+        return is_autoincrement_field(
+            dbf_type=self.dbf_type, flags=self.flags, dbversion_byte=self.dbversion_byte
+        )
 
     @classmethod
     def from_parsed(cls, field: ParsedField) -> FieldInfo:
@@ -87,6 +117,7 @@ class FieldInfo:
             is_binary=field.is_binary,
             supported=field.supported,
             unsupported_reason=field.unsupported_reason,
+            dbversion_byte=field.dbversion_byte,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +142,7 @@ class FieldInfo:
             "is_binary": self.is_binary,
             "supported": self.supported,
             "unsupported_reason": self.unsupported_reason,
+            "dbversion_byte": self.dbversion_byte,
         }
 
 
@@ -128,9 +160,17 @@ class TableInfo:
     has_memo_flag: bool
     has_structural_cdx: bool
     is_database_container: bool
+    #: Raw table-flags byte (header offset 28); the bits are exposed through
+    #: the derived booleans below.
+    table_flags: int
     dbc_bound: bool
     fields: tuple[FieldInfo, ...]
     warnings: tuple[str, ...] = ()
+
+    @property
+    def table_flags_hex(self) -> str:
+        """The raw table-flags byte as a ``0xNN`` hex string."""
+        return f"0x{self.table_flags:02x}"
 
     @classmethod
     def from_parsed(cls, header: ParsedHeader, *, warnings: tuple[str, ...] = ()) -> TableInfo:
@@ -145,6 +185,7 @@ class TableInfo:
             has_memo_flag=header.has_memo_flag,
             has_structural_cdx=header.has_structural_cdx,
             is_database_container=header.is_database_container,
+            table_flags=header.table_flags,
             dbc_bound=header.dbc_bound,
             fields=tuple(FieldInfo.from_parsed(field) for field in header.fields),
             warnings=warnings,
@@ -164,6 +205,8 @@ class TableInfo:
             "has_memo_flag": self.has_memo_flag,
             "has_structural_cdx": self.has_structural_cdx,
             "is_database_container": self.is_database_container,
+            "table_flags": self.table_flags,
+            "table_flags_hex": self.table_flags_hex,
             "dbc_bound": self.dbc_bound,
             "fields": [field.to_dict() for field in self.fields],
             "warnings": list(self.warnings),
@@ -191,6 +234,9 @@ class TableSchema:
     is_database_container: bool
     dbc_bound: bool
     dbc_backlink_path: str | None
+    #: Raw table-flags byte (header offset 28); the bits are exposed through
+    #: the derived booleans below.
+    table_flags: int
     fields: tuple[FieldInfo, ...]
     warnings: tuple[str, ...]
     dbversion_byte: int
@@ -207,6 +253,11 @@ class TableSchema:
     companion_cdx_present: bool
     companion_cdx_path: str | None
 
+    @property
+    def table_flags_hex(self) -> str:
+        """The raw table-flags byte as a ``0xNN`` hex string."""
+        return f"0x{self.table_flags:02x}"
+
     @classmethod
     def from_parsed(
         cls,
@@ -215,10 +266,26 @@ class TableSchema:
         warnings: tuple[str, ...] = (),
         memo_companion: CompanionFile | None = None,
         cdx_companion: CompanionFile | None = None,
+        memo_details: tuple[int | None, int | None, int | None] | None = None,
     ) -> TableSchema:
-        memo_size, memo_next_free, memo_block = fpt_header_details(
-            memo_companion.path if memo_companion is not None else None
-        )
+        """Build the schema from a parsed header (with pre-computed memo
+        companion details so the FPT header is read at most once per run)."""
+        if memo_details is None:
+            memo_details = fpt_header_details(
+                memo_companion.path if memo_companion is not None else None
+            )
+        memo_size, memo_next_free, memo_block = memo_details
+        # Memo fields or the memo table flag mean a companion of the format
+        # implied by the DBF version is expected — report that format even
+        # when the companion file itself is missing (presence/path/size stay
+        # separate, false-valued fields).
+        expected_memo_format = memo_companion_format(header.dbversion_byte)
+        if memo_companion is not None:
+            memo_format: str | None = memo_companion.format
+        else:
+            memo_format = (
+                expected_memo_format if (header.has_memo_fields or header.has_memo_flag) else None
+            )
         return cls(
             path=header.path,
             record_count=header.record_count,
@@ -232,6 +299,7 @@ class TableSchema:
             is_database_container=header.is_database_container,
             dbc_bound=header.dbc_bound,
             dbc_backlink_path=header.dbc_backlink_path,
+            table_flags=header.table_flags,
             fields=tuple(FieldInfo.from_parsed(field) for field in header.fields),
             warnings=warnings,
             dbversion_byte=header.dbversion_byte,
@@ -239,7 +307,7 @@ class TableSchema:
             last_update=last_update_date(header.year, header.month, header.day),
             incomplete_transaction=bool(header.incomplete_transaction),
             encryption_flag=bool(header.encryption_flag),
-            memo_companion_format=memo_companion.format if memo_companion is not None else None,
+            memo_companion_format=memo_format,
             memo_companion_present=memo_companion is not None,
             memo_companion_path=memo_companion.path.as_posix() if memo_companion else None,
             memo_companion_size_bytes=memo_size,
@@ -263,6 +331,8 @@ class TableSchema:
             "has_memo_flag": self.has_memo_flag,
             "has_structural_cdx": self.has_structural_cdx,
             "is_database_container": self.is_database_container,
+            "table_flags": self.table_flags,
+            "table_flags_hex": self.table_flags_hex,
             "dbc_bound": self.dbc_bound,
             "dbc_backlink_path": self.dbc_backlink_path,
             "fields": [field.to_dict() for field in self.fields],

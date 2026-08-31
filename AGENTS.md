@@ -112,9 +112,21 @@ of the record count; the descriptor scan never runs past it) plus at most one
 case-insensitive companion-file lookup per call (direct exact-name paths are
 checked first, so the common case performs no directory scan). The header
 table-flags byte (offset 28) is a bit mask: 0x01 structural CDX, 0x02 memo,
-0x04 database container; `dbc_bound` comes from the 263-byte VFP backlink
-path, never from a neighbouring `.dbc` file. The exporter delegates its header
-parse to `core.header.parse_header` and its Mazovia table to `core.codecs` —
+0x04 database container; the raw value is exposed as `table_flags`/
+`table_flags_hex` on the public models; `dbc_bound` comes from the 263-byte
+VFP backlink path, never from a neighbouring `.dbc` file. VFP autoincrement
+is the field-flags mask 0x0C on an Integer (`I`) field — type `+` is a
+dBASE Level 7 marker outside VFP only; next value/step are descriptor bytes
+19-22 (LE) and 23. `index_field_flag` (byte 31) is kept only for migration
+compatibility: VFP reserves bytes 24-31 and the byte is not reliable CDX
+evidence. The 0x04 bit means NOCPTRANS only for Character/Varchar and memo
+fields. FPT health rules: the header record is 512 bytes, the 8-byte prefix
+carries next-free block and block size, block size 0 is invalid, 1-32 mean
+512-byte units and >32 are plain byte sizes (no power-of-two rule);
+DBT/SMT companions are never parsed as FPT, and one `read_schema` call reads
+a given FPT header at most once (all companion stat/open/read failures are
+typed `DbfIoError`). The exporter delegates its header parse to
+`core.header.parse_header` and its Mazovia table to `core.codecs` —
 there is exactly one header parser and one codepage table in the codebase.
 `import dbfbridge` must register no codepage, create no files, and load no
 CLI/reporting or heavy dependency.

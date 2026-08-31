@@ -275,22 +275,36 @@ print(schema.memo_companion_format, schema.companion_cdx_present)
 print(json.dumps(info.to_dict()))  # JSON-safe: no bytes, no Path
 ```
 
-The header table-flags byte is a **bit mask**: `has_structural_cdx` (0x01),
-`has_memo_flag` (0x02), `is_database_container` (0x04). `dbc_bound` comes
-from the VFP database-container backlink path in the 263-byte header
-extension (`schema.dbc_backlink_path`), not from a neighbouring `.dbc` file.
-The last-update date is `1900 + year_byte` with no century pivot. `FieldInfo`
-exposes the descriptor facts an MCP consumer needs, including `nocptrans`
-(the binary flag), `index_field_flag`, and the VFP autoincrement trio
-(`is_autoincrement`, `autoincrement_next_value`, `autoincrement_step`); the
-semantic `is_binary` classification also covers G/P/binary memo fields.
+The header table-flags byte (offset 28) is a **bit mask**: `has_structural_cdx`
+(0x01), `has_memo_flag` (0x02), `is_database_container` (0x04). Its raw value is
+exposed as `table_flags` (int) and `table_flags_hex` on both `TableInfo` and
+`TableSchema`. `dbc_bound` comes from the VFP database-container backlink path
+in the 263-byte header extension (`schema.dbc_backlink_path`), decoded with the
+encoding resolved from the language driver (or the explicit override), not from
+a neighbouring `.dbc` file; an undecodable backlink keeps `dbc_bound = true`
+and reports the path as null plus a warning. The last-update date is
+`1900 + year_byte` with no century pivot. `FieldInfo` exposes the descriptor
+facts an MCP consumer needs: `nocptrans` is the binary flag **where VFP
+documents it** (Character/Varchar and memo fields only — it is never inferred
+from an autoincrement Integer), `index_field_flag` (byte 31) is kept only for
+migration-schema compatibility (VFP reserves bytes 24-31, so it is **not**
+reliable CDX-membership evidence), and the VFP autoincrement facts
+(`is_autoincrement`, `autoincrement_next_value`, `autoincrement_step`)
+follow the VFP field-flags mask 0x0C on an Integer (`I`) field — the dBASE
+Level 7 type `+` is recognized outside VFP only; the semantic `is_binary`
+classification also covers G/P/binary memo fields.
 
 Memo companion format follows the DBF version: VFP/FoxPro use `.fpt` (the
 only format Direct Read can read), dBASE III+/IV use `.dbt` and HiPer-Six
-`.smt`, which are reported with an explicit "not supported" warning. A
-missing required companion, a short/invalid FPT header, or a structural-CDX
-flag without a `.cdx` file is a structured warning in `warnings`, never an
-opaque failure.
+`.smt`, which are reported with an explicit "not supported" warning and are
+never interpreted as FPT headers. A complete FPT header record is 512 bytes;
+the 8-byte prefix is enough to read the next-free block and the block size,
+files shorter than 512 bytes are reported as structurally suspicious, and a
+block size of 0 is invalid — sizes 1-32 select 512-byte units (SET BLOCKSIZE
+TO 0 stores 1) and sizes above 32 are plain byte counts, so there is no
+power-of-two rule. A missing required companion, an unreadable/suspicious FPT
+header, or a structural-CDX flag without a `.cdx` file is a structured warning
+in `warnings`, never an opaque failure.
 
 Structured failures carry a machine code instead of free text:
 

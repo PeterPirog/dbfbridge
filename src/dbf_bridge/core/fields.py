@@ -37,11 +37,53 @@ SYSTEM_FIELD_FLAG = 0x01
 NULLABLE_FIELD_FLAG = 0x02
 BINARY_FIELD_FLAG = 0x04
 
+#: Visual FoxPro autoincrementing field-flags mask (both bits 0x04 | 0x08).
+#: In VFP it marks an Integer (``I``) field whose next value/step live in
+#: descriptor bytes 19-22 (little-endian) and 23.
+VFP_AUTOINCREMENT_FIELD_MASK = 0x0C
+
+#: Field types where the 0x04 descriptor bit means binary/NOCPTRANS.  VFP
+#: documents it for Character and Memo only; bit 0x04 is also part of the
+#: autoincrement mask 0x0C and must not classify Integer autoincrement
+#: fields (or other numeric columns) as NOCPTRANS-binary.
+NOCPTRANS_FIELD_TYPES = frozenset({"C", "V", "M", "G", "P", "W"})
+
 #: VFP field types that dbfbridge does not export safely.
 UNSUPPORTED_FIELD_TYPES = frozenset({"Q", "W"})
 
 #: DBF version bytes where type ``B`` (length 8) is a double, not a binary memo.
 VFP_DOUBLE_VERSIONS = frozenset({0x30, 0x31, 0x32})
+
+#: Visual FoxPro DBF version bytes (0x30 plain, 0x31 autoincrement, 0x32 Varchar).
+VFP_VERSIONS = frozenset({0x30, 0x31, 0x32})
+
+
+def is_nocptrans_field(dbf_type: str, flags: int) -> bool:
+    """Whether the descriptor's bit 0x04 means binary/NOCPTRANS.
+
+    VFP documents bit 0x04 as a binary column flag "for CHAR and MEMO only";
+    for other field types (notably autoincrement Integer, whose mask 0x0C
+    contains bit 0x04, and nullable+binary 0x06 columns) it carries no
+    NOCPTRANS semantics.
+    """
+    return bool(flags & BINARY_FIELD_FLAG) and dbf_type in NOCPTRANS_FIELD_TYPES
+
+
+def is_autoincrement_field(*, dbf_type: str, flags: int, dbversion_byte: int) -> bool:
+    """Whether a field descriptor is an autoincrement field.
+
+    Visual FoxPro marks autoincrementing columns with the field-flags mask
+    0x0C on an Integer (``I``) field; next value and step live in descriptor
+    bytes 19-22 (little-endian) and 23.  dBASE Level 7 uses the physical type
+    ``+`` instead: outside VFP that type alone remains the autoincrement
+    marker, while inside VFP it is never evidence of autoincrement.
+    """
+    if dbversion_byte in VFP_VERSIONS:
+        return (
+            dbf_type == "I"
+            and (flags & VFP_AUTOINCREMENT_FIELD_MASK) == VFP_AUTOINCREMENT_FIELD_MASK
+        )
+    return dbf_type == "+"
 
 
 def type_name(dbf_type: str) -> str:
@@ -133,10 +175,15 @@ __all__ = [
     "BINARY_FIELD_FLAG",
     "FIELD_TYPE_NAMES",
     "FieldClassification",
+    "NOCPTRANS_FIELD_TYPES",
     "NULLABLE_FIELD_FLAG",
     "SYSTEM_FIELD_FLAG",
     "UNSUPPORTED_FIELD_TYPES",
+    "VFP_AUTOINCREMENT_FIELD_MASK",
     "VFP_DOUBLE_VERSIONS",
+    "VFP_VERSIONS",
     "classify_field",
+    "is_autoincrement_field",
+    "is_nocptrans_field",
     "type_name",
 ]

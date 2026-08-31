@@ -14,6 +14,8 @@ from pathlib import Path
 
 from . import errors
 from .header import (
+    FPT_HEADER_PREFIX,
+    FPT_HEADER_RECORD_SIZE,
     SUPPORTED_MEMO_FORMATS,
     ParsedHeader,
     fpt_header_details,
@@ -24,8 +26,9 @@ from .header import (
 )
 from .models import CompanionFile, FieldInfo, TableInfo, TableSchema  # noqa: F401 (re-export)
 
-#: Valid FPT block sizes are powers of two between 64 and 4096 bytes.
-_VALID_FPT_BLOCK_SIZES = frozenset(64 << shift for shift in range(0, 7))
+MemoDetails = tuple[int | None, int | None, int | None]
+#: Memo companion file size and FPT prefix values when no details were read.
+_NO_MEMO_DETAILS: MemoDetails = (None, None, None)
 
 
 def _find_companions(directory: Path, stem: str, extensions: tuple[str, ...]) -> dict[str, Path]:
@@ -81,31 +84,11 @@ def _companions(
     return memo, cdx
 
 
-def _fpt_health_warning(memo_companion: CompanionFile | None) -> str | None:
-    """Diagnostic warning when an FPT companion header is unreadable/invalid."""
-    if memo_companion is None:
-        return None
-    size, next_free, block = fpt_header_details(memo_companion.path)
-    if size is None:
-        return None
-    if size < 8:
-        return (
-            f"FPT companion '{memo_companion.path.name}' is only {size} bytes long; "
-            "its 8-byte file header is missing."
-        )
-    if next_free is None or block is None:
-        return f"FPT companion '{memo_companion.path.name}' has an unreadable file header."
-    if block not in _VALID_FPT_BLOCK_SIZES:
-        return (
-            f"FPT companion '{memo_companion.path.name}' declares an invalid block "
-            f"size {block} (expected a power of two between 64 and 4096)."
-        )
-    return None
-
-
 def _load(
     dbf_path: Path,
-) -> tuple[ParsedHeader, CompanionFile | None, CompanionFile | None, tuple[str, ...]]:
+) -> tuple[ParsedHeader, CompanionFile | None, CompanionFile | None, tuple[str, ...], MemoDetails]:
+    """Parse the header once, discover companions once, and read an FPT
+    companion prefix at most once for the whole call."""
     header = parse_header(dbf_path)
     memo_companion, cdx_companion = _companions(dbf_path, header)
     warnings: list[str] = []
@@ -116,10 +99,21 @@ def _load(
             f"day={header.day}); it is reported as null."
         )
 
+    if header.dbc_bound and header.dbc_backlink_path is None:
+        warnings.append(
+            f"DBC backlink is present but cannot be decoded with encoding "
+            f"{header.encoding!r}; the backlink path is reported as null and "
+            "the table remains DBC-bound."
+        )
+
+    memo_details: MemoDetails = _NO_MEMO_DETAILS
+    if memo_companion is not None:
+        memo_details = fpt_header_details(memo_companion.path)
+
     memo_format = memo_companion_format(header.dbversion_byte)
     if header.has_memo_fields:
-        expected_ext = memo_companion_extension(header.dbversion_byte)
         if memo_companion is None:
+            expected_ext = memo_companion_extension(header.dbversion_byte)
             names = ", ".join(f"'{field.name}'" for field in header.fields if field.is_memo)
             warnings.append(
                 f"Memo fields {names} require a {memo_format or 'memo'} companion file "
@@ -133,9 +127,8 @@ def _load(
                     f"('{memo_companion.path.name}') is not supported for reading in "
                     "Direct Read; only FPT (VFP/FoxPro) is supported."
                 )
-            fpt_warning = _fpt_health_warning(memo_companion)
-            if fpt_warning is not None:
-                warnings.append(fpt_warning)
+            else:
+                warnings.extend(_fpt_health_warnings(memo_companion, memo_details))
     if header.has_structural_cdx and cdx_companion is None:
         warnings.append(
             "The structural CDX flag is set in the header but no .cdx companion "
@@ -147,7 +140,40 @@ def _load(
                 f"Field '{field.name}' ({field.dbf_type}) is not supported for export: "
                 f"{field.unsupported_reason}"
             )
-    return header, memo_companion, cdx_companion, tuple(warnings)
+    return header, memo_companion, cdx_companion, tuple(warnings), memo_details
+
+
+def _fpt_health_warnings(memo_companion: CompanionFile, details: MemoDetails) -> list[str]:
+    """Structural diagnostics for a present FPT companion.
+
+    FPT rules: the 8-byte header prefix is enough to read next-free block
+    and block size, but a full FPT header record is 512 bytes, so a shorter
+    file is structurally suspicious; the stored block size must be nonzero
+    (SET BLOCKSIZE TO 0 stores 1; values 1-32 select 512-byte units and
+    larger values are plain byte sizes — there is no power-of-two rule).
+    """
+    size, _next_free, block_size = details
+    messages: list[str] = []
+    if size is not None and size < FPT_HEADER_PREFIX.size:
+        messages.append(
+            f"FPT companion '{memo_companion.path.name}' is only {size} bytes long; "
+            f"its {FPT_HEADER_PREFIX.size}-byte header prefix (next-free block and "
+            "block size) cannot be read."
+        )
+        return messages
+    if size is not None and size < FPT_HEADER_RECORD_SIZE:
+        messages.append(
+            f"FPT companion '{memo_companion.path.name}' is only {size} bytes long; "
+            f"a complete FPT header record is {FPT_HEADER_RECORD_SIZE} bytes, so the "
+            "file is structurally suspicious."
+        )
+    if block_size == 0:
+        messages.append(
+            f"FPT companion '{memo_companion.path.name}' declares an invalid block "
+            "size 0; a nonzero block size is required (1-32 selects 512-byte units, "
+            "larger values are plain byte sizes)."
+        )
+    return messages
 
 
 def _as_dbf_path(path: str | os.PathLike[str]) -> Path:
@@ -164,7 +190,7 @@ def inspect_table(path: str | os.PathLike[str]) -> TableInfo:
     ``TableInfo.warnings`` when the header itself is safe to describe.
     """
     dbf_path = _as_dbf_path(path)
-    header, _memo, _cdx, warnings = _load(dbf_path)
+    header, _memo, _cdx, warnings, _details = _load(dbf_path)
     return TableInfo.from_parsed(header, warnings=warnings)
 
 
@@ -178,12 +204,13 @@ def read_schema(path: str | os.PathLike[str]) -> TableSchema:
     is reported structurally only.
     """
     dbf_path = _as_dbf_path(path)
-    header, memo_companion, cdx_companion, warnings = _load(dbf_path)
+    header, memo_companion, cdx_companion, warnings, memo_details = _load(dbf_path)
     return TableSchema.from_parsed(
         header,
         warnings=warnings,
         memo_companion=memo_companion,
         cdx_companion=cdx_companion,
+        memo_details=memo_details,
     )
 
 

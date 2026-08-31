@@ -89,42 +89,68 @@ fresh interpreter by `tests/test_direct_read_schema.py::test_fresh_interpreter_i
 `FieldInfo` keeps the physical VFP facts an MCP consumer needs: `ordinal`,
 `name`, `dbf_type` + readable `dbf_type_name`, `length`, `decimal_count`,
 `address`, raw `flags` as int plus derived `system` / `nullable` /
-`nocptrans` (the binary flag), `index_field_flag`, `is_autoincrement` plus
-`autoincrement_next_value` (descriptor bytes 19–22, little-endian) and
-`autoincrement_step` (byte 23), the semantic `is_binary` classification
-(true for binary C/V, G/P memos, binary B, null flags), `is_memo`,
-`supported`, `unsupported_reason`.
+`nocptrans` (the binary flag **only where VFP documents it**: Character/
+Varchar and memo fields — bit 0x04 is inside the autoincrement mask 0x0C and
+never makes an autoincrement Integer NOCPTRANS-binary), `index_field_flag`
+(descriptor byte 31, kept for migration-schema compatibility only — VFP
+reserves bytes 24-31, so it is **not** reliable evidence of CDX membership),
+`is_autoincrement` plus `autoincrement_next_value` (descriptor bytes 19-22,
+little-endian) and `autoincrement_step` (byte 23), the semantic `is_binary`
+classification (true for binary C/V, G/P memos, binary B, null flags),
+`is_memo`, `supported`, `unsupported_reason`.
+
+`is_autoincrement` follows the actual format semantics: for a Visual FoxPro
+table (version bytes 0x30/0x31/0x32) a field is autoincrementing when its
+field-flags mask is 0x0C **and** its physical type is Integer (`I`) — the
+next value and step live in descriptor bytes 19-22 (LE) and 23. The dBASE
+Level 7 type `+` remains an autoincrement marker outside VFP only; it is
+never presented as evidence of VFP autoincrement semantics.
 
 `TableInfo` carries: `path`, `record_count`, `header_length`,
 `record_length`, `language_driver`, `encoding`, `has_memo`, `has_memo_flag`,
-`has_structural_cdx`, `is_database_container`, `dbc_bound`, `fields`,
-`warnings`.
+`has_structural_cdx`, `is_database_container`, the raw `table_flags`
+(byte 28) plus its hex form, `dbc_bound`, `fields`, `warnings`.
 
 `TableSchema` additionally carries: `dbversion_byte` / `dbversion_name`,
-`last_update`, `incomplete_transaction`, `encryption_flag`,
-`dbc_backlink_path` (the decoded relative DBC path when bound), companion
-memo details (`memo_companion_format`, `memo_companion_present`,
-`memo_companion_path`, `memo_companion_size_bytes`, `memo_block_size`,
-`memo_next_free_block`) and structural CDX companion presence
-(`companion_cdx_present`, `companion_cdx_path`).
+`last_update`, `incomplete_transaction`, `encryption_flag`, the raw
+`table_flags` plus its hex form, `dbc_backlink_path` (the decoded relative
+DBC path when bound), companion memo details (`memo_companion_format`,
+`memo_companion_present`, `memo_companion_path`, `memo_companion_size_bytes`,
+`memo_block_size`, `memo_next_free_block`) and structural CDX companion
+presence (`companion_cdx_present`, `companion_cdx_path`).
 
 Semantics:
 
 - the header table-flags byte (offset 28) is a **bit mask**: 0x01 structural
   CDX (`has_structural_cdx`), 0x02 memo in use (`has_memo_flag`), 0x04
   database container (`is_database_container`); the raw value stays
-  available as `structural_index_flag` for migration-schema compatibility.
-  In particular a memo-only 0x02 value never implies a structural CDX;
+  available as `table_flags` / `table_flags_hex` on the public models (and
+  as `structural_index_flag` in the migration exporter for schema
+  compatibility). In particular a memo-only 0x02 value never implies a
+  structural CDX;
 - `has_memo` = the table declares memo fields; companion presence is
   separate metadata — a missing companion is a **structured warning** in
-  `warnings`, not an error, as long as the header itself is safe;
+  `warnings`, not an error, as long as the header itself is safe, and
+  `memo_companion_format` still reports the format implied by the DBF
+  version (e.g. FPT) whenever memo fields or the memo table flag say a
+  companion is expected, with presence/path/size as separate fields;
 - memo companion format depends on the DBF version: VFP/FoxPro use `.fpt`,
   dBASE III+/IV use `.dbt`, HiPer-Six uses `.smt`. Only FPT is supported for
   reading in Direct Read; DBT/SMT companions are reported with their format
-  plus an explicit "not supported" warning;
-- a present but too-short or invalid FPT header (missing 8-byte header, or a
-  block size that is not a power of two between 64 and 4096) yields a
-  diagnostic warning;
+  plus an explicit "not supported" warning, and their headers are **never**
+  interpreted as FPT (no FPT-header warnings for them);
+- FPT health checks apply to FPT companions only. A full FPT header record
+  is 512 bytes; the 8-byte prefix (next-free block, bytes 0-3 big-endian,
+  block size, bytes 6-7 big-endian) is sufficient for reporting, and a file
+  shorter than the full header record is a "structurally suspicious"
+  warning. The stored block size must be nonzero: 0 is invalid, 1-32 select
+  512-byte units (`SET BLOCKSIZE TO 0` stores 1) and values above 32 are
+  plain byte sizes (64 and 96 are valid). There is **no** power-of-two or
+  4096-byte restriction; a missing 8-byte prefix is warned about as well;
+- each `read_schema` call reads a given FPT header at most once (the same
+  details feed the model and the validation), and every companion
+  `stat`/`open`/`read` failure becomes a typed `DbfIoError`
+  (`DBF_IO_ERROR`), never a raw `OSError`;
 - the structural CDX flag without a `.cdx` companion yields a warning; a
   `.cdx` companion without the flag is reported as a companion but never
   sets `has_structural_cdx`;
@@ -136,7 +162,11 @@ Semantics:
   is 0x00 for a standalone table, otherwise the area holds a null-terminated
   relative DBC path (`dbc_backlink_path`). It is **not** the mere existence
   of a `.dbc` file, and the first two bytes are never interpreted as a
-  little-endian record number;
+  little-endian record number. The path is decoded with the encoding
+  resolved from the language driver (or the explicit override); a non-empty
+  backlink that cannot be decoded keeps `dbc_bound = true`, reports the path
+  as `null` (never raw bytes) and adds a diagnostic warning naming the
+  encoding;
 - the header last-update date is `1900 + year_byte` (no century pivot); an
   impossible month/day yields `last_update = None` plus a warning;
 - CDX reporting is structural only: dbfbridge does **not** declare CDX tag
@@ -188,13 +218,18 @@ Consequently the benchmark scenarios `direct_read_bounded`,
 
 ## 7. Verification
 
-- `tests/test_direct_read_schema.py` — 49 integration tests against real
-  fixture DBF/FPT files (happy paths, table-flags bitmask values, DBC
-  backlink path semantics, 1900+year date expansion, descriptor boundary
-  hardening, VFP autoincrement and G/P binary memos, Mazovia LDID 0x69
-  end-to-end export, DBT/SMT/short-FPT/CDX inconsistency warnings, typed I/O
-  errors, JSON-safe error payloads, read-only guarantees, fresh-interpreter
-  import side effects, codec-on-demand registration, exporter delegation);
+- `tests/test_direct_read_schema.py` — 59 integration tests against real
+  fixture DBF/FPT files (happy paths, table-flags bitmask values plus the
+  raw `table_flags` exposure, DBC backlink path semantics including
+  codepage-resolved decoding and undecodable backlinks, 1900+year date
+  expansion, descriptor boundary hardening, VFP autoincrement Integer
+  semantics with the 0x0C mask plus G/P binary memos, Mazovia LDID 0x69
+  end-to-end export, DBT/SMT format reporting with exact warning sets,
+  FPT block-size/nonzero and 512-byte header-record warnings, missing-FPT
+  format reporting, typed companion I/O errors and the single-FPT-read
+  guarantee, JSON-safe error payloads, read-only guarantees,
+  fresh-interpreter import side effects, codec-on-demand registration,
+  exporter delegation);
 - full pre-existing suite stays green (export, reconstruction, Polish codecs,
   benchmark infrastructure);
 - `ruff check` + `ruff format --check` clean; `python -m build` +
