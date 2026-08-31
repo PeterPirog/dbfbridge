@@ -613,11 +613,30 @@ Direct Read Core work.
   snapshot. Its four `NOT_IMPLEMENTED` rows (`direct_read_bounded`,
   `field_projection`, `memo_lazy`, `raw_mode_none`) were the *placeholders*
   for the future Direct Read Core and are part of the frozen BEFORE artifact.
+  It is a versioned **legacy** artifact: it predates the `benchmark_contract`
+  field and is intentionally not retro-fitted with one.
+  SHA-256 (verified unchanged across the Phase 1 artifact-separation work):
+  - `phase-0-full.json` = `d3b5ab454706b5e7085811c49fc06f8a421f127498695ae1178a1efc07453aa6`
+  - `phase-0-full.md` = `137ade61b31b1be2638a9fb081bf61097e78c04b9bc2860df48f6114f06eff0c`
 - **Phase 1 (direct read core + record streaming) is the future AFTER**: its
   scenarios became real `MEASURED` scenarios (fast contract 19, full contract
   24 `MEASURED` / 0 `FAILED` / 0 `NOT_IMPLEMENTED`) and a future AFTER
   baseline must carry `benchmark_contract == "phase-1-direct-read-v1"` (the
   `--baseline` gate refuses anything else).
+- Phase 1 artifacts use their own contract-derived names
+  (`benchmarks/results/phase-1-direct-read-<profile>...` and
+  `benchmarks/baselines/phase-1-direct-read-full.{json,md}`); the legacy
+  `phase-0-*` names are reserved for the BEFORE pair and a Phase 1
+  publication is refused from ever targeting them. Publication is atomic
+  (staged `.partial`, back-to-back publish, post-write SHA-256 verification)
+  and refuses to overwrite an existing baseline — re-baselining requires an
+  explicit, separate decision.
+- The stdlib-only `benchmarks/compare_baselines.py` exists for the day the
+  AFTER baseline is published: it compares common `MEASURED` scenarios only,
+  marks the four former `NOT_IMPLEMENTED` rows as **NEWLY_MEASURED (no
+  invented speedup)**, surfaces environment differences, and never calls any
+  change an improvement across unlike environments. No committed comparison
+  report exists yet.
 - Until an AFTER baseline is saved, **no performance-improvement claim is
   made**: fast-profile runs are local regression gates, and the BEFORE table
   above may guide optimizations but never serves as a comparison result.

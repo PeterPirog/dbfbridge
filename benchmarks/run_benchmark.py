@@ -40,24 +40,25 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+#: Versioned identity of the Phase 1 benchmark report contract (direct record
+#: read).  A future Phase 1 AFTER baseline is only accepted when the payload
+#: carries exactly this value, which visibly separates it from the preserved
+#: Phase 0 BEFORE baseline.  Single source: ``benchmarks.artifacts``.
+from .artifacts import BENCHMARK_CONTRACT as BENCHMARK_CONTRACT
+from .artifacts import CONTRACT_PHASE_1 as CONTRACT_PHASE_1
+from .artifacts import BaselinePublishError, publish_baseline_pair, report_stem
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 STATUS_FAILED = "FAILED"
 STATUS_MEASURED = "MEASURED"
 STATUS_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
-
-#: Versioned identity of the Phase 1 benchmark report contract (direct record
-#: read).  A future Phase 1 AFTER baseline is only accepted when the payload
-#: carries exactly this value, which visibly separates it from the preserved
-#: Phase 0 BEFORE baseline.
-BENCHMARK_CONTRACT = "phase-1-direct-read-v1"
 
 
 def git_state(root: Path) -> dict[str, str | bool]:
@@ -785,15 +786,20 @@ def main(argv: list[str] | None = None) -> int:
         "scenarios": results,
     }
 
-    # ALWAYS write reports, even if scenarios failed.
+    # ALWAYS write reports, even if scenarios failed.  The report names are
+    # derived from the versioned benchmark contract (never the legacy
+    # phase-0 prefix), including --scenario suffixes.
     args.results_dir.mkdir(parents=True, exist_ok=True)
-    suffix = f"-{'_'.join(requested)}" if requested else ""
-    json_path = args.results_dir / f"phase-0-{args.profile}{suffix}.json"
+    scenario_suffix = "_".join(requested) if requested else ""
+    stem = report_stem(BENCHMARK_CONTRACT, args.profile, scenario_suffix)
+    json_path = args.results_dir / f"{stem}.json"
+    md_path = args.results_dir / f"{stem}.md"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path = args.results_dir / f"phase-0-{args.profile}{suffix}.md"
     md_path.write_text(render_markdown(payload), encoding="utf-8")
 
-    # A versioned baseline is created ONLY when the full gate passes.
+    # A versioned baseline is created ONLY when the full gate passes, and the
+    # publication is atomic: names derived from benchmark_contract, no
+    # overwrite, no half pair, no leftover .partial, post-write verification.
     baseline_note = ""
     if args.baseline:
         gate_reasons = check_baseline_gate(payload)
@@ -806,10 +812,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         baseline_dir = REPO_ROOT / "benchmarks" / "baselines"
-        baseline_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(json_path, baseline_dir / json_path.name)
-        shutil.copyfile(md_path, baseline_dir / md_path.name)
-        baseline_note = f" baseline={baseline_dir / json_path.name}"
+        try:
+            published = publish_baseline_pair(json_path, md_path, baseline_dir, payload=payload)
+        except BaselinePublishError as exc:
+            print(f"BASELINE REFUSED: {exc}", file=sys.stderr)
+            print(
+                "baseline NOT created; benchmarks/baselines/ is unchanged.",
+                file=sys.stderr,
+            )
+            return 2
+        baseline_note = (
+            f" baseline={published['json']}"
+            f" json_sha256={published['json_sha256']}"
+            f" markdown_sha256={published['markdown_sha256']}"
+        )
 
     print(json.dumps({"profile": args.profile, "json": str(json_path), "markdown": str(md_path)}))
     if baseline_note:

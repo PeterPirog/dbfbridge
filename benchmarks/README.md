@@ -151,12 +151,59 @@ recorded in the JSON (`environment.warmup`, `environment.repetitions`).
   measured samples. They are `NOT_AVAILABLE` for every scenario that does not
   rebuild a memo table.
 
+## Report and baseline artifact names (contract-derived)
+
+Artifact names are **always derived from the explicit `benchmark_contract`**
+(`benchmarks/artifacts.py` is the single source; the controller never
+hardcodes a report name):
+
+- local runner reports (Phase 1, contract `phase-1-direct-read-v1`):
+  - `benchmarks/results/phase-1-direct-read-fast.{json,md}`
+  - `benchmarks/results/phase-1-direct-read-full.{json,md}`
+  - `phase-1-direct-read-fast-<scenario_names>.{json,md}` for `--scenario` runs;
+- versioned AFTER baseline (full gate only):
+  - `benchmarks/baselines/phase-1-direct-read-full.{json,md}`;
+- the Phase 0 BEFORE pair (`benchmarks/baselines/phase-0-full.{json,md}`) is
+  a **preserved historical artifact** and is never a Phase 1 target.
+
+`--baseline` is refused (non-zero, filesystem untouched) when: the payload
+does not carry `benchmark_contract == "phase-1-direct-read-v1"`, the target
+pair already exists (overwriting a versioned baseline is an explicit
+architectural decision — there is **no force/overwrite flag**, and even a
+forged contract can never land on a `phase-0-*` name), or the publication
+does not produce an identical JSON+Markdown pair with verified SHA-256
+hashes. The pair is staged as `.partial` files and published back-to-back;
+a failure at any point leaves the baselines directory exactly as before.
+Before/after publication hashes of the preserved Phase 0 pair are recorded
+below.
+
+### BEFORE vs AFTER (and what the comparison may claim)
+
+- `benchmarks/baselines/phase-0-full.{json,md}` — the preserved **BEFORE**;
+- `benchmarks/baselines/phase-1-direct-read-full.{json,md}` — the future
+  **AFTER**, publishable only through the full baseline gate;
+- a fast run is **never** a baseline and never evidence of an improvement —
+  it is a local regression gate;
+- the stdlib-only comparison CLI
+  (`python -m benchmarks.compare_baselines benchmarks/baselines/phase-0-full.json
+  benchmarks/baselines/phase-1-direct-read-full.json`) is available for the
+  day the AFTER baseline exists: it compares common `MEASURED` scenarios
+  (wall/CPU, records/s, source MiB/s, peak RSS, amplifications, temporary and
+  output bytes, with `NOT_AVAILABLE` for missing/zero values), flags the four
+  former `NOT_IMPLEMENTED` Direct Read scenarios as **NEWLY_MEASURED — with
+  no speedup invented** (they are not "infinitely faster" than a missing
+  feature), reports environment differences (OS, Python, CPU, architecture,
+  memory, dependencies, commit) and refuses to call anything an improvement
+  when the environments are not comparable. It refuses swapped, broken or
+  wrong-contract artifacts with non-zero exit codes. No committed comparison
+  report exists yet, because the AFTER baseline does not exist yet.
+
 ## Baseline gate (`--baseline`)
 
 Ordinary runs work without `psutil` and honestly report `NOT_AVAILABLE`.
 A **versioned baseline is a different class of artifact**: `--baseline` refuses
-to copy anything into `benchmarks/baselines/` (and exits non-zero) when any of
-the following is true:
+to publish anything into `benchmarks/baselines/` (and exits non-zero) when any
+of the following is true:
 
 - the profile is not `full`;
 - `psutil` is unavailable;
@@ -167,6 +214,11 @@ the following is true:
 - the run does not contain the full-profile scenario set (24 `MEASURED` since
   Phase 1 implements the former placeholders; the expected `NOT_IMPLEMENTED`
   set is empty);
+- the target baseline pair already exists (overwriting a versioned baseline is
+  an explicit, separate architectural decision — there is no force/overwrite
+  flag, and derived names can never collide with the `phase-0-*` pair);
+- the atomic publication cannot produce an identical, SHA-256-verified
+  JSON+Markdown pair (no half pairs, no leftover `.partial` files);
 - the report is not exactly the full contract: any unknown status, any
   duplicate scenario name, any name outside the contract, or the same name in
   more than one status category;
@@ -215,7 +267,15 @@ This is the **BEFORE** reference for Phase 1. It records the hosted runner and
 dependency versions verbatim and is not presented as a universal hardware
 claim. Direct read, field projection, lazy memo and `raw_mode="none"` were
 explicitly `NOT_IMPLEMENTED` in this snapshot; they are `MEASURED` scenarios
-since Phase 1B.
+since Phase 1B. The pair is treated as a versioned **legacy** historical
+artifact (it predates the `benchmark_contract` field and is intentionally not
+retro-fitted with one); the SHA-256 of both files is recorded below and
+verified unchanged by the test suite.
+
+| Phase 0 BEFORE artifact | SHA-256 |
+|---|---|
+| `benchmarks/baselines/phase-0-full.json` | `d3b5ab454706b5e7085811c49fc06f8a421f127498695ae1178a1efc07453aa6` |
+| `benchmarks/baselines/phase-0-full.md` | `137ade61b31b1be2638a9fb081bf61097e78c04b9bc2860df48f6114f06eff0c` |
 
 ## Phase 0 BEFORE vs. Phase 1 AFTER
 
