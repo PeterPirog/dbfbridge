@@ -403,23 +403,63 @@ declared verified until its full CI run is green).
   the payload so the JSON, the Markdown, the manifest and the publication
   message always carry the same identifier. The manifest
   (`phase-1-direct-read-full.manifest.json`, published last) binds
-  generated_at, the full git commit and the runner/storage provenance to the
-  published bytes and is the crash-consistency marker: an AFTER baseline is
-  committed ONLY when JSON, Markdown and a corroborating manifest all exist
-  with an identical `run_id`. Two unrelated `os.replace` calls are not
+  generated_at, the full git commit, the runner and the storage provenance to
+  the published bytes and is the crash-consistency marker: an AFTER baseline
+  is committed ONLY when JSON, Markdown and a corroborating manifest all
+  exist with an identical `run_id`. Two unrelated `os.replace` calls are not
   crash-atomic between themselves; no force/overwrite flag exists
   (re-baselining is an explicit, separate decision); provenance is
   explicit — `--storage-label` describes the storage and `--runner-label` is
   explicit or safely derived from non-secret GitHub Actions variables (local
   runs use the neutral `local`) — and a full baseline REQUIRES both. The
-  future AFTER comparison tool is `benchmarks/compare_baselines.py` (BEFORE =
-  legacy Phase 0 artifact validated by the frozen Phase 0 contract, AFTER =
-  `phase-1-direct-read-v1` with manifest verification, the 20 common
-  `MEASURED` scenarios compared, NEWLY_MEASURED restricted to the four
-  documented placeholders without invented speedups, and a three-state
-  environment verdict: COMPARABLE / PARTIALLY_COMPARABLE / NOT_COMPARABLE,
-  where contract, commit, branch and the dbfbridge version are never
-  environment mismatches and the legacy Phase 0 file can never be
-  retro-fitted with storage provenance). Phase 0 BEFORE SHA-256 (unchanged):
-  `phase-0-full.json` = `d3b5ab45...f07453aa6`, `phase-0-full.md` =
-  `137ade61...4f06eff0c` (full values recorded in `phase-0-audit.md` §17).
+  AFTER comparator is `benchmarks/compare_baselines.py` (BEFORE = legacy
+  Phase 0 artifact validated by the frozen Phase 0 contract, AFTER =
+  `phase-1-direct-read-v1` with **manifest verification including
+  runner/storage binding**, the 20 common `MEASURED` scenarios compared,
+  NEWLY_MEASURED restricted to the four documented placeholders without
+  invented speedups, and a three-state environment verdict: COMPARABLE /
+  PARTIALLY_COMPARABLE / NOT_COMPARABLE, where contract, commit, branch and
+  the dbfbridge version are never environment mismatches and the legacy
+  Phase 0 file can never be retro-fitted with storage provenance). Phase 0
+  BEFORE SHA-256 (unchanged): `phase-0-full.json` = `d3b5ab45...f07453aa6`,
+  `phase-0-full.md` = `137ade61...4f06eff0c` (full values recorded in
+  `phase-0-audit.md` §17).
+
+## 7b. The recorded Phase 1 AFTER baseline
+
+The full AFTER baseline was measured on GitHub Actions (run
+[33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
+SUCCESS) at the measured code state **df035de662f2d78a7a8d9d9a141a8235e1161382**:
+
+- environment: Windows Server 2025, Python 3.12.10, runner label
+  `github-actions-windows-2025-python-3.12.10`, storage label
+  `github-actions-windows-temp`; dependencies pinned (dbf 0.99.11, dbfread
+  2.0.7, orjson 3.12.0, polars 1.44.1, openpyxl 3.1.5, xlsxwriter 3.2.9,
+  psutil 7.2.2); worktree clean; `run_id run-ceaf809d8b52a2b6873d7594dff4a769`;
+- parameters: warm-up 1 (excluded), repetitions 3 (measured) per scenario;
+  **24 unique MEASURED, 0 FAILED, 0 NOT_IMPLEMENTED**, `valid_baseline=true`
+  everywhere, available peak RSS, **zero temporary residue**; the published
+  trio + the BEFORE/AFTER comparison live under
+  `benchmarks/baselines/phase-1-direct-read-full.{json,md,manifest.json}` and
+  `benchmarks/baselines/phase-0-vs-phase-1.{json,md}`;
+- the four Direct Read scenarios (median wall / records per second over the
+  AFTER run): `direct_read_bounded` 0.002764 s / 36 183 rec/s (a bounded
+  100-record page with a seek, so the 190k fixture is not scanned),
+  `field_projection` 3.565890 s / 53 283 rec/s (projection digests the same
+  logical result as the unprojected stream), `memo_lazy` 0.022520 s /
+  88 808 rec/s (zero real backend memo operations), `raw_mode_none`
+  3.643278 s / 52 151 rec/s (no raw bytes kept);
+- the BEFORE/AFTER comparison is **PARTIALLY_COMPARABLE**: system, Python and
+  dependency versions match, but the historical Phase 0 BEFORE file carries no
+  runner/storage descriptors (and is intentionally never retro-fitted).
+  Numbers and ratios may be read **diagnostically**; the I/O-sensitive
+  differences do NOT prove a performance improvement without shared recorded
+  storage/runner provenance;
+- the four Direct Read scenarios are **NEWLY_MEASURED** — the BEFORE baseline
+  listed them as `NOT_IMPLEMENTED`, so there are no BEFORE numbers to compare
+  against and no speedup is claimed for them (they are never "infinitely
+  faster" than a missing feature), and no blanket claim is made that Phase 1
+  improved every pre-existing scenario;
+- Phase 0 BEFORE stays byte-identical (SHAs above), and the Direct Read Core
+  remains a transport-independent library — bounded, read-only and
+  JSON-serializable — with no MCP adapter in this closure.

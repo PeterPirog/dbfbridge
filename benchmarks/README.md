@@ -234,8 +234,8 @@ once before the payload.
   OS/Python/CPU/architecture/dependency mismatch) — and contract, commit,
   branch and the dbfbridge package version are never treated as
   environment mismatches because they are the expected subject of the
-  comparison. No committed comparison report exists yet, because the AFTER
-  baseline does not exist yet.
+  comparison. The recorded comparison pair is committed next to the AFTER
+  baseline.
 
 ## Baseline gate (`--baseline`)
 
@@ -321,13 +321,30 @@ verified unchanged by the test suite.
 
 - `benchmarks/baselines/phase-0-full.{json,md}` — the preserved **BEFORE**
   snapshot (never modified, byte-identical to its source commit);
-- **Phase 1 (direct record read) is the future AFTER**: its full contract is
-  exactly **24 `MEASURED`, 0 `FAILED`, 0 `NOT_IMPLEMENTED`** with the versioned
-  report identity `benchmark_contract: "phase-1-direct-read-v1"`, and the
-  baseline gate refuses an AFTER snapshot without that contract;
-- until an AFTER baseline is actually saved, **no performance-improvement
-  claim** is made anywhere in this repository — fast-profile runs are local
-  regressions/gates only, never a comparison against the BEFORE numbers.
+- `benchmarks/baselines/phase-1-direct-read-full.{json,md,manifest.json}` —
+  the recorded **AFTER** baseline, measured on GitHub Actions ([run
+  33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
+  SUCCESS) at the provenance commit `df035de662f2d78a7a8d9d9a141a8235e1161382`
+  (Windows Server 2025, Python 3.12.10, runner
+  `github-actions-windows-2025-python-3.12.10`, storage
+  `github-actions-windows-temp`, `run_id run-ceaf809d8b52a2b6873d7594dff4a769`):
+  exactly **24 `MEASURED`, 0 `FAILED`, 0 `NOT_IMPLEMENTED`** with
+  `benchmark_contract == "phase-1-direct-read-v1"`, one warm-up + three
+  measured repetitions per scenario, and zero temporary residue;
+- `benchmarks/baselines/phase-0-vs-phase-1.{json,md}` — the recorded
+  BEFORE/AFTER comparison. Its verdict is **PARTIALLY_COMPARABLE** (see
+  below): system, Python and dependency versions match, but the legacy Phase
+  0 BEFORE file carries **no runner/storage descriptors** (and is never
+  retro-fitted). Numbers and ratios may be read **diagnostically**; the
+  I/O-sensitive differences do **not** prove a performance improvement
+  without shared recorded storage/runner provenance;
+- the four Direct Read scenarios are
+  **NEWLY_MEASURED**(`direct_read_bounded`, `field_projection`, `memo_lazy`,
+  `raw_mode_none`) — the BEFORE snapshot listed them as `NOT_IMPLEMENTED`,
+  so there are no BEFORE numbers to compare against, no speedup is claimed
+  for them, and no blanket claim is made that Phase 1 improved every
+  pre-existing scenario. Fast-profile runs still serve only as local
+  regression gates.
 
 ## Where results go
 
@@ -336,10 +353,11 @@ verified unchanged by the test suite.
 - `benchmarks/results/` — **working reports from the last run(s); git-ignored.**
 - `benchmarks/baselines/` — **the selected, versioned baseline.** Created ONLY
   when the `--baseline` gate (above) passes: a full, clean, complete,
-  `psutil`-enabled run. The Phase 0 directory contains the accepted JSON and
-  Markdown pair described above. A versioned baseline carries git commit,
-  worktree state, OS/CPU/Python, dependency versions, fixture sizes and the
-  status of every scenario — all of which the report contains.
+  `psutil`-enabled run. The directory holds the Phase 0 BEFORE pair and the
+  recorded Phase 1 AFTER trio + comparison (above). A versioned baseline
+  carries git commit, worktree state, OS/CPU/Python, dependency versions,
+  runner/storage provenance, fixture sizes and the status of every scenario —
+  all of which the report contains.
 - `benchmark-data/` — generated fixtures and outputs; **git-ignored** (regenerated
   on demand; never committed).
 

@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "benchmark_contract": "phase-1-direct-read-v1",
+  "profile": "full",
+  "run_id": "run-ceaf809d8b52a2b6873d7594dff4a769",
+  "generated_at": "2026-08-31T15:17:43.248026+00:00",
+  "git_commit": "df035de662f2d78a7a8d9d9a141a8235e1161382",
+  "runner": "github-actions-windows-2025-python-3.12.10",
+  "storage": "github-actions-windows-temp",
+  "artifacts": {
+    "json": {
+      "name": "phase-1-direct-read-full.json",
+      "sha256": "e13015eb49d30444f26c47bafd6619d09e5ed710b75b08246bd8e19137710709"
+    },
+    "markdown": {
+      "name": "phase-1-direct-read-full.md",
+      "sha256": "4df6a4d24497e9fbaf132cd4e60728940ee065ea099f5af7f7de51d405e0b033"
+    }
+  }
+}

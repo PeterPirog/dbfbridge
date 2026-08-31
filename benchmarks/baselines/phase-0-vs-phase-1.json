@@ -1,0 +1,1659 @@
+{
+  "comparison": "phase-0-before-vs-phase-1-after",
+  "before": {
+    "side": "before",
+    "environment": {
+      "python": "3.12.10",
+      "os": "Windows 2025Server 10.0.26100",
+      "arch": "AMD64",
+      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "cpu_count": 4,
+      "physical_memory_bytes": 17174360064,
+      "packages": {
+        "dbfbridge": "0.1.0",
+        "dbf": "0.99.11",
+        "dbfread": "2.0.7",
+        "orjson": "3.12.0",
+        "polars": "1.44.1",
+        "openpyxl": "3.1.5",
+        "xlsxwriter": "3.2.9",
+        "psutil": "7.2.2"
+      },
+      "git_commit": "542961981e0062cdc977d1b7a4eec721e1f16fd4",
+      "profile": "full",
+      "benchmark_contract": null
+    },
+    "sha256": "d3b5ab454706b5e7085811c49fc06f8a421f127498695ae1178a1efc07453aa6"
+  },
+  "after": {
+    "side": "after",
+    "environment": {
+      "python": "3.12.10",
+      "os": "Windows 2025Server 10.0.26100",
+      "arch": "AMD64",
+      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "cpu_count": 4,
+      "physical_memory_bytes": 17174360064,
+      "packages": {
+        "dbfbridge": "0.1.0",
+        "dbf": "0.99.11",
+        "dbfread": "2.0.7",
+        "orjson": "3.12.0",
+        "polars": "1.44.1",
+        "openpyxl": "3.1.5",
+        "xlsxwriter": "3.2.9",
+        "psutil": "7.2.2"
+      },
+      "git_commit": "df035de662f2d78a7a8d9d9a141a8235e1161382",
+      "profile": "full",
+      "benchmark_contract": "phase-1-direct-read-v1"
+    },
+    "sha256": "e13015eb49d30444f26c47bafd6619d09e5ed710b75b08246bd8e19137710709"
+  },
+  "before_run_id": null,
+  "after_run_id": "run-ceaf809d8b52a2b6873d7594dff4a769",
+  "newly_measured": [
+    "direct_read_bounded",
+    "field_projection",
+    "memo_lazy",
+    "raw_mode_none"
+  ],
+  "environment_comparability": "PARTIALLY_COMPARABLE",
+  "environment_differences": [
+    "storage descriptor missing or different",
+    "runner descriptor missing or different"
+  ],
+  "comparisons": [
+    {
+      "scenario": "jsonl_conversion_json",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.238064,
+          "after": 0.238967,
+          "ratio": 1.0037930976544123,
+          "change_percent": 0.3793097654412322,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.234375,
+          "after": 0.234375,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 501639.057798,
+          "after": 499742.224037,
+          "ratio": 0.9962187279249619,
+          "change_percent": -0.37812720750381307,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 84.01174,
+          "after": 83.694069,
+          "ratio": 0.99621873085833,
+          "change_percent": -0.3781269141670012,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 59457536,
+          "after": 58023936,
+          "ratio": 0.9758886745659962,
+          "change_percent": -2.411132543400386,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 21091089,
+          "after": 21091089,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 21091089,
+          "after": 21091089,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "jsonl_conversion_csv",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.055102,
+          "after": 0.056562,
+          "ratio": 1.026496315923197,
+          "change_percent": 2.6496315923197034,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.15625,
+          "after": 0.15625,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 2167293.68678,
+          "after": 2111339.375061,
+          "ratio": 0.9741824045073778,
+          "change_percent": -2.5817595492622196,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 362.966383,
+          "after": 353.595464,
+          "ratio": 0.9741824052063797,
+          "change_percent": -2.581759479362036,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 103137280,
+          "after": 105095168,
+          "ratio": 1.0189833200953138,
+          "change_percent": 1.898332009531374,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 0.0,
+          "after": 0.0,
+          "ratio": "NOT_AVAILABLE",
+          "change_percent": 0.0,
+          "available": false
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 14761752,
+          "after": 14761752,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 14761752,
+          "after": 14761752,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "raw_record_metadata_default",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.026352,
+          "after": 0.028861,
+          "ratio": 1.0952109896782027,
+          "change_percent": 9.521098967820283,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.015625,
+          "after": 0.03125,
+          "ratio": 2.0,
+          "change_percent": 100.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 11384.421558,
+          "after": 10394.75827,
+          "ratio": 0.9130686365611128,
+          "change_percent": -8.693136343888714,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.257678,
+          "after": 1.148347,
+          "ratio": 0.9130691639672476,
+          "change_percent": -8.693083603275246,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 31154176,
+          "after": 32153600,
+          "ratio": 1.0320799368919273,
+          "change_percent": 3.2079936891927425,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 9.5579,
+          "after": 9.5579,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 124518,
+          "after": 124498,
+          "ratio": 0.9998393806517933,
+          "change_percent": -0.0160619348206685,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 124518,
+          "after": 124498,
+          "ratio": 0.9998393806517933,
+          "change_percent": -0.0160619348206685,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "export_jsonl_validate_on",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 11.420971,
+          "after": 9.921529,
+          "ratio": 0.8687115132329817,
+          "change_percent": -13.128848676701836,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 9.75,
+          "after": 9.90625,
+          "ratio": 1.016025641025641,
+          "change_percent": 1.6025641025641024,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 16636.064043,
+          "after": 19150.274888,
+          "ratio": 1.1511301494452897,
+          "change_percent": 15.113014944528977,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.8087,
+          "after": 2.082049,
+          "ratio": 1.1511300934372755,
+          "change_percent": 15.113009343727542,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 34164736,
+          "after": 34615296,
+          "ratio": 1.0131878671622108,
+          "change_percent": 1.3187867162210767,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 9.312,
+          "after": 9.312,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 68374795,
+          "after": 68374774,
+          "ratio": 0.9999996928692803,
+          "change_percent": -3.071307197337849e-05,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 68374795,
+          "after": 68374774,
+          "ratio": 0.9999996928692803,
+          "change_percent": -3.071307197337849e-05,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "export_jsonl_validate_off",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 7.874997,
+          "after": 8.904891,
+          "ratio": 1.1307802402972345,
+          "change_percent": 13.078024029723437,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 7.875,
+          "after": 8.828125,
+          "ratio": 1.121031746031746,
+          "change_percent": 12.103174603174603,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 24126.993318,
+          "after": 21336.589312,
+          "ratio": 0.8843451411776944,
+          "change_percent": -11.56548588223056,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 2.623126,
+          "after": 2.319749,
+          "ratio": 0.8843452430420803,
+          "change_percent": -11.565475695791976,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 28176384,
+          "after": 28950528,
+          "ratio": 1.0274749236807676,
+          "change_percent": 2.747492368076755,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 6.1559,
+          "after": 6.1559,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 68374798,
+          "after": 68374777,
+          "ratio": 0.9999996928692937,
+          "change_percent": -3.0713070625817425e-05,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 68374798,
+          "after": 68374777,
+          "ratio": 0.9999996928692937,
+          "change_percent": -3.0713070625817425e-05,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "memo_skip",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.091072,
+          "after": 0.098259,
+          "ratio": 1.0789155832747717,
+          "change_percent": 7.891558327477159,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.09375,
+          "after": 0.09375,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 21960.574181,
+          "after": 20354.390289,
+          "ratio": 0.9268605693657295,
+          "change_percent": -7.313943063427049,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 78.156134,
+          "after": 72.439839,
+          "ratio": 0.9268605711741066,
+          "change_percent": -7.313942882589341,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 33325056,
+          "after": 33542144,
+          "ratio": 1.0065142576204522,
+          "change_percent": 0.6514257620452311,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 2.099,
+          "after": 2.099,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 309884,
+          "after": 309864,
+          "ratio": 0.9999354597204115,
+          "change_percent": -0.006454027958849118,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 309884,
+          "after": 309864,
+          "ratio": 0.9999354597204115,
+          "change_percent": -0.006454027958849118,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "memo_null",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.09204,
+          "after": 0.097811,
+          "ratio": 1.0627009995654064,
+          "change_percent": 6.270099956540633,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.09375,
+          "after": 0.09375,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 21729.753574,
+          "after": 20447.68154,
+          "ratio": 0.9409992373068594,
+          "change_percent": -5.900076269314057,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 77.33466,
+          "after": 72.771856,
+          "ratio": 0.9409992363062047,
+          "change_percent": -5.900076369379525,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 26095616,
+          "after": 27488256,
+          "ratio": 1.0533668183958562,
+          "change_percent": 5.336681839585623,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 2.099,
+          "after": 2.099,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 309884,
+          "after": 309864,
+          "ratio": 0.9999354597204115,
+          "change_percent": -0.006454027958849118,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 309884,
+          "after": 309864,
+          "ratio": 0.9999354597204115,
+          "change_percent": -0.006454027958849118,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "memo_inline",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.221568,
+          "after": 0.230564,
+          "ratio": 1.0406015309069903,
+          "change_percent": 4.06015309069902,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.21875,
+          "after": 0.21875,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 9026.566087,
+          "after": 8674.366034,
+          "ratio": 0.9609818341099574,
+          "change_percent": -3.9018165890042598,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 32.124912,
+          "after": 30.871457,
+          "ratio": 0.9609818386428576,
+          "change_percent": -3.901816135714247,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 28114944,
+          "after": 29134848,
+          "ratio": 1.0362762237762237,
+          "change_percent": 3.6276223776223775,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 4.1388,
+          "after": 4.1388,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 7922093,
+          "after": 7922073,
+          "ratio": 0.999997475414641,
+          "change_percent": -0.00025245853589449154,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 7922093,
+          "after": 7922073,
+          "ratio": 0.999997475414641,
+          "change_percent": -0.00025245853589449154,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "deleted_skip",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.059195,
+          "after": 0.06698,
+          "ratio": 1.1315144860207789,
+          "change_percent": 13.151448602077878,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.0625,
+          "after": 0.0625,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 16893.318692,
+          "after": 14929.740641,
+          "ratio": 0.8837659972679097,
+          "change_percent": -11.62340027320903,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.845516,
+          "after": 1.631004,
+          "ratio": 0.8837658410980994,
+          "change_percent": -11.623415890190063,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 31293440,
+          "after": 31916032,
+          "ratio": 1.0198952879581151,
+          "change_percent": 1.9895287958115182,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 8.8996,
+          "after": 8.8996,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 331488,
+          "after": 331467,
+          "ratio": 0.9999366492904721,
+          "change_percent": -0.006335070952794671,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 331488,
+          "after": 331467,
+          "ratio": 0.9999366492904721,
+          "change_percent": -0.006335070952794671,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "deleted_include",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.060748,
+          "after": 0.06424,
+          "ratio": 1.0574833739382368,
+          "change_percent": 5.748337393823668,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.0625,
+          "after": 0.0625,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 16461.393095,
+          "after": 15566.576692,
+          "ratio": 0.945641514188019,
+          "change_percent": -5.435848581198097,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.79833,
+          "after": 1.700575,
+          "ratio": 0.9456412338113694,
+          "change_percent": -5.435876618863059,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 27287552,
+          "after": 26746880,
+          "ratio": 0.9801861302912038,
+          "change_percent": -1.981386970879616,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 8.8779,
+          "after": 8.8779,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 387149,
+          "after": 387128,
+          "ratio": 0.9999457573182419,
+          "change_percent": -0.005424268175818613,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 387149,
+          "after": 387128,
+          "ratio": 0.9999457573182419,
+          "change_percent": -0.005424268175818613,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "encoding_cp1250",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.010951,
+          "after": 0.011787,
+          "ratio": 1.0763400602684685,
+          "change_percent": 7.634006026846862,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.0,
+          "after": 0.0,
+          "ratio": "NOT_AVAILABLE",
+          "change_percent": 0.0,
+          "available": false
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 91.31336,
+          "after": 84.842109,
+          "ratio": 0.9291313888789109,
+          "change_percent": -7.086861112108907,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 0.012714,
+          "after": 0.011813,
+          "ratio": 0.92913323894919,
+          "change_percent": -7.086676105081005,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 26181632,
+          "after": 26591232,
+          "ratio": 1.0156445556946183,
+          "change_percent": 1.5644555694618274,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 42.7397,
+          "after": 42.7397,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 7283,
+          "after": 7263,
+          "ratio": 0.9972538788960593,
+          "change_percent": -0.2746121103940684,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 7283,
+          "after": 7263,
+          "ratio": 0.9972538788960593,
+          "change_percent": -0.2746121103940684,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "encoding_cp852",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.011145,
+          "after": 0.011247,
+          "ratio": 1.0091520861372814,
+          "change_percent": 0.9152086137281261,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.015625,
+          "after": 0.015625,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 89.722309,
+          "after": 88.914971,
+          "ratio": 0.9910018142756446,
+          "change_percent": -0.8998185724355371,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 0.012493,
+          "after": 0.01238,
+          "ratio": 0.9909549347634675,
+          "change_percent": -0.9045065236532477,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 25985024,
+          "after": 26734592,
+          "ratio": 1.0288461538461537,
+          "change_percent": 2.8846153846153846,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 42.6438,
+          "after": 42.6438,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 7257,
+          "after": 7237,
+          "ratio": 0.9972440402370125,
+          "change_percent": -0.275595976298746,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 7257,
+          "after": 7237,
+          "ratio": 0.9972440402370125,
+          "change_percent": -0.275595976298746,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "encoding_mazovia",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.011016,
+          "after": 0.01126,
+          "ratio": 1.0221496005809731,
+          "change_percent": 2.214960058097308,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.015625,
+          "after": 0.015625,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 90.779524,
+          "after": 88.809158,
+          "ratio": 0.9782950393086441,
+          "change_percent": -2.1704960691355892,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 0.01264,
+          "after": 0.012365,
+          "ratio": 0.9782436708860759,
+          "change_percent": -2.1756329113924124,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 25792512,
+          "after": 26611712,
+          "ratio": 1.0317611561060822,
+          "change_percent": 3.176115610608226,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 42.8356,
+          "after": 42.8356,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 7309,
+          "after": 7289,
+          "ratio": 0.9972636475578055,
+          "change_percent": -0.27363524421945545,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 7309,
+          "after": 7289,
+          "ratio": 0.9972636475578055,
+          "change_percent": -0.27363524421945545,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "reconstruction_jsonl_to_dbf",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.081009,
+          "after": 0.081363,
+          "ratio": 1.004369884827612,
+          "change_percent": 0.4369884827611834,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.078125,
+          "after": 0.078125,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 3703.315084,
+          "after": 3687.161549,
+          "ratio": 0.9956380878662497,
+          "change_percent": -0.43619121337502487,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.465903,
+          "after": 1.459262,
+          "ratio": 0.9954696866027289,
+          "change_percent": -0.45303133972711,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 31129600,
+          "after": 31965184,
+          "ratio": 1.026842105263158,
+          "change_percent": 2.68421052631579,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 3.7736,
+          "after": 3.7742,
+          "ratio": 1.0001589993640025,
+          "change_percent": 0.015899936400252647,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 8.4888,
+          "after": 8.4888,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 35961,
+          "after": 35961,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 70713,
+          "after": 70713,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "roundtrip_quality",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 0.140965,
+          "after": 0.141734,
+          "ratio": 1.0054552548504947,
+          "change_percent": 0.5455254850494746,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 0.125,
+          "after": 0.140625,
+          "ratio": 1.125,
+          "change_percent": 12.5,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 2128.195397,
+          "after": 2116.645512,
+          "ratio": 0.9945729207871227,
+          "change_percent": -0.5427079212877324,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 0.235109,
+          "after": 0.233834,
+          "ratio": 0.9945769834417226,
+          "change_percent": -0.5423016558277335,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 31612928,
+          "after": 31707136,
+          "ratio": 1.0029800466442083,
+          "change_percent": 0.29800466442083445,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 42.8834,
+          "after": 42.8834,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.9614,
+          "after": 1.9614,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 280118,
+          "after": 280108,
+          "ratio": 0.9999643007589659,
+          "change_percent": -0.0035699241034135615,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 314870,
+          "after": 314860,
+          "ratio": 0.9999682408613079,
+          "change_percent": -0.0031759138692158666,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "direct_read_bounded",
+      "status": "NEWLY_MEASURED",
+      "before_status": "NOT_IMPLEMENTED",
+      "after_status": "MEASURED",
+      "note": "The Phase 0 BEFORE baseline listed this scenario as 'NOT_IMPLEMENTED': there is no BEFORE measurement of the same meaning, so NO speedup is computed for it (it is never 'infinitely faster' than a missing feature)."
+    },
+    {
+      "scenario": "field_projection",
+      "status": "NEWLY_MEASURED",
+      "before_status": "NOT_IMPLEMENTED",
+      "after_status": "MEASURED",
+      "note": "The Phase 0 BEFORE baseline listed this scenario as 'NOT_IMPLEMENTED': there is no BEFORE measurement of the same meaning, so NO speedup is computed for it (it is never 'infinitely faster' than a missing feature)."
+    },
+    {
+      "scenario": "memo_lazy",
+      "status": "NEWLY_MEASURED",
+      "before_status": "NOT_IMPLEMENTED",
+      "after_status": "MEASURED",
+      "note": "The Phase 0 BEFORE baseline listed this scenario as 'NOT_IMPLEMENTED': there is no BEFORE measurement of the same meaning, so NO speedup is computed for it (it is never 'infinitely faster' than a missing feature)."
+    },
+    {
+      "scenario": "raw_mode_none",
+      "status": "NEWLY_MEASURED",
+      "before_status": "NOT_IMPLEMENTED",
+      "after_status": "MEASURED",
+      "note": "The Phase 0 BEFORE baseline listed this scenario as 'NOT_IMPLEMENTED': there is no BEFORE measurement of the same meaning, so NO speedup is computed for it (it is never 'infinitely faster' than a missing feature)."
+    },
+    {
+      "scenario": "export_1m_records",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 48.162014,
+          "after": 52.915139,
+          "ratio": 1.0986903288554337,
+          "change_percent": 9.869032885543374,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 47.859375,
+          "after": 52.5625,
+          "ratio": 1.098269670257917,
+          "change_percent": 9.826967025791708,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 20763.251218,
+          "after": 18898.183515,
+          "ratio": 0.9101745828041061,
+          "change_percent": -8.982541719589381,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 2.257368,
+          "after": 2.054599,
+          "ratio": 0.9101745927115118,
+          "change_percent": -8.982540728848818,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 33574912,
+          "after": 33202176,
+          "ratio": 0.9888983774551665,
+          "change_percent": -1.1101622544833476,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 9.3273,
+          "after": 9.3273,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 360762670,
+          "after": 360762650,
+          "ratio": 0.9999999445618916,
+          "change_percent": -5.543810838299872e-06,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 360762670,
+          "after": 360762650,
+          "ratio": 0.9999999445618916,
+          "change_percent": -5.543810838299872e-06,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "memo_heavy_190k",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 19.45897,
+          "after": 20.185965,
+          "ratio": 1.0373604049957423,
+          "change_percent": 3.736040499574226,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 19.3125,
+          "after": 20.078125,
+          "ratio": 1.0396440129449838,
+          "change_percent": 3.9644012944983817,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 9764.134434,
+          "after": 9412.480357,
+          "ratio": 0.9639851254223321,
+          "change_percent": -3.6014874577667992,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 34.746106,
+          "after": 33.49473,
+          "ratio": 0.963985144119459,
+          "change_percent": -3.6014855880540995,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 35332096,
+          "after": 35209216,
+          "ratio": 0.996522142360306,
+          "change_percent": -0.34778576396939487,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 4.1344,
+          "after": 4.1344,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 1.0,
+          "after": 1.0,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 752334298,
+          "after": 752334278,
+          "ratio": 0.999999973416073,
+          "change_percent": -2.658392692340075e-06,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 752334298,
+          "after": 752334278,
+          "ratio": 0.999999973416073,
+          "change_percent": -2.658392692340075e-06,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "reconstruction_190k",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 45.990381,
+          "after": 47.993184,
+          "ratio": 1.043548301980799,
+          "change_percent": 4.354830198079899,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 45.625,
+          "after": 47.171875,
+          "ratio": 1.033904109589041,
+          "change_percent": 3.3904109589041096,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 4131.298682,
+          "after": 3958.895472,
+          "ratio": 0.9582690037030831,
+          "change_percent": -4.173099629691686,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 1.496644,
+          "after": 1.434188,
+          "ratio": 0.9582693011831804,
+          "change_percent": -4.173069881681954,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 62263296,
+          "after": 63979520,
+          "ratio": 1.027563976054207,
+          "change_percent": 2.756397605420696,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 3.7991,
+          "after": 3.7991,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 8.8415,
+          "after": 8.8415,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 21661769,
+          "after": 21661768,
+          "ratio": 0.9999999538357186,
+          "change_percent": -4.6164281412104435e-06,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 43322321,
+          "after": 43322320,
+          "ratio": 0.9999999769172109,
+          "change_percent": -2.308278912387912e-06,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "reconstruction_memo_190k",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 61.200853,
+          "after": 65.056237,
+          "ratio": 1.0629955925614303,
+          "change_percent": 6.299559256143036,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 59.796875,
+          "after": 63.296875,
+          "ratio": 1.0585314868042854,
+          "change_percent": 5.853148680428534,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 3104.531903,
+          "after": 2920.55009,
+          "ratio": 0.9407376639221479,
+          "change_percent": -5.926233607785214,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 11.782612,
+          "after": 11.084346,
+          "ratio": 0.9407375885754364,
+          "change_percent": -5.926241142456361,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 62939136,
+          "after": 64671744,
+          "ratio": 1.0275283092541976,
+          "change_percent": 2.752830925419758,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 6.6993,
+          "after": 6.6993,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 3.0756,
+          "after": 3.0756,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 708968181,
+          "after": 708968180,
+          "ratio": 0.9999999985894995,
+          "change_percent": -1.4105005369768493e-07,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 1417934997,
+          "after": 1417934996,
+          "ratio": 0.999999999294749,
+          "change_percent": -7.052509474099679e-08,
+          "available": true
+        }
+      }
+    },
+    {
+      "scenario": "jsonl_conversion_xlsx",
+      "status": "SAME_MEASURED",
+      "metrics": {
+        "median_wall_seconds": {
+          "label": "median wall time (s)",
+          "before": 6.804129,
+          "after": 7.361607,
+          "ratio": 1.0819323090435236,
+          "change_percent": 8.193230904352351,
+          "available": true
+        },
+        "median_cpu_seconds": {
+          "label": "median CPU time (s)",
+          "before": 6.75,
+          "after": 7.15625,
+          "ratio": 1.0601851851851851,
+          "change_percent": 6.018518518518518,
+          "available": true
+        },
+        "median_records_per_second": {
+          "label": "records/s",
+          "before": 17551.402541,
+          "after": 16222.273869,
+          "ratio": 0.9242722244621101,
+          "change_percent": -7.572777553788993,
+          "available": true
+        },
+        "median_source_mib_per_second": {
+          "label": "source MiB/s",
+          "before": 2.939412,
+          "after": 2.716817,
+          "ratio": 0.9242722694198703,
+          "change_percent": -7.5727730580129675,
+          "available": true
+        },
+        "max_peak_rss_bytes": {
+          "label": "peak RSS (bytes)",
+          "before": 46075904,
+          "after": 45015040,
+          "ratio": 0.9769757311761046,
+          "change_percent": -2.3024268823895455,
+          "available": true
+        },
+        "median_read_amplification": {
+          "label": "read amplification (measured)",
+          "before": 5.356,
+          "after": 5.356,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "median_write_amplification": {
+          "label": "write amplification (measured)",
+          "before": 28.1437,
+          "after": 28.1437,
+          "ratio": 1.0,
+          "change_percent": 0.0,
+          "available": true
+        },
+        "max_output_bytes": {
+          "label": "output bytes (max)",
+          "before": 3365535,
+          "after": 3365536,
+          "ratio": 1.0000002971295796,
+          "change_percent": 2.9712957969535305e-05,
+          "available": true
+        },
+        "max_temporary_bytes_written": {
+          "label": "temporary bytes written (max)",
+          "before": 3365535,
+          "after": 3365536,
+          "ratio": 1.0000002971295796,
+          "change_percent": 2.9712957969535305e-05,
+          "available": true
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "PARTIALLY COMPARABLE: storage descriptor missing or different; runner descriptor missing or different. Numbers and ratios are shown, but I/O-sensitive results do not prove improvement without a shared storage provenance."
+  ]
+}
