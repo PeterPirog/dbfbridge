@@ -77,7 +77,7 @@ if TYPE_CHECKING:
     )
     from .importer.models import InputFormat, ReconstructionResult
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 #: Lazily resolved public symbols, mapped to the module that defines them.
 _LAZY_SYMBOLS: dict[str, str] = {
