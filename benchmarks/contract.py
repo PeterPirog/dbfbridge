@@ -27,7 +27,10 @@ live-machine checks (e.g. the current ``psutil`` availability).
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import secrets
+from datetime import datetime, timezone
 from typing import Any
 
 #: Versioned identity of the Phase 1 benchmark report contract.
@@ -139,7 +142,6 @@ __all__ = [
     "MEMO_RECONSTRUCTION_SCENARIO",
     "PHASE0_PLACEHOLDER_NAMES",
     "build_manifest",
-    "derive_run_id",
     "environment_comparability",
     "manifest_problems",
     "validate_saved_phase0_before",
@@ -324,13 +326,6 @@ def _measured_scenario_problems(
     return problems
 
 
-def _run_id_problems(payload: Any) -> list[str]:
-    run_id = _env_of(payload).get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        return ["environment.run_id must be a stable, non-empty identifier"]
-    return []
-
-
 # ---------------------------------------------------------------------------
 # public validators
 # ---------------------------------------------------------------------------
@@ -416,6 +411,7 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
             f"the Phase 1 AFTER baseline requires exactly {CONTRACT_PHASE_1!r}"
         )
     problems.extend(_run_id_problems(payload))
+    problems.extend(_generated_at_problems(payload))
     problems.extend(_profile_problems(payload))
     warmup, repetitions, shape = _shape_problems(payload)
     problems.extend(shape)
@@ -440,40 +436,94 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
 # run identity
 # ---------------------------------------------------------------------------
 
+#: Accepted run identifier format: ``run-`` + 32 lowercase hex characters.
+RUN_ID_RE = re.compile(r"^run-[0-9a-f]{32}$")
 
-def derive_run_id(payload: Any) -> str:
-    """Derive the deterministic stable run identifier of one benchmark run.
+#: Accepted ``generated_at`` format: timezone-aware UTC ISO 8601 with
+#: microseconds and a ``+00:00``/``Z`` offset.
+GENERATED_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+(?:00:00|Z)$")
 
-    ``run-<16 hex>`` over (commit, branch, warmup, repetitions, scenario
-    names, measured counts, generated_at) — stable for identical report
-    content, so the JSON, Markdown, manifest, and publication message always
-    carry the SAME identifier.
+
+def generate_run_id(
+    *,
+    commit: str = "",
+    contract: str = "",
+    profile: str = "",
+    warmup: Any = None,
+    repetitions: Any = None,
+) -> str:
+    """Generate the unique identifier of ONE actual benchmark run.
+
+    Uniqueness across real runs (even with identical parameters) comes from
+    the UTC timestamp with microsecond precision and a random nonce; commit,
+    contract, profile and the run parameters bind the identifier to
+    provenance.  The format is the stable ``run-`` + 32 hex characters
+    (validated by :data:`RUN_ID_RE`).
+
+    Called exactly once at the start of report creation — the SAME
+    identifier then lands in the JSON, the Markdown, the manifest and the
+    publication message.
     """
-    env = _env_of(payload)
-    git = _git_of(payload)
-    scenario_names = ",".join(
-        sorted(
-            str(entry.get("scenario"))
-            for entry in (payload.get("scenarios") or [])
-            if isinstance(entry, dict)
-        )
-    )
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    nonce = secrets.token_hex(16)
     material = "|".join(
         str(part)
         for part in (
-            env.get("benchmark_contract"),
-            git.get("commit"),
-            env.get("profile"),
-            env.get("warmup"),
-            env.get("repetitions"),
-            env.get(
-                "generated_at", payload.get("generated_at") if isinstance(payload, dict) else None
-            ),
-            scenario_names,
-            len(scenario_names),
+            timestamp,
+            commit,
+            contract,
+            profile,
+            warmup,
+            repetitions,
+            nonce,
         )
     )
-    return "run-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return "run-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _run_id_problems(payload: Any) -> list[str]:
+    run_id = _env_of(payload).get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return ["environment.run_id must be a stable, non-empty identifier"]
+    if not RUN_ID_RE.match(run_id):
+        return [f"environment.run_id {run_id!r} must match the format 'run-<32 hex>'"]
+    return []
+
+
+def _generated_at_problems(payload: Any) -> list[str]:
+    generated_at = _env_of(payload).get("generated_at")
+    if not isinstance(generated_at, str) or not generated_at:
+        return ["environment.generated_at must be a timezone-aware UTC ISO 8601 timestamp"]
+    if not GENERATED_AT_RE.match(generated_at):
+        return [
+            f"environment.generated_at {generated_at!r} must be timezone-aware UTC "
+            "ISO 8601 with microseconds (e.g. 2026-08-31T12:00:00.123456+00:00)"
+        ]
+    return []
+
+
+def derive_runner_from_environment(
+    environ: dict[str, str] | None = None,
+) -> str:
+    """Derive a safe, non-secret runner provenance string.
+
+    On GitHub Actions, the description is built only from the non-secret
+    workflow variables (``GITHUB_ACTIONS``, ``RUNNER_OS``, ``RUNNER_ARCH``,
+    ``ImageOS``, ``ImageVersion``) — e.g.
+    ``github-actions-windows-amd64-windows-2022``.  For any other machine a
+    neutral ``local`` is returned: no hostname, no username, no user path
+    and never a copy of ``os.environ``.
+    """
+    env = environ if environ is not None else os.environ
+    if str(env.get("GITHUB_ACTIONS", "")).lower() not in {"", "false", "0", "no"}:
+        parts = [
+            "github-actions",
+            str(env.get("RUNNER_OS") or ""),
+            str(env.get("RUNNER_ARCH") or ""),
+            f"{env.get('ImageOS') or ''}{env.get('ImageVersion') or ''}".strip(),
+        ]
+        return "-".join(part for part in parts if part).lower()
+    return "local"
 
 
 # ---------------------------------------------------------------------------
@@ -490,19 +540,26 @@ def build_manifest(
     contract: str,
     profile: str,
     git_commit: str,
+    generated_at: str,
     json_name: str,
     json_sha256: str,
     markdown_name: str,
     markdown_sha256: str,
+    runner: str,
+    storage: str | None,
 ) -> dict[str, Any]:
     """The publication commit marker: a baseline is complete only when the
-    JSON, the Markdown AND a valid manifest all exist."""
+    JSON, the Markdown AND a valid manifest, all binding the same commit and
+    generated_at, exist."""
     return {
         "manifest_version": MANIFEST_VERSION,
         "benchmark_contract": contract,
         "profile": profile,
         "run_id": run_id,
+        "generated_at": generated_at,
         "git_commit": git_commit,
+        "runner": runner,
+        "storage": storage,
         "artifacts": {
             "json": {"name": json_name, "sha256": json_sha256},
             "markdown": {"name": markdown_name, "sha256": markdown_sha256},
@@ -520,6 +577,8 @@ def manifest_problems(
     expected_run_id: str,
     expected_contract: str,
     expected_profile: str,
+    expected_git_commit: str = "",
+    expected_generated_at: str = "",
 ) -> list[str]:
     """Validate a publication manifest against the actually published bytes."""
     problems: list[str] = []
@@ -536,6 +595,16 @@ def manifest_problems(
     if manifest.get("run_id") != expected_run_id:
         problems.append(
             f"manifest run_id {manifest.get('run_id')!r} does not match the run {expected_run_id!r}"
+        )
+    if not expected_git_commit or manifest.get("git_commit") != expected_git_commit:
+        problems.append(
+            f"manifest git_commit {manifest.get('git_commit')!r} does not match the "
+            f"run commit {expected_git_commit!r}"
+        )
+    if not expected_generated_at or manifest.get("generated_at") != expected_generated_at:
+        problems.append(
+            f"manifest generated_at {manifest.get('generated_at')!r} does not match the "
+            f"run timestamp {expected_generated_at!r}"
         )
     artifacts_blob = manifest.get("artifacts")
     if not isinstance(artifacts_blob, dict):

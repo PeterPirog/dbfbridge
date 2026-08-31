@@ -473,7 +473,9 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
     """Verify the publication manifest next to a versioned AFTER baseline.
 
     A committed Phase 1 AFTER baseline is complete only when a valid manifest
-    corroborates the published JSON (names, contract, profile, run id, SHA-256).
+    corroborates the published trio (names, contract, profile, run id,
+    generated_at, git commit, SHA-256 keys) against the ACTUAL bytes of the
+    artifacts.  Every absence or mismatch is a controlled refusal.
     """
     from benchmarks import artifacts as bench_artifacts
 
@@ -491,25 +493,50 @@ def _verify_after_manifest(after_path: Path, after_payload: dict[str, Any]) -> N
         raise ComparisonError(
             f"the publication manifest {manifest_name} is missing next to {after_path.name}"
         )
+    md_path = after_path.with_name(md_name)
+    if not md_path.is_file():
+        raise ComparisonError(
+            f"the Markdown artifact {md_name} is missing next to {after_path.name}"
+        )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
+        raise ComparisonError(f"The manifest {manifest_path} is not valid JSON: {exc}") from exc
+    except OSError as exc:
         raise ComparisonError(f"Cannot read the manifest {manifest_path}: {exc}") from exc
     run_id = str(_env(after_payload).get("run_id") or "")
+    git_commit = str(((_env(after_payload).get("git") or {}).get("commit")) or "")
+    generated_at = str(_env(after_payload).get("generated_at") or "")
     problems = manifest_problems(
         manifest,
         expected_json_name=json_name,
         expected_json_sha256=_sha256_file(after_path),
         expected_markdown_name=md_name,
-        expected_markdown_sha256=_sha256_file(after_path.with_name(md_name)),
+        expected_markdown_sha256=_sha256_file(md_path),
         expected_run_id=run_id,
         expected_contract=CONTRACT_PHASE_1,
         expected_profile=profile,
+        expected_git_commit=git_commit,
+        expected_generated_at=generated_at,
     )
     if problems:
         raise ComparisonError(
             "The AFTER baseline manifest does not corroborate the published "
             "artifacts: " + "; ".join(problems)
+        )
+    # The Markdown companion must also belong to the same run.
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ComparisonError(f"The Markdown {md_path} is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
+        raise ComparisonError(f"Cannot read the Markdown {md_path}: {exc}") from exc
+    missing = [
+        part for part in (run_id, contract, profile, git_commit) if part and part not in md_text
+    ]
+    if missing:
+        raise ComparisonError(
+            f"The Markdown {md_name} does not carry the run identity: missing " + ", ".join(missing)
         )
 
 

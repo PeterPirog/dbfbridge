@@ -218,7 +218,18 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
     run_id = env["run_id"]
     contract = env["benchmark_contract"]
     profile = env["profile"]
+    generated_at = env["generated_at"]
     git_commit = (env.get("git") or {}).get("commit") or ""
+    runner = env.get("runner")
+    storage = env.get("storage")
+    if not isinstance(runner, str) or not runner:
+        raise BaselinePublishError(
+            "A baseline requires environment.runner provenance (e.g. --runner-label)."
+        )
+    if not isinstance(storage, str) or not storage:
+        raise BaselinePublishError(
+            "A baseline requires environment.storage provenance (e.g. --storage-label)."
+        )
 
     json_name, md_name, manifest_name = baseline_target_paths(contract, profile)
     target_json = target_dir / json_name
@@ -236,6 +247,8 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
         consistency_problems.append("the Markdown does not mention the benchmark contract")
     if str(profile) not in md_text:
         consistency_problems.append("the Markdown does not mention the run profile")
+    if git_commit and git_commit not in md_text:
+        consistency_problems.append("the Markdown does not mention the git commit")
     if consistency_problems:
         raise BaselinePublishError(
             "The Markdown report does not match the JSON run: " + "; ".join(consistency_problems)
@@ -258,10 +271,13 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
         contract=contract,
         profile=profile,
         git_commit=git_commit,
+        generated_at=generated_at,
         json_name=json_name,
         json_sha256=json_sha,
         markdown_name=md_name,
         markdown_sha256=md_sha,
+        runner=runner,
+        storage=storage,
     )
     data_manifest = json.dumps(manifest_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -323,6 +339,8 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
             expected_run_id=run_id,
             expected_contract=contract,
             expected_profile=profile,
+            expected_git_commit=git_commit,
+            expected_generated_at=generated_at,
         )
         if published_problems:
             raise BaselinePublishError(
@@ -348,10 +366,15 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
 
     return {
         "run_id": run_id,
+        "generated_at": generated_at,
+        "git_commit": git_commit,
+        "runner": runner,
+        "storage": storage,
         "json": target_json,
         "markdown": target_md,
         "manifest": target_manifest,
+        "manifest_name": manifest_name,
+        "manifest_sha256": _sha256(data_manifest),
         "json_sha256": json_sha,
         "markdown_sha256": md_sha,
-        "git_commit": git_commit,
     }

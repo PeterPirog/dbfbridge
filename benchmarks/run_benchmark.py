@@ -41,7 +41,7 @@ import os
 import platform
 import subprocess
 import sys
-import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,11 @@ from typing import Any
 from .artifacts import BENCHMARK_CONTRACT as BENCHMARK_CONTRACT
 from .artifacts import CONTRACT_PHASE_1 as CONTRACT_PHASE_1
 from .artifacts import BaselinePublishError, publish_baseline_pair, report_stem
-from .contract import derive_run_id, validate_saved_phase1_after
+from .contract import (
+    derive_runner_from_environment,
+    generate_run_id,
+    validate_saved_phase1_after,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -400,32 +404,44 @@ def _is_positive_int(value: Any, minimum: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
 
 
-def check_baseline_gate(payload: dict[str, Any]) -> list[str]:
+def check_baseline_gate(payload: dict[str, Any], *, require_provenance: bool = True) -> list[str]:
     """Return the list of reasons a versioned baseline must be REJECTED.
 
     An empty list means the run is eligible to be copied into
     ``benchmarks/baselines/``.  The shared saved-artifact contract (frozen
     scenario names, exact sample/warm-up counts, per-sample statuses and
     metrics, valid_baseline, full commit and clean worktree, system/package
-    metadata, run_id) is delegated to the host-independent validator
-    :func:`benchmarks.contract.validate_saved_phase1_after`, which works purely
-    on the payload content.
+    metadata, run_id/generated_at) is delegated to the host-independent
+    validator :func:`benchmarks.contract.validate_saved_phase1_after`, which
+    works purely on the payload content.
 
-    The gate keeps the one check that genuinely belongs to the ACTIVE machine:
-    the current availability of ``psutil`` (RSS/IO metrics must have been
-    collectable while the scenarios ran).
+    The gate additionally enforces the runner/storage PROVENANCE
+    (``--storage-label`` must describe the fixture/results storage and the
+    runner must be explicit or safely derived) — I/O-sensitive claims need a
+    shared storage provenance.  The one other check that genuinely belongs to
+    the ACTIVE machine is the current availability of ``psutil`` (RSS/IO
+    metrics must have been collectable while the scenarios ran).
     """
 
     reasons: list[str] = []
     if not isinstance(payload, dict):
         return ["payload is not a dict (malformed payload)"]
+    env = payload.get("environment")
+    env = env if isinstance(env, dict) else {}
     # Live check: the current process must have had psutil available, so the
     # recorded samples were actually able to carry RSS/IO metrics.
     if not psutil_available():
         reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
     # Everything else is the pure saved-artifact contract.
     reasons.extend(validate_saved_phase1_after(payload))
-    _ = _is_positive_int  # kept for helper parity
+    if require_provenance:
+        if not isinstance(env.get("runner"), str) or not env.get("runner"):
+            reasons.append(
+                "environment.runner is missing; a baseline requires --runner-label "
+                "or a safely derived runner provenance"
+            )
+        if not isinstance(env.get("storage"), str) or not env.get("storage"):
+            reasons.append("environment.storage is missing; a baseline requires --storage-label")
     return reasons
 
 
@@ -569,6 +585,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--list", action="store_true", help="List scenario names and exit")
     parser.add_argument(
+        "--storage-label",
+        default=None,
+        help=(
+            "Provenance description of the storage the fixtures and results run on "
+            "(e.g. 'windows-local-d-volume' or 'github-actions-windows-temp'); "
+            "REQUIRED together with --runner for a full --baseline."
+        ),
+    )
+    parser.add_argument(
+        "--runner-label",
+        default=None,
+        help=(
+            "Runner provenance description; when omitted it is safely derived "
+            "from non-secret GitHub Actions variables or the neutral 'local'."
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=600.0,
@@ -620,9 +653,24 @@ def main(argv: list[str] | None = None) -> int:
     results.extend(_not_implemented())
 
     # ------------------------------------------------------------------ payload shape
+    # The run identity and the run timestamp are generated EXACTLY ONCE,
+    # before the payload exists: one run_id for the JSON, the Markdown, the
+    # manifest and the publication message; the timestamp is timezone-aware
+    # UTC ISO 8601.
+    git_state_payload = git_state(REPO_ROOT)
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    runner_label = args.runner_label or derive_runner_from_environment()
+    storage_label: str | None = args.storage_label
+    run_id = generate_run_id(
+        commit=str(git_state_payload.get("commit") or ""),
+        contract=BENCHMARK_CONTRACT,
+        profile=args.profile,
+        warmup=args.warmup,
+        repetitions=args.repetitions,
+    )
     payload: dict[str, Any] = {
         "environment": {
-            "git": git_state(REPO_ROOT),
+            "git": git_state_payload,
             "system": system_info(),
             "packages": package_versions(),
             "benchmark_contract": BENCHMARK_CONTRACT,
@@ -630,27 +678,14 @@ def main(argv: list[str] | None = None) -> int:
             "repetitions": args.repetitions,
             "warmup": args.warmup,
             "aggregation": "median-of-measured-repetitions",
-            # The run_id is derived deterministically from the run content and
-            # embedded in the JSON, the Markdown and (on publication) the
-            # manifest — one identifier for all artifacts.
-            "run_id": derive_run_id(
-                {
-                    "environment": {
-                        "benchmark_contract": BENCHMARK_CONTRACT,
-                        "git": git_state(REPO_ROOT),
-                        "profile": args.profile,
-                        "repetitions": args.repetitions,
-                        "warmup": args.warmup,
-                    },
-                    "scenarios": results,
-                }
-            ),
+            "run_id": run_id,
+            "generated_at": generated_at,
+            "runner": runner_label,
+            "storage": storage_label,
         },
         "fixtures": _fixture_manifest(work_dir),
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "scenarios": results,
     }
-    run_id = payload["environment"]["run_id"]
 
     # ALWAYS write reports, even if scenarios failed.  The report names are
     # derived from the versioned benchmark contract (never the legacy
@@ -690,11 +725,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         baseline_note = (
-            f" baseline={published['json']}"
-            f" manifest={published['manifest']}"
+            f" baseline_json={published['json']}"
+            f" baseline_markdown={published['markdown']}"
+            f" baseline_manifest={published['manifest']}"
             f" run_id={published['run_id']}"
             f" json_sha256={published['json_sha256']}"
             f" markdown_sha256={published['markdown_sha256']}"
+            f" manifest_sha256={published['manifest_sha256']}"
+            f" runner={published['runner']}"
+            f" storage={published['storage']}"
+            f" generated_at={published['generated_at']}"
         )
 
     print(
@@ -702,15 +742,13 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "profile": args.profile,
                 "run_id": run_id,
+                "runner": runner_label,
+                "storage": storage_label,
                 "json": str(json_path),
                 "markdown": str(md_path),
             }
         )
     )
-    if baseline_note:
-        print(baseline_note)
-
-    print(json.dumps({"profile": args.profile, "json": str(json_path), "markdown": str(md_path)}))
     if baseline_note:
         print(baseline_note)
 

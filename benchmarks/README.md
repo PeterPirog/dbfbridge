@@ -169,16 +169,22 @@ hardcodes a report name):
 `--baseline` is refused (non-zero, filesystem untouched) when: the payload
 does not satisfy the **full Phase 1 AFTER saved-artifact contract** (validated
 by the host-independent, stdlib-only validators in `benchmarks/contract.py`:
-exact contract, run_id, 24 unique `MEASURED` scenarios over the frozen name
-set, complete samples/warm-ups, required metrics, peak RSS, zero temporary
-residue, full commit + clean worktree metadata, memo-reconstruction extras),
-the target trio already exists (overwriting a versioned baseline is an
-explicit architectural decision — there is **no force/overwrite flag**, and
-even a forged contract can never land on a `phase-0-*` name), or the
-publication cannot produce an identical, manifest-corroborated artifact set.
-The run identity (`run_id`, deterministic per report content) appears in the
-JSON, the Markdown, the manifest and the publication message; the comparator
-shows the run ids of both sides.
+exact contract, a valid `run_id` in the stable `run-<32 hex>` format with
+timezone-aware UTC `generated_at`, 24 unique `MEASURED` scenarios over the
+frozen name set, complete samples/warm-ups, required metrics, peak RSS, zero
+temporary residue, full commit + clean worktree metadata, memo-reconstruction
+extras), the target trio already exists (overwriting a versioned baseline is
+an explicit architectural decision — there is **no force/overwrite flag**, and
+even a forged contract can never land on a `phase-0-*` name), the provenance
+is missing (`--storage-label`/`--runner-label` or a full-baseline gate
+refusal), or the publication cannot produce an identical, manifest-
+corroborated artifact set.
+The run identity (`run_id`, unique per ACTUAL run — generated once from a
+UTC microsecond timestamp, commit, contract, profile, parameters and a random
+nonce) appears in the JSON, the Markdown, the manifest and the publication
+message; the comparator shows the run ids of both sides. The run timestamp
+(`generated_at`) is timezone-aware UTC ISO 8601 with microseconds, generated
+once before the payload.
 
 ### BEFORE vs AFTER (and what the comparison may claim)
 
@@ -188,16 +194,27 @@ shows the run ids of both sides.
 - `benchmarks/baselines/phase-1-direct-read-full.{json,md}` + the commit
   marker `phase-1-direct-read-full.manifest.json` — the future **AFTER**,
   publishable only through the full baseline gate. The publication is an
-  **exception-safe transaction**: staged `.partial` files, one post-write
-  SHA-256/manifest/re-validation pass that removes all three new files and
-  every partial on any failure. Two independent `os.replace` calls are not
-  crash-consistent between themselves — a hard process kill between them
-  cannot be fully rolled back, which is exactly why the manifest is published
-  LAST and an AFTER baseline counts as committed **only** when the JSON, the
-  Markdown AND a valid manifest all exist and corroborate each other;
-  `run_id` must be identical in all three;
+  **exception-safe transaction** over the ACTUAL source JSON (which is fully
+  re-validated before anything is published): staged `.partial` files, one
+  post-write SHA-256/manifest/re-validation pass that removes all three new
+  files and every partial on any failure. The manifest binds the run
+  identity, `generated_at` (timezone-aware UTC), the full git commit and the
+  runner/storage provenance to the published bytes. Two independent
+  `os.replace` calls are not crash-consistent between themselves — a hard
+  process kill between them cannot be fully rolled back, which is exactly why
+  the manifest is published LAST and an AFTER baseline counts as committed
+  **only** when the JSON, the Markdown AND a valid manifest all exist and
+  corroborate each other; `run_id` must be identical in all three;
 - a fast run is **never** a baseline and never evidence of an improvement —
-  it is a local regression gate;
+  it is a local regression gate (and does not require storage labels);
+- the runner/storage provenance is explicit: `--storage-label` describes the
+  fixture/results storage (e.g. `windows-local-d-volume`,
+  `github-actions-windows-temp`; no SSD/NVMe guessing) and `--runner-label`
+  is either given explicitly or safely derived from the non-secret GitHub
+  Actions variables (`GITHUB_ACTIONS`, `RUNNER_OS`, `RUNNER_ARCH`,
+  `ImageOS`, `ImageVersion`) — local runs get the neutral `local` with no
+  hostname, username or user paths. A full `--baseline` REQUIRES both (the
+  gate refuses a baseline without provenance);
 - the stdlib-only comparison CLI
   (`python -m benchmarks.compare_baselines benchmarks/baselines/phase-0-full.json
   benchmarks/baselines/phase-1-direct-read-full.json`) fully validates BOTH
