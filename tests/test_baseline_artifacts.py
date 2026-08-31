@@ -767,12 +767,229 @@ def test_manifest_with_wrong_sha_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    problems = compare_module_compare_with_manifest(manifest_data, published)
+    problems = manifest_problems_checked(manifest_data, published)
     assert problems
     assert artifacts.sha256_file(published["json"]) == published["json_sha256"]
 
 
+# ---------------------------------------------------------------------------
+# manifest provenance binding (runner + storage, commit + generated_at)
+# ---------------------------------------------------------------------------
+
+
+def _published_after(tmp_path: Path) -> dict[str, Any]:
+    payload = _phase1_payload()
+    json_path, md_path = _write_reports(tmp_path, "results-report", payload)
+    target_dir = tmp_path / "baselines"
+    return artifacts.publish_baseline_pair(json_path, md_path, target_dir)
+
+
+def test_manifest_with_different_runner_is_rejected(tmp_path: Path) -> None:
+    published = _published_after(tmp_path)
+    manifest_path = published["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runner"] = "some-other-runner"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("runner" in p for p in problems)
+
+
+def test_manifest_with_different_storage_is_rejected(tmp_path: Path) -> None:
+    published = _published_after(tmp_path)
+    manifest_path = published["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["storage"] = "different-volume"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("storage" in p for p in problems)
+
+
+def test_manifest_without_runner_is_rejected(tmp_path: Path) -> None:
+    published = _published_after(tmp_path)
+    manifest_path = published["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runner"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("runner" in p for p in problems)
+    # missing key entirely
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("runner")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("runner" in p for p in problems)
+
+
+def test_manifest_without_storage_is_rejected(tmp_path: Path) -> None:
+    published = _published_after(tmp_path)
+    manifest_path = published["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["storage"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("storage" in p for p in problems)
+    # missing key entirely
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("storage")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    problems = manifest_problems_checked(manifest, published)
+    assert any("storage" in p for p in problems)
+
+
+def test_manifest_commit_and_generated_at_are_bound_to_the_json(tmp_path: Path) -> None:
+    published = _published_after(tmp_path)
+    # correct hashes but a manifest commit different from the JSON:
+    manifest = benchmark_contract.build_manifest(
+        run_id=published["run_id"],
+        contract=artifacts.BENCHMARK_CONTRACT,
+        profile="full",
+        git_commit="f" * 40,
+        generated_at=published["generated_at"],
+        json_name=published["json"].name,
+        json_sha256=_sha256_bytes(published["json"].read_bytes()),
+        markdown_name=published["markdown"].name,
+        markdown_sha256=_sha256_bytes(published["markdown"].read_bytes()),
+        runner=published["runner"],
+        storage=published["storage"],
+    )
+    problems = manifest_problems_checked(manifest, published)
+    assert any("git_commit" in p for p in problems)
+
+    # correct hashes but a generated_at different from the JSON:
+    manifest = benchmark_contract.build_manifest(
+        run_id=published["run_id"],
+        contract=artifacts.BENCHMARK_CONTRACT,
+        profile="full",
+        git_commit=published["git_commit"],
+        generated_at="2020-01-01T00:00:00.000000+00:00",
+        json_name=published["json"].name,
+        json_sha256=_sha256_bytes(published["json"].read_bytes()),
+        markdown_name=published["markdown"].name,
+        markdown_sha256=_sha256_bytes(published["markdown"].read_bytes()),
+        runner=published["runner"],
+        storage=published["storage"],
+    )
+    problems = manifest_problems_checked(manifest, published)
+    assert any("generated_at" in p for p in problems)
+
+    # A matching manifest passes all provenance checks (JSON/MD/manifest trio).
+    good = benchmark_contract.build_manifest(
+        run_id=published["run_id"],
+        contract=artifacts.BENCHMARK_CONTRACT,
+        profile="full",
+        git_commit=published["git_commit"],
+        generated_at=published["generated_at"],
+        json_name=published["json"].name,
+        json_sha256=_sha256_bytes(published["json"].read_bytes()),
+        markdown_name=published["markdown"].name,
+        markdown_sha256=_sha256_bytes(published["markdown"].read_bytes()),
+        runner=published["runner"],
+        storage=published["storage"],
+    )
+    assert (
+        benchmark_contract.manifest_problems(
+            good,
+            expected_json_name=published["json"].name,
+            expected_json_sha256=_sha256_bytes(published["json"].read_bytes()),
+            expected_markdown_name=published["markdown"].name,
+            expected_markdown_sha256=_sha256_bytes(published["markdown"].read_bytes()),
+            expected_run_id=published["run_id"],
+            expected_contract=artifacts.BENCHMARK_CONTRACT,
+            expected_profile="full",
+            expected_git_commit=published["git_commit"],
+            expected_generated_at=published["generated_at"],
+            expected_runner=published["runner"],
+            expected_storage=published["storage"],
+        )
+        == []
+    )
+
+
+def test_phase0_legacy_payload_never_requires_runner_or_storage() -> None:
+    """The frozen Phase 0 contract must not require runner/storage fields."""
+    payload = _phase0_payload()
+    assert "runner" not in payload["environment"]
+    assert "storage" not in payload["environment"]
+    assert benchmark_contract.validate_saved_phase0_before(payload) == []
+
+
+# ---------------------------------------------------------------------------
+# generated_at format contract
+# ---------------------------------------------------------------------------
+
+
+def test_generated_at_format_contract() -> None:
+    from benchmarks import contract as bc
+
+    def probe_with(value: str) -> dict[str, Any]:
+        payload = _phase1_payload()
+        payload["environment"]["generated_at"] = value
+        return payload
+
+    # accepted forms
+    assert bc.GENERATED_AT_RE.match("2026-08-31T12:00:00.123456+00:00")
+    assert bc.GENERATED_AT_RE.match("2026-08-31T12:00:00.123456Z")
+    good = _phase1_payload()
+    good["environment"]["generated_at"] = "2026-08-31T12:00:00.123456Z"
+    assert bc.validate_saved_phase1_after(good) == []
+    # rejected forms
+    for bad in (
+        "2026-08-31T12:00:00.123456+Z",
+        "2026-08-31T12:00:00.123456+02:00",
+        "2026-08-31T12:00:00+00:00",
+        "2026-08-31T12:00:00.123",
+        "2026-08-31 12:00:00.123456+00:00",
+        "not-a-timestamp",
+        "",
+    ):
+        assert not bc.GENERATED_AT_RE.match(bad), bad
+        probe = _phase1_payload()
+        probe["environment"]["generated_at"] = bad
+        problems = bc.validate_saved_phase1_after(probe)
+        assert any("generated_at" in p for p in problems), bad
+
+
+# ---------------------------------------------------------------------------
+# comparator read-race handling
+# ---------------------------------------------------------------------------
+
+
+def test_comparator_read_race_is_a_controlled_refusal(tmp_path: Path, monkeypatch) -> None:
+    """A vanishing AFTER JSON between is_file()/load and the actual hash pass
+    must yield a controlled COMPARISON REFUSED, never a raw FileNotFoundError
+    traceback."""
+    before_path = _write_before_pair(tmp_path / "before", _phase0_payload())
+    after_payload = _after_trio_payload()
+    after_path = _write_after_trio(tmp_path / "after", after_payload)
+
+    import benchmarks.compare_baselines as compare_module
+
+    real_open = Path.open
+
+    def vanishing_open(self: Path, mode="r", **kwargs):
+        if self == after_path and "r" in mode:
+            raise FileNotFoundError(2, "no such file", str(self))
+        return real_open(self, mode, **kwargs)
+
+    monkeypatch.setattr(compare_module.Path, "open", vanishing_open)
+    result = compare_module.main(
+        [
+            str(before_path),
+            str(after_path),
+            "--json",
+            str(tmp_path / "comparison.json"),
+            "--quiet",
+        ]
+    )
+    monkeypatch.undo()
+    assert result == 2
+
+
 def compare_module_compare_with_manifest(manifest: dict[str, Any], published: dict[str, Any]):
+    return manifest_problems_checked(manifest, published)
+
+
+def manifest_problems_checked(manifest: dict[str, Any], published: dict[str, Any]):
     return benchmark_contract.manifest_problems(
         manifest,
         expected_json_name=published["json"].name,
@@ -782,6 +999,10 @@ def compare_module_compare_with_manifest(manifest: dict[str, Any], published: di
         expected_run_id=published["run_id"],
         expected_contract=artifacts.BENCHMARK_CONTRACT,
         expected_profile="full",
+        expected_git_commit=published["git_commit"],
+        expected_generated_at=published["generated_at"],
+        expected_runner=published["runner"],
+        expected_storage=published["storage"],
     )
 
 

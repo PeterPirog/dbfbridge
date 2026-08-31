@@ -341,6 +341,8 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
             expected_profile=profile,
             expected_git_commit=git_commit,
             expected_generated_at=generated_at,
+            expected_runner=runner,
+            expected_storage=storage if isinstance(storage, str) else "",
         )
         if published_problems:
             raise BaselinePublishError(
