@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,9 @@ def _phase1_env(**overrides: Any) -> dict[str, Any]:
             "worktree_dirty": False,
             "worktree_status": "",
         },
+        # Baseline provenance (required by publish + gate).
+        "runner": "local-windows-validation",
+        "storage": "windows-local-d-volume",
     }
     env.update(overrides)
     return env
@@ -160,18 +164,23 @@ def _phase1_payload(run_id: str | None = None, **env_overrides: Any) -> dict[str
     from benchmarks import contract
 
     env = _phase1_env(**env_overrides)
-    if run_id is not None:
-        env["run_id"] = run_id
+    env["run_id"] = run_id or benchmark_contract.generate_run_id(
+        contract=benchmark_contract.CONTRACT_PHASE_1,
+        profile=env["profile"],
+        warmup=env["warmup"],
+        repetitions=env["repetitions"],
+    )
     payload = {
         "environment": env,
         "fixtures": {},
-        "generated_at": "2026-08-31T12:00:00+02:00",
         "scenarios": [
             _phase1_scenario(name, repetitions=env["repetitions"], warmup=env["warmup"])
             for name in sorted(contract.FROZEN_SCENARIO_NAMES)
         ],
     }
-    payload["environment"].setdefault("run_id", benchmark_contract.derive_run_id(payload))
+    payload["environment"]["generated_at"] = datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    )
     return payload
 
 
@@ -253,6 +262,10 @@ def _render_md(payload: dict[str, Any]) -> str:
         f"- run_id: `{env['run_id']}`\n"
         f"- benchmark_contract: `{env['benchmark_contract']}`\n"
         f"- Profile: `{env['profile']}`\n"
+        f"- Commit: `{env['git']['commit']}`\n"
+        f"- generated_at: `{env['generated_at']}`\n"
+        f"- runner: `{env.get('runner')}`\n"
+        f"- storage: `{env.get('storage')}`\n"
     )
 
 
@@ -288,33 +301,39 @@ def _run_compare(before: Path, after: Path, tmp_dir: Path) -> subprocess.Complet
     )
 
 
-def _write_after_trio(root: Path, payload: dict[str, Any], **manifest_extra: Any) -> Path:
+def _write_after_trio(root: Path, payload: dict[str, Any], **manifest_overrides: Any) -> Path:
     """Write a complete AFTER trio (JSON + Markdown + manifest) into *root*.
 
     Returns the path of the AFTER JSON.  The payload must already carry its
-    ``run_id``; the manifest corroborates the written hashes.
+    ``run_id``; the manifest corroborates the written hashes.  Keyword
+    overrides (e.g. ``git_commit=...``) mutate the manifest deliberately for
+    negative tests.
     """
     root.mkdir(parents=True, exist_ok=True)
     json_name, md_name, manifest_name = artifacts.baseline_target_paths(
         str(payload["environment"]["benchmark_contract"]),
         str(payload["environment"]["profile"]),
     )
+    env = payload["environment"]
     json_path = root / json_name
     md_path = root / md_name
     json_path.write_text(json.dumps(payload), encoding="utf-8")
     md_path.write_text(_render_md(payload), encoding="utf-8")
-    manifest_payload = benchmark_contract.build_manifest(
-        run_id=payload["environment"]["run_id"],
-        contract=payload["environment"]["benchmark_contract"],
-        profile=payload["environment"]["profile"],
-        git_commit=payload["environment"]["git"]["commit"],
+    manifest = benchmark_contract.build_manifest(
+        run_id=env["run_id"],
+        contract=env["benchmark_contract"],
+        profile=env["profile"],
+        git_commit=env["git"]["commit"],
+        generated_at=env["generated_at"],
         json_name=json_name,
         json_sha256=_sha256_bytes(json_path.read_bytes()),
         markdown_name=md_name,
         markdown_sha256=_sha256_bytes(md_path.read_bytes()),
-        **manifest_extra,
+        runner=str(env.get("runner") or ""),
+        storage=env.get("storage"),
     )
-    (root / manifest_name).write_text(json.dumps(manifest_payload), encoding="utf-8")
+    manifest.update(manifest_overrides)
+    (root / manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
     return json_path
 
 
@@ -423,9 +442,7 @@ def test_phase0_validator_matches_the_real_baseline_file() -> None:
 
 
 def test_phase1_after_contract_accepts_full_shape() -> None:
-    payload = _phase1_payload(run_id=benchmark_contract.derive_run_id(_phase1_payload()))
-    run_id = benchmark_contract.derive_run_id(payload)
-    payload["environment"]["run_id"] = run_id
+    payload = _phase1_payload()
     assert benchmark_contract.validate_saved_phase1_after(payload) == []
 
 
@@ -535,12 +552,20 @@ def test_phase1_baseline_never_targets_phase0_names() -> None:
 
 
 def test_successful_publish_creates_the_complete_trio(tmp_path: Path) -> None:
-    payload = _phase1_payload(run_id="run-pub123")
+    payload = _phase1_payload(
+        run_id=benchmark_contract.generate_run_id(
+            contract=artifacts.BENCHMARK_CONTRACT, profile="full", warmup=1, repetitions=3
+        )
+    )
     json_path, md_path = _write_reports(tmp_path, "results-report", payload)
     target_dir = tmp_path / "baselines"
     published = artifacts.publish_baseline_pair(json_path, md_path, target_dir)
 
-    assert published["run_id"] == "run-pub123"
+    assert published["run_id"] == payload["environment"]["run_id"]
+    assert published["generated_at"] == payload["environment"]["generated_at"]
+    assert published["runner"] == payload["environment"]["runner"]
+    assert published["storage"] == payload["environment"]["storage"]
+    assert artifacts.sha256_file(published["manifest"]) == published["manifest_sha256"]
     names = sorted(entry.name for entry in target_dir.iterdir())
     assert names == [
         "phase-1-direct-read-full.json",
@@ -550,7 +575,11 @@ def test_successful_publish_creates_the_complete_trio(tmp_path: Path) -> None:
     assert artifacts.sha256_file(published["json"]) == published["json_sha256"]
     assert artifacts.sha256_file(published["markdown"]) == published["markdown_sha256"]
     manifest = json.loads((published["manifest"]).read_text(encoding="utf-8"))
-    assert manifest["run_id"] == "run-pub123"
+    assert manifest["run_id"] == published["run_id"]
+    assert manifest["git_commit"] == payload["environment"]["git"]["commit"]
+    assert manifest["generated_at"] == payload["environment"]["generated_at"]
+    assert manifest["runner"] == payload["environment"]["runner"]
+    assert manifest["storage"] == payload["environment"]["storage"]
     assert manifest["artifacts"]["json"]["sha256"] == published["json_sha256"]
     assert manifest["artifacts"]["markdown"]["sha256"] == published["markdown_sha256"]
     assert _no_partials(target_dir)
@@ -574,7 +603,10 @@ def test_phase0_source_with_phase1_lookalike_content_is_refused(tmp_path: Path) 
     # smuggled through with an independently forged full-looking contract.
     payload = _phase0_payload()
     payload["environment"]["benchmark_contract"] = artifacts.BENCHMARK_CONTRACT
-    payload["environment"]["run_id"] = "run-smuggled"
+    payload["environment"]["run_id"] = benchmark_contract.generate_run_id(
+        contract=artifacts.BENCHMARK_CONTRACT, profile="full", warmup=1, repetitions=3
+    )
+    payload["environment"]["generated_at"] = "2026-08-31T12:00:00.000000+00:00"
     json_path, md_path = _write_reports(tmp_path, "smuggled", payload)
     with pytest.raises(artifacts.BaselinePublishError) as error:
         artifacts.publish_baseline_pair(json_path, md_path, tmp_path)
@@ -675,17 +707,18 @@ def test_manifest_creation_failure_removes_json_and_markdown(tmp_path: Path, mon
 
 
 def test_post_write_verification_failure_removes_everything(tmp_path: Path, monkeypatch) -> None:
-    payload = _phase1_payload(run_id="run-verify")
+    payload = _phase1_payload()
     json_path, md_path = _write_reports(tmp_path, "results-report", payload)
     target_dir = tmp_path / "baselines"
     real_replace = os.replace
 
     def corrupting_replace(src, dst, *args, **kwargs):
         result = real_replace(src, dst, *args, **kwargs)
-        # After the files are published, flip one byte of the JSON on disk.
+        # After the files are published, flip a byte of the manifest on disk
+        # so its SHA-256 entry no longer corroborates the JSON.
         if str(dst).endswith("phase-1-direct-read-full.manifest.json"):
             current = Path(dst).read_bytes()
-            Path(dst).write_bytes(current.replace(b"run-verify", b"run-XXXXXX", 1))
+            Path(dst).write_bytes(current.replace(b'"git_commit"', b'"git_commXt"', 1))
         return result
 
     monkeypatch.setattr(artifacts.os, "replace", corrupting_replace)
@@ -693,13 +726,17 @@ def test_post_write_verification_failure_removes_everything(tmp_path: Path, monk
         artifacts.publish_baseline_pair(json_path, md_path, target_dir)
     monkeypatch.undo()
     # Either the manifest check or the byte-for-byte check must flag it.
-    assert "manifest" in str(error.value).lower() or "post-publish" in str(error.value).lower()
+    assert "post-publish" in str(error.value).lower() or "manifest" in str(error.value).lower()
     # The corrupted state is fully rolled back.
     assert list(target_dir.iterdir()) == []
 
 
 def test_incomplete_trio_is_an_incomplete_after(tmp_path: Path) -> None:
-    payload = _phase1_payload(run_id="run-trio")
+    payload = _phase1_payload(
+        run_id=benchmark_contract.generate_run_id(
+            contract=artifacts.BENCHMARK_CONTRACT, profile="full", warmup=1, repetitions=3
+        )
+    )
     json_path, md_path = _write_reports(tmp_path, "results-report", payload)
     target_dir = tmp_path / "baselines"
     artifacts.publish_baseline_pair(json_path, md_path, target_dir)
@@ -716,7 +753,11 @@ def test_incomplete_trio_is_an_incomplete_after(tmp_path: Path) -> None:
 
 
 def test_manifest_with_wrong_sha_is_rejected(tmp_path: Path) -> None:
-    payload = _phase1_payload(run_id="run-sha")
+    payload = _phase1_payload(
+        run_id=benchmark_contract.generate_run_id(
+            contract=artifacts.BENCHMARK_CONTRACT, profile="full", warmup=1, repetitions=3
+        )
+    )
     json_path, md_path = _write_reports(tmp_path, "results-report", payload)
     target_dir = tmp_path / "baselines"
     published = artifacts.publish_baseline_pair(json_path, md_path, target_dir)
@@ -767,7 +808,6 @@ def test_publish_refuses_mismatched_markdown(tmp_path: Path) -> None:
 def test_comparison_requires_full_validation_on_both_sides(tmp_path: Path) -> None:
     before_path = _write_before_pair(tmp_path / "before", _phase0_payload())
     after_path = _write_after_trio(tmp_path / "after", _after_trio_payload())
-    before_path.write_text(json.dumps(_phase0_payload()), encoding="utf-8")
     # Phase 1 payload missing one scenario must be refused — the real AFTER
     # contract is enforced before any comparison happens.
     incomplete = _phase1_payload()
@@ -781,10 +821,6 @@ def test_comparison_requires_full_validation_on_both_sides(tmp_path: Path) -> No
 def test_comparison_recognizes_newly_measured(tmp_path: Path) -> None:
     before_path = _write_before_pair(tmp_path / "before", _phase0_payload())
     after_path = _write_after_trio(tmp_path / "after", _after_trio_payload())
-    before_path.write_text(json.dumps(_phase0_payload()), encoding="utf-8")
-    after_payload = _phase1_payload(run_id="run-after")
-    after_payload["environment"]["run_id"] = benchmark_contract.derive_run_id(after_payload)
-    after_path.write_text(json.dumps(after_payload), encoding="utf-8")
 
     completed = _run_compare(before_path, after_path, tmp_path)
     assert completed.returncode == 0, completed.stderr
@@ -808,8 +844,6 @@ def test_comparison_recognizes_newly_measured(tmp_path: Path) -> None:
 def test_comparison_rejects_swapped_broken_or_wrong_contract(tmp_path: Path) -> None:
     before_path = _write_before_pair(tmp_path / "before", _phase0_payload())
     after_path = _write_after_trio(tmp_path / "after", _after_trio_payload())
-    before_path.write_text(json.dumps(_phase0_payload()), encoding="utf-8")
-    after_path.write_text(json.dumps(_phase1_payload()), encoding="utf-8")
 
     swapped = _run_compare(after_path, before_path, tmp_path)
     assert swapped.returncode != 0
@@ -886,8 +920,9 @@ def test_missing_storage_metadata_is_partially_comparable(base_marker: None = No
 
 
 def test_matching_storage_metadata_is_comparable() -> None:
-    base = _phase0_payload(storage="NVMe local, same host")
-    other = _phase1_payload(storage="NVMe local, same host")
+    base = _phase0_payload(storage="windows-local-d-volume", runner="local-windows-validation")
+    other = _phase1_payload(storage="windows-local-d-volume", runner="local-windows-validation")
+    # Full runtime + identical storage + runner provenance → COMPARABLE.
     assert _comparability(base, other) == "COMPARABLE"
 
 
@@ -916,14 +951,44 @@ def test_comparability_report_carries_the_three_states(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_id_is_stable_and_matches_rendered_markdown() -> None:
-    payload = _phase1_payload()
-    run_id = benchmark_contract.derive_run_id(payload)
-    assert run_id.startswith("run-") and len(run_id) == 20
-    assert benchmark_contract.derive_run_id(payload) == run_id  # deterministic
-    text = run_benchmark.render_markdown(payload)
-    assert run_id in text
-    assert benchmark_contract.CONTRACT_PHASE_1 in text
+def test_run_id_is_unique_per_run_and_validated() -> None:
+    """Two real runs with the SAME parameters get DIFFERENT run ids, and the
+    format is the stable ``run-<32 hex>``."""
+    from benchmarks import contract as bc
+
+    first = bc.generate_run_id(
+        commit="a" * 40,
+        contract=benchmark_contract.CONTRACT_PHASE_1,
+        profile="full",
+        warmup=1,
+        repetitions=3,
+    )
+    second = bc.generate_run_id(
+        commit="a" * 40,
+        contract=benchmark_contract.CONTRACT_PHASE_1,
+        profile="full",
+        warmup=1,
+        repetitions=3,
+    )
+    assert first != second, "two actual runs must never share a run_id"
+    assert bc.RUN_ID_RE.match(first)
+    assert bc.RUN_ID_RE.match(second)
+    assert first.startswith("run-") and len(first) == 36
+
+    # Two consecutive payloads keep each their own id.
+    payload_one = _phase1_payload()
+    payload_two = _phase1_payload()
+    assert payload_one["environment"]["run_id"] != payload_two["environment"]["run_id"]
+
+    # The rendered Markdown carries the payload's run id + contract.
+    text = run_benchmark.render_markdown(payload_one)
+    assert payload_one["environment"]["run_id"] in text
+    assert bc.CONTRACT_PHASE_1 in text
+
+    # A malformed run_id format is rejected by the saved AFTER validator.
+    payload_bad = _phase1_payload(run_id="run-short")
+    problems = bc.validate_saved_phase1_after(payload_bad)
+    assert any("run_id" in p for p in problems)
 
 
 def test_phase0_before_is_never_touched_by_the_cli(tmp_path: Path) -> None:

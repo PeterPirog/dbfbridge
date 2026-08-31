@@ -622,9 +622,11 @@ Direct Read Core work.
   scenarios became real `MEASURED` scenarios (fast contract 19, full contract
   24 `MEASURED` / 0 `FAILED` / 0 `NOT_IMPLEMENTED`) and a future AFTER
   baseline must carry `benchmark_contract == "phase-1-direct-read-v1"` (the
-  `--baseline` gate refuses anything else). A stable `run_id` is embedded in
-  the JSON, the Markdown, the publication manifest and the publication
-  message.
+  `--baseline` gate refuses anything else). A `run_id` in the stable
+  `run-<32 hex>` format — unique per ACTUAL run (UTC microsecond timestamp,
+  commit, contract, profile, parameters, random nonce) — is embedded in the
+  JSON, the Markdown, the publication manifest and the publication message;
+  `generated_at` is a timezone-aware UTC ISO 8601 timestamp generated once.
 - Phase 1 artifacts use their own contract-derived names
   (`benchmarks/results/phase-1-direct-read-<profile>...` and the AFTER trio
   `benchmarks/baselines/phase-1-direct-read-full.{json,md}` +
@@ -637,7 +639,13 @@ Direct Read Core work.
   requires an explicit, separate decision. A committed AFTER baseline is
   complete ONLY when JSON, Markdown and a corroborating manifest all exist
   (this crash-consistency marker covers the gap that two independent
-  `os.replace` calls cannot be crash-atomic between themselves).
+  `os.replace` calls cannot be crash-atomic between themselves). The
+  manifest binds `generated_at`, the full git commit, and the
+  runner/storage provenance (`--storage-label`; `--runner-label` explicit
+  or safely derived from non-secret GitHub Actions variables; local runs
+  get the neutral `local`). A full baseline REQUIRES runner and storage
+  provenance (the legacy BEFORE pair cannot have them and is never
+  compared as `COMPARABLE`).
 - The stdlib-only `benchmarks/compare_baselines.py` exists for the day the
   AFTER baseline is published: BOTH sides pass the full frozen validators
   (`benchmarks/contract.py`) before comparing, the AFTER manifest and file

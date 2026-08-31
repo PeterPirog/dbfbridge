@@ -392,18 +392,28 @@ declared verified until its full CI run is green).
   (publication to them is impossible). `--baseline` publishes an
   **exception-safe transaction**: the ACTUAL source JSON is fully validated
   with the frozen Phase 1 AFTER contract (an independently passed payload is
-  never trusted), the Markdown must carry the same `run_id`, contract and
-  profile, and the staged `.partial` trio (JSON + Markdown + manifest) is
-  published with a post-write pass that verifies bytes, SHA-256 hashes, the
-  manifest and a JSON re-validation, removing all three new files on any
-  failure. The manifest (`phase-1-direct-read-full.manifest.json`, published
-  last) is the crash-consistency marker: an AFTER baseline is committed ONLY
-  when JSON, Markdown and a corroborating manifest all exist with an
-  identical `run_id`. Two unrelated `os.replace` calls are not
+  never trusted), the Markdown must carry the same `run_id`, contract,
+  profile, commit and generated_at, and the staged `.partial` trio (JSON +
+  Markdown + manifest) is published with a post-write pass that verifies
+  bytes, SHA-256 hashes, the manifest and a JSON re-validation, removing all
+  three new files on any failure. The `run_id` is UNIQUE per actual run
+  (stable `run-<32 hex>` format over a UTC microsecond timestamp, commit,
+  contract, profile, parameters and a random nonce — two real runs never
+  share one) with timezone-aware UTC `generated_at`, generated ONCE before
+  the payload so the JSON, the Markdown, the manifest and the publication
+  message always carry the same identifier. The manifest
+  (`phase-1-direct-read-full.manifest.json`, published last) binds
+  generated_at, the full git commit and the runner/storage provenance to the
+  published bytes and is the crash-consistency marker: an AFTER baseline is
+  committed ONLY when JSON, Markdown and a corroborating manifest all exist
+  with an identical `run_id`. Two unrelated `os.replace` calls are not
   crash-atomic between themselves; no force/overwrite flag exists
-  (re-baselining is an explicit, separate decision). The future AFTER
-  comparison tool is `benchmarks/compare_baselines.py` (BEFORE = legacy
-  Phase 0 artifact validated by the frozen Phase 0 contract, AFTER =
+  (re-baselining is an explicit, separate decision); provenance is
+  explicit — `--storage-label` describes the storage and `--runner-label` is
+  explicit or safely derived from non-secret GitHub Actions variables (local
+  runs use the neutral `local`) — and a full baseline REQUIRES both. The
+  future AFTER comparison tool is `benchmarks/compare_baselines.py` (BEFORE =
+  legacy Phase 0 artifact validated by the frozen Phase 0 contract, AFTER =
   `phase-1-direct-read-v1` with manifest verification, the 20 common
   `MEASURED` scenarios compared, NEWLY_MEASURED restricted to the four
   documented placeholders without invented speedups, and a three-state

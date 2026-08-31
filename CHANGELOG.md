@@ -127,6 +127,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance) / `NOT_COMPARABLE` (any OS/Python/CPU/architecture/dependency
   difference) — while contract, commit, branch and the dbfbridge package
   version are never treated as environment mismatches
+- Baseline provenance finalized: the `run_id` is UNIQUE per actual run
+  (`run-<32 hex>` over a UTC microsecond timestamp, commit, contract,
+  profile, parameters and a random nonce — two real runs with identical
+  parameters never share one) and `generated_at` is timezone-aware UTC ISO
+  8601 with microseconds; both are generated exactly once and carried
+  identically in the JSON, the Markdown, the manifest and the publication
+  message. The publication manifest binds generated_at, the full git commit
+  and the runner/storage provenance to the published bytes (`manifest_problems`
+  accepts expected_git_commit/expected_generated_at; a manifest with a
+  different commit or timestamp is refused)
+- Explicit provenance CLI: `--storage-label` describes the fixture/results
+  storage (e.g. `windows-local-d-volume`, `github-actions-windows-temp`;
+  no SSD/NVMe guessing) and `--runner-label` is either explicit or safely
+  derived from the non-secret GitHub Actions variables
+  (`GITHUB_ACTIONS`, `RUNNER_OS`, `RUNNER_ARCH`, `ImageOS`,
+  `ImageVersion`) — local runs use the neutral `local` with no hostname,
+  username or user paths. The JSON environment carries explicit `runner`
+  and `storage` fields (storage may be null for fast runs); a full
+  `--baseline` REQUIRES both and the manifest records them; fast runs work
+  without labels (storage: null)
+- Controlled comparison errors: every missing, corrupt, unreadable,
+  non-UTF-8 or identity-mismatched artifact (AFTER JSON/Markdown/manifest,
+  SHA/run_id/contract/profile/commit/generated_at) yields a clean
+  `COMPARISON REFUSED` with exit 2 — raw `OSError`, `FileNotFoundError`,
+  `UnicodeDecodeError`, `KeyError` or `struct` tracebacks never escape, and
+  the companion Markdown must repeat the run identity
+- The duplicated legacy comparability implementation was removed from
+  `benchmarks/compare_baselines.py`; the three-state semantics now live
+  exclusively in `benchmarks.contract.environment_comparability`
 - Atomic Phase 1 baseline publication (`benchmarks/artifacts.py`): staged
   `.partial` JSON/Markdown pair published back-to-back with an in-memory
   round-trip check and post-write SHA-256 verification; a failure rolls the

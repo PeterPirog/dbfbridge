@@ -1119,10 +1119,13 @@ def _full_gate_payload() -> dict:
     return {
         "environment": {
             "benchmark_contract": run_benchmark.BENCHMARK_CONTRACT,
-            "run_id": "run-gate",
+            "run_id": "run-" + "0123abcdef1234567890abcdef123456",
+            "generated_at": "2026-08-31T12:00:00.000000+00:00",
             "profile": "full",
             "warmup": 1,
             "repetitions": 3,
+            "runner": "local-windows-validation",
+            "storage": "windows-local-d-volume",
             "git": {
                 "commit": good_sha,
                 "origin_main": "b" * 40,
