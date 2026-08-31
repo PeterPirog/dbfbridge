@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import statistics
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -300,6 +301,14 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
         "memo_lazy",
         "raw_mode_none",
     )
+    if profile == "phase3":
+        return ("inspect_schema_scaling", "cold_import_cost")
+    if profile == "phase2":
+        return (
+            "direct_read_write_roundtrip",
+            "direct_write_character_heavy",
+            "direct_write_memo_heavy",
+        )
     if profile != "full":
         return fast
     return fast + (
@@ -1191,7 +1200,83 @@ class Runner:
             )
         )
 
-    # ------------------------------------------------------------------ dispatch
+    # ------------------------------------------------------------------ phase 3 ----
+
+    def scenario_inspect_schema_scaling(self) -> None:
+        """inspect_table + read_schema cost per table (1000× scaling)."""
+        from dbfbridge import inspect_table, read_schema
+
+        path = self.small()  # 300-record fixture, cheap metadata
+        state: dict[str, object] = {"inspect_calls": 0, "schema_calls": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                for _ in range(100):
+                    inspect_table(str(path))
+                    state["inspect_calls"] = int(state["inspect_calls"]) + 1  # type: ignore[arg-type]
+                    read_schema(str(path))
+                    state["schema_calls"] = int(state["schema_calls"]) + 1  # type: ignore[arg-type]
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                "inspect_schema_scaling",
+                "inspect_table + read_schema 100× over 300-record table (backend open/pass audit)",
+                make,
+                input_bytes=self._source_bytes(path),
+                input_records=100,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_cold_import_cost(self) -> None:
+        """Subprocess timing of `import dbfbridge` (cold import cost)."""
+        state: dict[str, object] = {}
+
+        def make(out: Path):
+            def run() -> None:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys, time; t0=time.perf_counter(); import dbfbridge;"
+                        " t1=time.perf_counter();"
+                        " heavy=[m for m in ('dbf','polars','orjson','openpyxl','xlsxwriter')"
+                        " if m in sys.modules]; assert not heavy, heavy;"
+                        " print(f'{t1-t0:.4f}')",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(self.root),
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr[:500])
+                elapsed = float(result.stdout.strip().splitlines()[-1])
+                state["import_seconds"] = elapsed
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("cold import must not write output bytes")
+
+        self.results.append(
+            self._measure(
+                "cold_import_cost",
+                "Cold import of dbfbridge in a fresh subprocess (no heavy deps loaded)",
+                make,
+                input_bytes=0,
+                input_records=None,
+                post_validate=post_validate,
+            )
+        )
 
     def run_scenario(self, name: str) -> None:
         # Shared scenarios must use IDENTICAL parameters in fast and full; only
@@ -1266,6 +1351,10 @@ class Runner:
             self.scenario_memo_lazy()
         elif name == "raw_mode_none":
             self.scenario_raw_mode_none()
+        elif name == "inspect_schema_scaling":
+            self.scenario_inspect_schema_scaling()
+        elif name == "cold_import_cost":
+            self.scenario_cold_import_cost()
         elif name == "export_1m_records":
             self.scenario_export(
                 name,
@@ -1300,7 +1389,7 @@ class Runner:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=["fast", "full"], default="fast")
+    parser.add_argument("--profile", choices=["fast", "full", "phase3"], default="fast")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
