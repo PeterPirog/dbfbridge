@@ -8,7 +8,7 @@
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
-> Status: **0.1.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
+> Status: **0.2.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
 
 ## Installation
 
