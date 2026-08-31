@@ -24,7 +24,7 @@ from __future__ import annotations
 import errno
 import os
 import struct
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import IO, Protocol
 
@@ -119,7 +119,7 @@ class RecordStreamBackend(Protocol):
         use_memofile: bool = True,
         start_index: int = 0,
         skip_deleted_parse: bool = False,
-    ) -> Iterator[PhysicalRecord]:
+    ) -> Generator[PhysicalRecord, None, None]:
         """Yield :class:`PhysicalRecord` frames in physical order.
 
         The file handles live inside the generator: closing the iterator (or
@@ -137,6 +137,13 @@ class MemoPayloadBackend(Protocol):
         ``None`` for an empty block) with typed missing/invalid errors."""
         ...
 
+    def decode_memo_payload(
+        self, payload: object, *, encoding: str, decode_errors: str = "strict"
+    ) -> object:
+        """Turn a raw memo payload into its value: bytes for binary memos,
+        decoded text for text memos, and ``None`` when empty."""
+        ...
+
 
 def is_memo_pointer_field(field_type: str, dbversion_byte: int) -> bool:
     """Whether the field's raw bytes hold a memo block pointer.
@@ -147,6 +154,23 @@ def is_memo_pointer_field(field_type: str, dbversion_byte: int) -> bool:
     if field_type in {"M", "G", "P"}:
         return True
     return field_type == "B" and dbversion_byte not in VFP_DBVERSIONS
+
+
+class DirectRecordFieldParser(FieldParser):
+    """Field parser of the direct record backend.
+
+    dbfread's header check refuses tables with types it does not know.  The
+    backend adds raw-bytes stubs for the VFP types ``dbfread`` cannot decode
+    (Varbinary ``Q``, Blob ``W``) so tables carrying them remain streamable;
+    the public record API still refuses to *decode* unsupported selected
+    fields (``FIELD_TYPE_UNSUPPORTED``) before the parser is ever reached.
+    """
+
+    def parseQ(self, field, data):
+        return data
+
+    def parseW(self, field, data):
+        return data
 
 
 class DbfreadBackend:
@@ -185,7 +209,7 @@ class DbfreadBackend:
                 dbf_path,
                 load=False,
                 encoding=encoding,
-                parserclass=parserclass or FieldParser,
+                parserclass=parserclass or DirectRecordFieldParser,
                 char_decode_errors=char_decode_errors,
                 ignore_missing_memofile=ignore_missing_memofile,
             )
@@ -228,7 +252,7 @@ class DbfreadBackend:
         use_memofile: bool = True,
         start_index: int = 0,
         skip_deleted_parse: bool = False,
-    ) -> Iterator[PhysicalRecord]:
+    ) -> Generator[PhysicalRecord, None, None]:
         """Stream physical records (the single shared physical/decoded loop).
 
         The read is bounded by the declared record count and starts by
@@ -294,7 +318,7 @@ class DbfreadBackend:
                         if field.name in pointer_fields:
                             memo_indices = (
                                 *memo_indices,
-                                (field.name, FieldParser._parse_memo_index(field_raw)),
+                                (field.name, parser._parse_memo_index(field_raw)),
                             )
                             continue
                         if not want:
@@ -328,6 +352,20 @@ class DbfreadBackend:
                                     "field": field.name,
                                     "record_index": index,
                                 },
+                            ) from exc
+                        except struct.error as exc:
+                            if is_memo_pointer_field(field.type, table.header.dbversion):
+                                raise errors.FptInvalidError(
+                                    f"Memo payload for field {field.name!r} cannot be "
+                                    f"read from {table.memofilename}: {exc}",
+                                    path=Path(table.memofilename) if table.memofilename else path,
+                                    context={"field": field.name, "record_index": index},
+                                ) from exc
+                            raise errors.DbfRecordInvalidError(
+                                f"Field {field.name!r} at record {index} cannot be "
+                                f"parsed: {exc}",
+                                path=path,
+                                context={"field": field.name, "record_index": index},
                             ) from exc
                         items.append((field.name, value))
                 raw_image: bytes | None = None
@@ -374,6 +412,37 @@ class DbfreadBackend:
                 context={"block": block},
             ) from exc
 
+    def decode_memo_payload(
+        self, payload: object, *, encoding: str, decode_errors: str = "strict"
+    ) -> object:
+        """Turn a raw dbfread memo payload into its public value.
+
+        Binary memos (``BinaryMemo`` bytes subclasses) stay bytes; text memos
+        are decoded with the resolved encoding and the policy; an empty block
+        is ``None``.  Strict decode failures raise the typed
+        :class:`~dbf_bridge.core.errors.TextDecodeError`.
+        """
+        from dbfread.memo import BinaryMemo
+
+        if payload is None:
+            return None
+        if not isinstance(payload, bytes):
+            raise errors.FptInvalidError(
+                f"Unexpected memo payload type {type(payload).__name__}.",
+                path=None,
+                context={},
+            )
+        if isinstance(payload, BinaryMemo):
+            return payload
+        try:
+            return payload.decode(encoding, errors=decode_errors)
+        except UnicodeDecodeError as exc:
+            raise errors.TextDecodeError(
+                f"Memo text cannot be decoded with {encoding!r}: {exc}",
+                path=None,
+                context={"encoding": encoding, "policy": decode_errors},
+            ) from exc
+
 
 def _open_input(path: Path) -> IO[bytes]:
     """Open *path* read-only, mapping OSError to a typed :class:`DbfIoError`."""
@@ -397,6 +466,13 @@ def _open_memofile(table: DBF, use_memofile: bool) -> MemoFile:
         if use_memofile:
             return table._open_memofile()
         return FakeMemoFile(None)
+    except struct.error as exc:
+        memo_path = Path(table.memofilename) if table.memofilename else Path(table.filename)
+        raise errors.FptInvalidError(
+            f"The memo companion header is invalid: {memo_path}",
+            path=memo_path,
+            context={"operation": "open"},
+        ) from exc
     except OSError as exc:
         memo_path = Path(table.memofilename) if table.memofilename else Path(table.filename)
         raise errors.DbfIoError(
