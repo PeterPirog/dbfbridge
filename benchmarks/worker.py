@@ -303,12 +303,6 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
     )
     if profile == "phase3":
         return ("inspect_schema_scaling", "cold_import_cost")
-    if profile == "phase2":
-        return (
-            "direct_read_write_roundtrip",
-            "direct_write_character_heavy",
-            "direct_write_memo_heavy",
-        )
     if profile != "full":
         return fast
     return fast + (

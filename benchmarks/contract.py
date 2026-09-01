@@ -135,7 +135,10 @@ _MEASUREMENT_DEPENDENCIES: tuple[str, ...] = (
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
+CONTRACT_PHASE_3 = "phase-3-performance-v1"
+
 __all__ = [
+    "CONTRACT_PHASE_3",
     "CONTRACT_PHASE_1",
     "FROZEN_PHASE0_MEASURED_NAMES",
     "FROZEN_SCENARIO_NAMES",
