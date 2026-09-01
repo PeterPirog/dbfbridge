@@ -67,10 +67,14 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: python -m pip install build twine
+      - run: python -m pip install build twine "dbf>=0.99.11"
       - run: python -m build
       - run: python -m twine check dist/*
       - name: Fresh-wheel smoke (reusable helper)
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
           python scripts/release_wheel_smoke.py --wheel "$wheel" --expected-version "0.2.0"
+      - name: PyPI install-profile smoke (reusable helper)
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
+          python scripts/pypi_install_smoke.py --wheel "$wheel" --expected-version "0.2.0"

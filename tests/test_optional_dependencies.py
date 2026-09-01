@@ -327,6 +327,46 @@ def test_extras_map_every_optional_dependency() -> None:
         assert all(tool not in requirement for requirement in extras["all"])
 
 
+def _normalized_names(requirements: list[str]) -> set[str]:
+    """Canonical distribution names of PEP 508 requirements (marker-safe)."""
+    names: set[str] = set()
+    for requirement in requirements:
+        head = requirement.split(";")[0].strip()
+        name = head.split(";")[0]
+        for separator in (";", ">", "<", "=", "[", " ", "("):
+            name = name.split(separator)[0]
+        names.add(name.strip().lower())
+    return names
+
+
+def test_dev_extras_contains_the_full_runtime_capability_set() -> None:
+    """[dev] must remain the complete test environment after the split.
+
+    The first 0.3 push removed the heavy dependencies from the base install
+    but left [dev] without xlsxwriter/orjson/polars, so the legacy
+    full-feature tests (polars streaming engine, XLSX export/import, CLI
+    integration) failed in CI run 33504140559.  This regression test pins
+    the contract: every runtime capability dependency of [all] must also be
+    available in [dev], while [all] itself stays free of dev-only tooling.
+    """
+    extras = _load_pyproject()["project"]["optional-dependencies"]
+    runtime_all = _normalized_names(extras["all"])
+    dev = _normalized_names(extras["dev"])
+    assert runtime_all <= dev, sorted(runtime_all - dev)
+    # …and [dev] is explicitly enumerated, never a self-referential extra.
+    assert not any(name.startswith("dbfbridge") for name in dev)
+
+
+def test_dev_is_never_a_user_profile() -> None:
+    """[all] stays the full USER feature set; dev tooling belongs to [dev]."""
+    extras = _load_pyproject()["project"]["optional-dependencies"]
+    dev_tools = {"pytest", "pytest-cov", "ruff", "build", "twine", "psutil"}
+    all_names = _normalized_names(extras["all"])
+    assert not (all_names & dev_tools), sorted(all_names & dev_tools)
+    for tool in dev_tools:
+        assert any(tool in requirement for requirement in extras["dev"]), tool
+
+
 def test_built_wheel_metadata_matches_the_contract() -> None:
     """When a built wheel is present, its METADATA must match the contract."""
     dist = Path(__file__).parents[1] / "dist"
