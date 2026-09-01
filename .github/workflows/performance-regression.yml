@@ -84,7 +84,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'smoke') }}
         shell: bash
         run: |
-          report=$(ls -t benchmarks/results/phase-3-performance-phase3.json | head -n 1)
+          report=$(ls -t benchmarks/results/phase-3-performance-phase3*.json | head -n 1)
           summary_args=()
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then summary_args=(--summary "$GITHUB_STEP_SUMMARY"); fi
           python -m benchmarks.compare_phase3_regression \
@@ -100,7 +100,7 @@ jobs:
         if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full') }}
         shell: bash
         run: |
-          report=$(ls -t benchmarks/results/phase-3-performance-phase3.json | head -n 1)
+          report=$(ls -t benchmarks/results/phase-3-performance-phase3*.json | head -n 1)
           summary_args=()
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then summary_args=(--summary "$GITHUB_STEP_SUMMARY"); fi
           python -m benchmarks.compare_phase3_regression \
