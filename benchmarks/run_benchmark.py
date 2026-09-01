@@ -686,9 +686,10 @@ def main(argv: list[str] | None = None) -> int:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     runner_label = args.runner_label or derive_runner_from_environment()
     storage_label: str | None = args.storage_label
+    active_contract = contract_for_profile(args.profile)
     run_id = generate_run_id(
         commit=str(git_state_payload.get("commit") or ""),
-        contract=BENCHMARK_CONTRACT,
+        contract=active_contract,
         profile=args.profile,
         warmup=args.warmup,
         repetitions=args.repetitions,
@@ -698,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
             "git": git_state_payload,
             "system": system_info(),
             "packages": package_versions(),
-            "benchmark_contract": BENCHMARK_CONTRACT,
+            "benchmark_contract": active_contract,
             "profile": args.profile,
             "repetitions": args.repetitions,
             "warmup": args.warmup,
@@ -717,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
     # phase-0 prefix), including --scenario suffixes.
     args.results_dir.mkdir(parents=True, exist_ok=True)
     scenario_suffix = "_".join(requested) if requested else ""
-    stem = report_stem(BENCHMARK_CONTRACT, args.profile, scenario_suffix)
+    stem = report_stem(active_contract, args.profile, scenario_suffix)
     json_path = args.results_dir / f"{stem}.json"
     md_path = args.results_dir / f"{stem}.md"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

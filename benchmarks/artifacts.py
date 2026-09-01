@@ -42,6 +42,7 @@ from typing import Any
 
 from .contract import (
     CONTRACT_PHASE_1,
+    CONTRACT_PHASE_3,
     build_manifest,
     manifest_problems,
     validate_saved_phase1_after,
@@ -89,8 +90,15 @@ def contract_report_prefix(contract: Any) -> str:
         return "phase-1-direct-read"
     if contract in (None, "", "phase-0"):
         return "phase-0"
+    if contract == CONTRACT_PHASE_1:
+        return "phase-1-direct-read"
+    if contract == CONTRACT_PHASE_3:
+        return "phase-3-performance"
+    if contract in (None, "", "phase-0"):
+        return "phase-0"
     raise UnknownBenchmarkContractError(
-        f"Unknown benchmark_contract {contract!r}; expected {CONTRACT_PHASE_1!r}."
+        f"Unknown benchmark_contract {contract!r}; expected "
+        f"{CONTRACT_PHASE_1!r} or {CONTRACT_PHASE_3!r}."
     )
 
 
