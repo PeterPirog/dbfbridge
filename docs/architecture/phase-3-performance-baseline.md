@@ -2,7 +2,7 @@
 
 ## 1. Motivation
 
-Phase 2 (Direct Write Core) is functionally correct on its own branch.  This
+This baseline measures the release/0.2.0 Direct Read Core code.  This
 document establishes the measured performance baseline and
 architecture/dependency audits that will justify (or reject) specific 0.3
 optimizations.

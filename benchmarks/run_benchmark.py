@@ -60,6 +60,16 @@ from .contract import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def contract_for_profile(profile: str) -> str:
+    """Return the benchmark contract for the given profile."""
+    if profile == "phase3":
+        from benchmarks.contract import CONTRACT_PHASE_3
+
+        return CONTRACT_PHASE_3
+    return CONTRACT_PHASE_1
+
+
 STATUS_FAILED = "FAILED"
 STATUS_MEASURED = "MEASURED"
 STATUS_NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -780,4 +790,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
