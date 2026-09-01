@@ -186,20 +186,54 @@ local runner storage, and every baseline records an explicit
 
 ## Decision record
 
-| Candidate | Measured cost | Expected benefit | Correctness risk | API risk | Implementation size | Decision |
-|---|---|---|---|---|---|---|
-| inspect_table reopens | header-only | Low | Low | Low | Small | **DEFER** |
-| companion directory scans | direct stat first | Low | Low | Low | Small | **DEFER** |
-| Reduced duplicate header work | already single pass | None | — | — | — | **REJECT** |
-| Projected record parsing | already skips parser | Low | Low | Low | Small | **DEFER** |
-| Memo read batching | per-record FPT block reads (measured by `direct_read_memo_heavy`) | Medium | Medium (caching) | Low | Medium | **PENDING canonical BEFORE** |
-| Optional dependency split | install size only | Low runtime cost | Low | Low | Small | **PENDING canonical BEFORE** |
-| Backend call overhead | Low | Low | Low | Low | Small | **REJECT** |
-| Native reader | not measured as a bottleneck | unclear | HIGH | HIGH | Large | **DEFER** |
+The canonical Phase 3 BEFORE baseline has been measured
+(`phase-3-performance-v1`, commit `783428fb4e3055d15aa0d8f4669016673b84dea8`,
+run `run-1db4c04a3d4cd661011631d749acaf1a`, Windows Server 2025 / Python
+3.12.10, warmup 1 × 3 repetitions, 23 MEASURED / 0 FAILED).  The values below
+are **runner-specific BEFORE evidence**, not guaranteed user benchmarks.
 
-No **DO_NEXT** is chosen in this phase.  Every candidate marked PENDING is
-decided only after the canonical Phase 3 BEFORE artifacts are published and
-read; the final decision must cite the measured numbers.
+### Measured BEFORE evidence (GitHub-hosted Windows runner)
+
+| path | median wall | derived records/s |
+|---|---|---|
+| Direct Read 190k (`direct_read_190k`) | ~3.05 s | ~62k rec/s |
+| Direct Read 1M (`direct_read_1m`) | ~16.17 s | ~61.8k rec/s |
+| projection selected (`direct_read_projection_selected`) | ~2.01 s | ~94k rec/s |
+| projection all (`direct_read_projection_all`) | ~3.06 s | ~62k rec/s |
+| memo skip (`direct_read_memo_skip`, 2k table) | ~0.015 s | ~135k rec/s |
+| memo lazy (`direct_read_memo_lazy`, 2k table) | ~0.020 s | ~101k rec/s |
+| memo inline (`direct_read_memo_inline`, 2k table) | ~0.035 s | ~56k rec/s |
+| migration validate off (`migration_validate_off`) | ~6.51 s | ~29k rec/s |
+| migration validate on (`migration_validate_on`) | ~7.47 s | ~25k rec/s |
+| cold import (`cold_import`) | ~0.042 s | — |
+| memo-heavy inline at scale (`direct_read_memo_heavy`) | ~3.31 s | ~57k rec/s |
+| DBF→JSONL (`migration_dbf_to_jsonl`) | ~7.38 s | ~26k rec/s |
+| JSONL→DBF+FPT (`migration_jsonl_to_dbf_fpt`) | ~54.86 s | ~3.5k rec/s |
+
+Observations relevant to the decision:
+
+- Direct Read throughput is essentially flat from 190k to 1M records
+  (~62k rec/s both) — no scaling cliff, O(1) memory behaviour confirmed;
+- field projection saves real work (~94k vs ~62k rec/s for 3 of 8 fields);
+- the memo-policy triplet shows the expected ordering skip > lazy > inline
+  (the inline policy performs one FPT block read per memo record);
+- the heaviest measured paths are the migration writer paths
+  (DBF→JSONL ~7 s, JSONL→DBF+FPT ~55 s per repetition), not Direct Read;
+- cold import is already ~0.04 s with **no heavy dependency loaded**
+  (`import dbfbridge` imports none of the optional dependencies).
+
+### Decision
+
+| Candidate | Evidence | Decision |
+|---|---|---|
+| Optional dependency split | all heavy deps already lazy; `import dbfbridge` loads none; cold import ~0.04 s; base contract should need only `dbfread` | **SELECTED as the first 0.3 change** (installation/dependency footprint + cleaner operation contract; explicitly **NOT** a runtime speedup claim) |
+| Memo read batching | inline memo cost measured in isolation (`direct_read_memo_heavy` ~57k rec/s vs 62k unprojected; per-record FPT reads) | **DEFER** (candidate for a later 0.3 change with its own BEFORE/AFTER) |
+| Backend registry / native reader / writer rewrite | no measured bottleneck justifies them | **REJECT for now** |
+| inspect_table reopens / companion scans / projection work | already single-pass, projection already skips parsing | **REJECT** (no cost measured) |
+
+No wall-time threshold is claimed for the dependency split: it is an
+installation-footprint and operation-contract change, and its AFTER run is a
+regression/equivalence check, not a performance claim.
 
 ## Performance regression CI proposal
 
