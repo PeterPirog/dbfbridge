@@ -302,7 +302,31 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
         "raw_mode_none",
     )
     if profile == "phase3":
-        return ("inspect_schema_scaling", "cold_import_cost")
+        return (
+            "inspect_schema_1",
+            "inspect_schema_100",
+            "inspect_schema_1000",
+            "direct_read_190k",
+            "direct_read_1m",
+            "direct_read_memo_heavy",
+            "direct_read_deleted_include",
+            "direct_read_deleted_skip",
+            "direct_read_cp1250",
+            "direct_read_cp852",
+            "direct_read_mazovia",
+            "migration_dbf_to_jsonl",
+            "migration_jsonl_to_dbf_fpt",
+            "migration_validate_off",
+            "migration_validate_on",
+            "direct_read_raw_none",
+            "direct_read_raw_full",
+            "direct_read_projection_selected",
+            "direct_read_projection_all",
+            "direct_read_memo_skip",
+            "direct_read_memo_lazy",
+            "direct_read_memo_inline",
+            "cold_import",
+        )
     if profile != "full":
         return fast
     return fast + (
@@ -1196,8 +1220,14 @@ class Runner:
 
     # ------------------------------------------------------------------ phase 3 ----
 
-    def scenario_inspect_schema_scaling(self) -> None:
-        """inspect_table + read_schema cost per table (1000× scaling)."""
+    def scenario_inspect_schema(self, name: str, iterations: int) -> None:
+        """inspect_table + read_schema call-count scaling (1 / 100 / 1000).
+
+        Every iteration performs exactly one ``inspect_table`` and one
+        ``read_schema`` call on the same 300-record table.  The measured
+        window covers the full loop; the last results are re-checked in
+        post-validation (correct record/field counts, zero output).
+        """
         from dbfbridge import inspect_table, read_schema
 
         path = self.small()  # 300-record fixture, cheap metadata
@@ -1205,15 +1235,30 @@ class Runner:
 
         def make(out: Path):
             def run() -> None:
-                for _ in range(100):
-                    inspect_table(str(path))
+                # Counters reflect THIS repetition only (warm-ups reset them).
+                state["inspect_calls"] = 0
+                state["schema_calls"] = 0
+                for _ in range(iterations):
+                    info = inspect_table(str(path))
                     state["inspect_calls"] = int(state["inspect_calls"]) + 1  # type: ignore[arg-type]
-                    read_schema(str(path))
+                    schema = read_schema(str(path))
                     state["schema_calls"] = int(state["schema_calls"]) + 1  # type: ignore[arg-type]
+                    state["record_count"] = info.record_count
+                    state["field_count"] = len(schema.fields)
 
             return run
 
         def post_validate(out: Path, sample: dict[str, object]) -> None:
+            if state["inspect_calls"] != iterations or state["schema_calls"] != iterations:  # type: ignore[comparison-overlap]
+                raise RuntimeError(
+                    f"expected exactly {iterations} inspect_table and {iterations} "
+                    f"read_schema calls, got {state['inspect_calls']}/{state['schema_calls']}"
+                )
+            if state["record_count"] != 300 or state["field_count"] != 8:  # type: ignore[comparison-overlap]
+                raise RuntimeError(
+                    "inspect/read_schema returned unexpected metadata "
+                    f"(record_count={state['record_count']}, field_count={state['field_count']})"
+                )
             if sample.get("output_bytes") != 0:
                 raise RuntimeError("Direct Read must not write output bytes")
             if sample.get("temporary_bytes_written") != 0:
@@ -1221,16 +1266,435 @@ class Runner:
 
         self.results.append(
             self._measure(
-                "inspect_schema_scaling",
-                "inspect_table + read_schema 100× over 300-record table (backend open/pass audit)",
+                name,
+                f"inspect_table + read_schema {iterations}× over the 300-record table "
+                "(backend open/pass audit)",
                 make,
                 input_bytes=self._source_bytes(path),
-                input_records=100,
+                input_records=iterations,
                 post_validate=post_validate,
             )
         )
 
-    def scenario_cold_import_cost(self) -> None:
+    def _direct_read_stream(
+        self,
+        name: str,
+        description: str,
+        source_dbf: Path,
+        input_records: int,
+        iterate: Callable[[Any, dict[str, object]], None],
+        post_validate: Callable[[dict[str, object], dict[str, object]], None],
+        memo: str = "null",
+    ) -> None:
+        """Shared zero-output Direct Read measurement over one fixture.
+
+        ``iterate(record, state)`` accumulates O(1) per-record evidence into
+        *state*; ``post_validate(state, sample)`` runs outside the measured
+        window and receives the same *state*.
+        """
+        from dbfbridge import iter_records
+
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                # O(1) evidence for THIS repetition only (warm-ups reset it).
+                state["records"] = 0
+                state["id_sum"] = 0
+                records = 0
+                for record in iter_records(str(source_dbf), memo=memo):
+                    iterate(record, state)
+                    records += 1
+                state["records"] = records
+
+            return run
+
+        def validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            if not isinstance(records, int) or records != input_records:
+                raise RuntimeError(f"expected {input_records} records, got {records}")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+            post_validate(state, sample)
+
+        self.results.append(
+            self._measure(
+                name,
+                description,
+                make,
+                input_bytes=input_bytes,
+                input_records=input_records,
+                post_validate=validate,
+            )
+        )
+
+    def scenario_direct_read(self, name: str, size: int) -> None:
+        """Full iter_records stream over the flat table (190k / 1M scaling).
+
+        Every repetition verifies the exact record count and the arithmetic
+        ID sum (``N*(N+1)/2``) with O(1) extra memory — the decoded values
+        are digested, never materialized.
+        """
+
+        def iterate(record: Any, state: dict[str, object]) -> None:
+            state["id_sum"] = int(state.get("id_sum", 0)) + int(record.values["ID"])  # type: ignore[arg-type]
+
+        def post_validate(state: dict[str, object], sample: dict[str, object]) -> None:
+            expected_sum = size * (size + 1) // 2
+            if state.get("id_sum") != expected_sum:
+                raise RuntimeError(
+                    f"streamed ID values do not sum to the fixture recipe "
+                    f"({state.get('id_sum')} != {expected_sum})"
+                )
+
+        self._direct_read_stream(
+            name,
+            f"Direct Read: iter_records over the {size:,}-record table "
+            "(O(1) memory, record count + ID-sum verified)",
+            self._flat_by_size(size),
+            size,
+            iterate,
+            post_validate,
+        )
+
+    def _flat_by_size(self, size: int) -> Path:
+        return {300: self.small(), 190_000: self.medium(), 1_000_000: self.large()}[size]
+
+    def scenario_direct_read_memo_heavy(self) -> None:
+        """iter_records(memo="inline") over the 190k memo table (FPT at scale)."""
+        from dbfbridge import iter_records
+
+        source_dbf = self.memo_heavy(190_000)
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "memo_values": 0, "empty_values": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                memo_values = 0
+                empty_values = 0
+                for record in iter_records(str(source_dbf), memo="inline"):
+                    records += 1
+                    if record.values["NOTATKA"] is None:
+                        empty_values += 1
+                    else:
+                        memo_values += 1
+                state["records"] = records
+                state["memo_values"] = memo_values
+                state["empty_values"] = empty_values
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            if state["memo_values"] != 171_000 or state["empty_values"] != 19_000:  # type: ignore[comparison-overlap]
+                raise RuntimeError(
+                    "expected 171,000 decoded memo values and 19,000 empty memo "
+                    f"fields, got {state['memo_values']}/{state['empty_values']}"
+                )
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                "direct_read_memo_heavy",
+                'Direct Read: iter_records(memo="inline") over the 190,000-record memo table '
+                "(per-record FPT block reads, zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_read_deleted(self, policy: str) -> None:
+        """iter_records over the 1,000-record fixture with 10% deleted rows."""
+        from dbfbridge import iter_records
+
+        source_dbf = self.deleted()
+        input_bytes = self._source_bytes(source_dbf)
+        include = policy == "include"
+        state: dict[str, object] = {"records": 0, "deleted": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                deleted = 0
+                for record in iter_records(str(source_dbf), include_deleted=include):
+                    records += 1
+                    if record.deleted:
+                        deleted += 1
+                state["records"] = records
+                state["deleted"] = deleted
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            deleted = state["deleted"]  # type: ignore[assignment]
+            if include:
+                if records != 1_000 or deleted != 100:
+                    raise RuntimeError(
+                        f"expected 1,000 records with 100 deleted, got {records}/{deleted}"
+                    )
+            else:
+                if records != 900 or deleted != 0:
+                    raise RuntimeError(
+                        f"expected 900 active records and no deleted rows, got {records}/{deleted}"
+                    )
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                f"direct_read_deleted_{policy}",
+                f"Direct Read: iter_records(include_deleted={include}) over the "
+                "1,000-record table with 100 deleted rows (zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=1_000 if include else 900,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_read_encoding(self, codec: str) -> None:
+        """iter_records with a forced Polish codepage over the encoding fixture.
+
+        The Polish Mazovia/PIAST codecs are registered explicitly OUTSIDE the
+        measured window (registration is a documented, on-demand side effect
+        of the code paths that need them; Direct Read with an explicit
+        non-auto encoding does not register them by itself).
+        """
+        import json as json_module
+
+        from dbf_bridge.exporter.polish_codecs import register_polish_codecs
+        from dbfbridge import iter_records
+
+        register_polish_codecs()
+        source_dbf = self.encoding_fixture(codec)
+        expected_text = json_module.loads(
+            source_dbf.with_suffix(".meta.json").read_text(encoding="utf-8")
+        )["text"]
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "text": None}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                text = None
+                for record in iter_records(str(source_dbf), encoding=codec, decode_errors="strict"):
+                    records += 1
+                    text = record.values["TEKST"]
+                state["records"] = records
+                state["text"] = text
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            text = state["text"]  # type: ignore[assignment]
+            if records != 1:
+                raise RuntimeError(f"expected exactly 1 record, got {records}")
+            if text != expected_text:
+                raise RuntimeError(f"forced {codec} decoding produced wrong logical text: {text!r}")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                f"direct_read_{codec}",
+                f"Direct Read: iter_records(encoding={codec!r}) over the Polish-diacritics "
+                "table (strict decode, logical text verified, zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=1,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_read_raw(self, keep_raw: bool) -> None:
+        """iter_records(raw=False/True) over the 190k table."""
+        from dbfbridge import iter_records
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "raw_count": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                raw_count = 0
+                for record in iter_records(str(source_dbf), memo="null", raw=keep_raw):
+                    records += 1
+                    if record.raw_record is not None:
+                        raw_count += 1
+                state["records"] = records
+                state["raw_count"] = raw_count
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            raw_count = state["raw_count"]  # type: ignore[assignment]
+            if records != 190_000:
+                raise RuntimeError(f"expected 190,000 records, got {records}")
+            if keep_raw and raw_count != records:
+                raise RuntimeError(f"raw=True kept only {raw_count} raw record images")
+            if not keep_raw and raw_count != 0:
+                raise RuntimeError(f"raw=False kept {raw_count} raw record images")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        label = "kept" if keep_raw else "dropped"
+        self.results.append(
+            self._measure(
+                "direct_read_raw_full" if keep_raw else "direct_read_raw_none",
+                f"Direct Read: iter_records(raw={keep_raw}) over the 190k table "
+                f"(physical record image {label}, zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_read_projection(self, mode: str) -> None:
+        """iter_records field projection: selected columns vs every schema field."""
+        from dbfbridge import iter_records, read_schema
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        if mode == "selected":
+            fields: tuple[str, ...] | None = ("ID", "NAZWA", "KWOTA")
+        else:
+            # "all": explicitly select every schema field by name (resolved
+            # once, outside the measured window).
+            fields = tuple(field.name for field in read_schema(str(source_dbf)).fields)
+        selected = tuple(sorted(fields)) if fields else ()
+        state: dict[str, object] = {"records": 0, "keys": None}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                keys: frozenset[str] | None = None
+                for record in iter_records(str(source_dbf), fields=fields, memo="null"):
+                    records += 1
+                    if keys is None:
+                        keys = frozenset(record.values)
+                state["records"] = records
+                state["keys"] = keys
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            keys = state["keys"]  # type: ignore[assignment]
+            if records != 190_000:
+                raise RuntimeError(f"expected 190,000 records, got {records}")
+            if keys != frozenset(selected):
+                raise RuntimeError(f"projection returned unexpected value keys: {keys!r}")
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                "direct_read_projection_selected"
+                if mode == "selected"
+                else "direct_read_projection_all",
+                f"Direct Read: iter_records(fields={'3 selected columns' if mode == 'selected' else 'all schema fields'}) "
+                "over the 190k table (unselected fields never parsed, zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_read_memo_policy(self, policy: str) -> None:
+        """iter_records memo-policy triplet over the 2,000-record memo table."""
+        from dbfbridge import LazyMemoValue, iter_records
+
+        source_dbf = self.memo_heavy(2_000)
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "memo": 0, "empty": 0, "absent": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                records = 0
+                memo = 0
+                empty = 0
+                absent = 0
+                for record in iter_records(str(source_dbf), memo=policy):
+                    records += 1
+                    if "NOTATKA" not in record.values:
+                        absent += 1
+                    elif isinstance(record.values["NOTATKA"], LazyMemoValue):
+                        memo += 1
+                    elif record.values["NOTATKA"] is None:
+                        empty += 1
+                    else:
+                        memo += 1
+                state["records"] = records
+                state["memo"] = memo
+                state["empty"] = empty
+                state["absent"] = absent
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            if records != 2_000:
+                raise RuntimeError(f"expected 2,000 records, got {records}")
+            if policy == "skip":
+                # skip removes the memo field from values entirely.
+                if state["absent"] != 2_000:  # type: ignore[comparison-overlap]
+                    raise RuntimeError(
+                        f'memo="skip" must exclude the memo field from every record, '
+                        f"absent in {state['absent']}"  # type: ignore[str-bytes-safe]
+                    )
+            elif policy == "lazy":
+                # lazy exposes LazyMemoValue metadata (no FPT I/O) or None.
+                if state["memo"] != 1_800 or state["empty"] != 200:  # type: ignore[comparison-overlap]
+                    raise RuntimeError(
+                        f"expected 1,800 lazy + 200 empty memo values, got "
+                        f"{state['memo']}/{state['empty']}"  # type: ignore[str-bytes-safe]
+                    )
+            else:  # inline
+                if state["memo"] != 1_800 or state["empty"] != 200:  # type: ignore[comparison-overlap]
+                    raise RuntimeError(
+                        f"expected 1,800 decoded + 200 empty memo values, got "
+                        f"{state['memo']}/{state['empty']}"  # type: ignore[str-bytes-safe]
+                    )
+            if sample.get("output_bytes") != 0:
+                raise RuntimeError("Direct Read must not write any output bytes")
+            if sample.get("temporary_bytes_written") != 0:
+                raise RuntimeError("Direct Read must write zero temporary bytes")
+
+        self.results.append(
+            self._measure(
+                f"direct_read_memo_{policy}",
+                f'Direct Read: iter_records(memo="{policy}") over the 2,000-record memo table '
+                "(zero output)",
+                make,
+                input_bytes=input_bytes,
+                input_records=2_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_cold_import(self) -> None:
         """Subprocess timing of `import dbfbridge` (cold import cost)."""
         state: dict[str, object] = {}
 
@@ -1263,7 +1727,7 @@ class Runner:
 
         self.results.append(
             self._measure(
-                "cold_import_cost",
+                "cold_import",
                 "Cold import of dbfbridge in a fresh subprocess (no heavy deps loaded)",
                 make,
                 input_bytes=0,
@@ -1345,10 +1809,50 @@ class Runner:
             self.scenario_memo_lazy()
         elif name == "raw_mode_none":
             self.scenario_raw_mode_none()
-        elif name == "inspect_schema_scaling":
-            self.scenario_inspect_schema_scaling()
-        elif name == "cold_import_cost":
-            self.scenario_cold_import_cost()
+        elif name == "inspect_schema_1":
+            self.scenario_inspect_schema(name, 1)
+        elif name == "inspect_schema_100":
+            self.scenario_inspect_schema(name, 100)
+        elif name == "inspect_schema_1000":
+            self.scenario_inspect_schema(name, 1000)
+        elif name in {"direct_read_190k", "direct_read_1m"}:
+            size = 190_000 if name == "direct_read_190k" else 1_000_000
+            self.scenario_direct_read(name, size)
+        elif name == "direct_read_memo_heavy":
+            self.scenario_direct_read_memo_heavy()
+        elif name in {"direct_read_deleted_include", "direct_read_deleted_skip"}:
+            self.scenario_direct_read_deleted(name.removeprefix("direct_read_deleted_"))
+        elif name in {"direct_read_cp1250", "direct_read_cp852", "direct_read_mazovia"}:
+            self.scenario_direct_read_encoding(name.removeprefix("direct_read_"))
+        elif name == "migration_dbf_to_jsonl":
+            self.scenario_export(
+                name,
+                "Migration: DBF -> JSONL export over the 190k table (validate on)",
+                self.medium(),
+                input_records=190_000,
+                validate=True,
+            )
+        elif name == "migration_jsonl_to_dbf_fpt":
+            self.scenario_reconstruction_memo(
+                "migration_jsonl_to_dbf_fpt", self.memo_heavy(190_000), 190_000
+            )
+        elif name in {"migration_validate_off", "migration_validate_on"}:
+            self.scenario_export(
+                name,
+                f"Migration: DBF -> JSONL with output validation "
+                f"{'disabled' if name.endswith('off') else 'enabled'}",
+                self.medium(),
+                input_records=190_000,
+                validate=name.endswith("on"),
+            )
+        elif name in {"direct_read_raw_none", "direct_read_raw_full"}:
+            self.scenario_direct_read_raw(name == "direct_read_raw_full")
+        elif name in {"direct_read_projection_selected", "direct_read_projection_all"}:
+            self.scenario_direct_read_projection(name.removeprefix("direct_read_projection_"))
+        elif name in {"direct_read_memo_skip", "direct_read_memo_lazy", "direct_read_memo_inline"}:
+            self.scenario_direct_read_memo_policy(name.removeprefix("direct_read_memo_"))
+        elif name == "cold_import":
+            self.scenario_cold_import()
         elif name == "export_1m_records":
             self.scenario_export(
                 name,
