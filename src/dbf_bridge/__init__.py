@@ -139,10 +139,9 @@ _LAZY_SYMBOLS: dict[str, str] = {
     # optional-dependency boundary
     "OptionalDependencyMissingError": "dbf_bridge.optional_deps",
     # direct-read control contract
-    # direct-read control contract
     "ReadCancelledError": "dbf_bridge.core",
-    # shared progress/cancellation contract (ProgressEvent stays on
-    # dbf_bridge.api_models — the very same class)
+    # shared progress/cancellation contract (ProgressEvent is the canonical
+    # class from dbf_bridge.progress, re-exported by api_models)
     "ProgressCallback": "dbf_bridge.progress",
     "CancellationCheck": "dbf_bridge.progress",
 }

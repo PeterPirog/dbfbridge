@@ -56,6 +56,12 @@ DECODE_ERROR_POLICIES: tuple[str, ...] = ("strict", "replace", "ignore")
 #: which is checked at every physical record).
 _PROGRESS_EVERY = 1000
 
+
+def _new_track() -> dict[str, Any]:
+    """One consistent live-counter mapping for every Direct Read stream."""
+    return {"scanned": 0, "yielded": 0, "last_index": None, "ended": False}
+
+
 __all__ = [
     "DECODE_ERROR_POLICIES",
     "MEMO_POLICIES",
@@ -579,6 +585,7 @@ def _stream_records(
     track: dict[str, Any],
     progress: ProgressCallback | None = None,
     cancel_check: CancellationCheck | None = None,
+    emit_final: bool = True,
 ) -> Generator[DirectRecord, None, None]:
     """Yield decoded records from the backend stream (handles live in the
     generator; they close on exhaustion, error, close(), and GC).
@@ -588,12 +595,20 @@ def _stream_records(
     the historical fast path with zero per-record control overhead;
     otherwise the cooperative boundary checks cancellation **before** the
     next physical record is read/decoded and emits bounded-cadence progress.
+
+    The final ``"completed"`` event on natural exhaustion is owned HERE
+    unless ``emit_final=False`` (the internal pagination wrapper then owns
+    exactly one ``"page completed"`` event instead, so a call never produces
+    two final events).
     """
     ended = False
     if cancel_check is not None and cancel_check():
         # Cooperative cancellation BEFORE the first physical record: zero
-        # records are read (no frame is ever consumed), no DBF/FPT handle is
-        # even opened here, and nothing is written anywhere.
+        # frames are consumed, nothing is decoded or yielded, and the
+        # backend physical-record loop is never entered.  (Eager
+        # argument/header/companion validation already ran in _prepare and
+        # may have briefly read header/companion metadata — unchanged
+        # contract.)
         raise _read_cancelled(request, track, start_index)
     table = dbfread_backend.open_table(
         request.dbf_path,
@@ -654,12 +669,10 @@ def _stream_records(
                     values=_build_values(request, frame),
                     raw_record=frame.raw,
                 )
-            if progress is not None:
+            if progress is not None and emit_final:
                 # Final event for a normally completed call.
                 current = (
-                    int(track["last_index"]) + 1
-                    if track["last_index"] is not None
-                    else start_index
+                    int(track["last_index"]) + 1 if track["last_index"] is not None else start_index
                 )
                 _emit_read_progress(progress, request, track, current=current, message="completed")
     finally:
@@ -724,7 +737,7 @@ def iter_records(
     )
     return _stream_records(
         request,
-        track={"scanned": 0, "yielded": 0, "last_index": None, "ended": False},
+        track=_new_track(),
         progress=progress,
         cancel_check=cancel_check,
     )
@@ -784,13 +797,17 @@ def read_records(
         encoding=encoding,
         decode_errors=decode_errors,
     )
-    track: dict[str, Any] = {"scanned": 0, "ended": False, "yielded": 0, "last_index": None}
+    track: dict[str, Any] = _new_track()
     stream = _stream_records(
         request,
         start_index=offset,
         track=track,
         progress=progress,
         cancel_check=cancel_check,
+        # The page wrapper owns exactly one final event ("page completed")
+        # regardless of whether the limit or EOF ends the page — the stream's
+        # own "completed" event is suppressed to avoid a duplicate final.
+        emit_final=False,
     )
     records: list[DirectRecord] = []
     try:
@@ -874,7 +891,7 @@ def iter_raw_records(
     )
     return _stream_records(
         request,
-        track={"scanned": 0, "yielded": 0, "ended": False},
+        track=_new_track(),
         progress=progress,
         cancel_check=cancel_check,
     )

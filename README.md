@@ -510,39 +510,6 @@ counters, cadence, `READ_CANCELLED` context, resource cleanup, callback
 exception policy — are documented in
 [the PyPI usage guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md#progress-and-cancellation).
 
-Phase 1B adds read-only record streaming on top of the Phase 1A contracts.
-The implementation is backed by the **dbfread reference backend** isolated in
-`dbf_bridge.core.backend` (the only module allowed to use private `dbfread`
-API); the migration exporter delegates its physical record loop to the same
-backend, so there is exactly one record loop and one header parser in the
-codebase.
-
-```python
-from dbfbridge import (
-    DirectRecord,
-    LazyMemoValue,
-    RecordPage,
-    iter_raw_records,
-    iter_records,
-    read_records,
-)
-
-# Streaming iteration (O(1) memory); close() releases the file handles.
-for record in iter_records("K:/dbf_source/klienci.dbf", memo="lazy"):
-    value = record.values["NOTATKA"]
-    if isinstance(value, LazyMemoValue):
-        meta = value.to_dict()          # table, field, physical memo block
-        text = value.load()             # explicit read through the backend
-    print(record.physical_index, record.deleted, record.values.keys())
-
-# One bounded physical page: O(limit) memory.
-page = read_records("K:/dbf_source/klienci.dbf", offset=200, limit=100, fields=["ID_KL", "NAZWA"])
-print(page.offset, page.limit, page.scanned, page.next_offset, page.exhausted)
-
-# Every physical record (deleted included) with its exact raw bytes, no FPT.
-raws = [(r.physical_index, r.deleted, r.raw_record) for r in iter_raw_records("K:/dbf_source/klienci.dbf")]
-```
-
 Contract:
 
 - `physical_index` is the zero-based **physical** record index (deleted

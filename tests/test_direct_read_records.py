@@ -25,10 +25,13 @@ import pytest
 
 import dbf_bridge
 import dbfbridge
+from dbf_bridge import export_dbf
 from dbfbridge import (
     ArgumentInvalidError,
     CancellationCheck,
+    DbfHeaderInvalidError,
     DbfIoError,
+    DbfPathError,
     DbfRecordInvalidError,
     DbfTruncatedError,
     DirectRecord,
@@ -242,6 +245,30 @@ def test_empty_dbf_streams_nothing(tmp_path: Path) -> None:
     assert page.next_offset is None
     assert page.exhausted is True
     assert list(iter_raw_records(dbf_path)) == []
+
+
+def test_empty_table_progress_on_every_entry_point(tmp_path: Path) -> None:
+    """Empty tables emit exactly one final progress event, never a KeyError."""
+    dbf_path = _create_vfp_table(tmp_path / "EMPTY_P.dbf", "KOD N(6,0)", [])
+
+    events: list[ProgressEvent] = []
+    assert list(iter_records(dbf_path, progress=events.append)) == []
+    assert len(events) == 1
+    assert (events[-1].current, events[-1].total, events[-1].records) == (0, 0, 0)
+    assert events[-1].message == "completed"
+
+    raw_events: list[ProgressEvent] = []
+    assert list(iter_raw_records(dbf_path, progress=raw_events.append)) == []
+    assert len(raw_events) == 1
+    assert (raw_events[-1].current, raw_events[-1].total, raw_events[-1].records) == (0, 0, 0)
+    assert raw_events[-1].message == "completed"
+
+    page_events: list[ProgressEvent] = []
+    page = read_records(dbf_path, limit=5, progress=page_events.append)
+    assert page.records == () and page.exhausted is True
+    assert len(page_events) == 1  # exactly one final event — no duplicates
+    assert page_events[-1].message == "page completed"
+    assert (page_events[-1].current, page_events[-1].total, page_events[-1].records) == (0, 0, 0)
 
 
 def test_single_and_multiple_records_in_physical_order(tmp_path: Path) -> None:
@@ -1520,9 +1547,6 @@ def test_cancel_before_first_record_error_context(tmp_path: Path) -> None:
     dbf_path = _create_vfp_table(
         tmp_path / "zero.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
     )
-    dbf_path = _create_vfp_table(
-        tmp_path / "zero.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
-    )
     source_sha = _sha256(dbf_path)
     with pytest.raises(ReadCancelledError) as error:
         read_records(dbf_path, offset=5, limit=4, cancel_check=lambda: True)
@@ -1568,6 +1592,7 @@ def test_resource_release_windows_rename_delete(tmp_path: Path) -> None:
             break
         list(iter_records(dbf_path, memo="inline", cancel_check=lambda: True))
     _assert_releasable()
+
     # 3) progress callback exception.
     def _broken_progress(event: ProgressEvent) -> None:
         raise RuntimeError("progress failed")
@@ -1576,6 +1601,7 @@ def test_resource_release_windows_rename_delete(tmp_path: Path) -> None:
         for _ in iter_records(dbf_path, progress=_broken_progress):
             pass
     _assert_releasable()
+
     # 4) cancel-check exception propagates unchanged (never READ_CANCELLED).
     def _broken_cancel() -> bool:
         raise KeyError("cancel failure")
@@ -1650,7 +1676,70 @@ def test_source_immutability_across_control_modes(tmp_path: Path) -> None:
     assert sorted(path.name for path in tmp_path.iterdir()) == ["immutable.dbf", "immutable.fpt"]
 
 
-def test_read_cancelled_error_is_json_safe(tmp_path: Path) -> None:
+def test_emitted_direct_read_events_use_the_canonical_class(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "canonical.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    events: list[Any] = []
+    records = list(iter_records(dbf_path, progress=events.append))
+    assert records and events
+    # The ACTUALLY emitted event object is the canonical public class.
+    assert type(events[0]) is dbfbridge.ProgressEvent
+    assert isinstance(events[0], dbfbridge.ProgressEvent)
+
+
+def test_migration_progress_events_use_the_canonical_class(
+    tmp_path: Path, sample_input_dir: Path
+) -> None:
+    """export_dbf keeps emitting the same canonical ProgressEvent class."""
+    from dbf_bridge.api_models import ProgressEvent as ApiModelsEvent
+    from dbf_bridge.progress import ProgressEvent as ProgressModuleEvent
+
+    events: list[Any] = []
+    result = export_dbf(
+        str(sample_input_dir / "klienci.dbf"),
+        str(tmp_path / "out"),
+        formats=("jsonl",),
+        progress=events.append,
+    )
+    result.raise_for_errors()
+    assert events, "migration API must still emit progress events"
+    for event in events:
+        assert isinstance(event, dbfbridge.ProgressEvent)
+        assert type(event) is dbfbridge.ProgressEvent
+        assert type(event) is ApiModelsEvent is ProgressModuleEvent
+        assert event.operation in {"export", "convert", "read"}
+
+
+def test_core_exports_have_no_accidental_removal() -> None:
+    """core.__all__ may only GROW; the PR must not shrink the public layer."""
+    from dbf_bridge import core
+
+    for name in (
+        "inspect_table",
+        "read_schema",
+        "memo_companion_extension",
+        "memo_companion_format",
+        "ReadCancelledError",
+    ):
+        assert name in core.__all__, name
+        assert hasattr(core, name), name
+
+
+def test_eager_validation_not_masked_by_cancellation(tmp_path: Path) -> None:
+    """Argument/header validation stays eager; cancellation cannot hide it."""
+    dbf_path = _create_vfp_table(
+        tmp_path / "eager.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    # Unknown field projection: eager FIELD_PROJECTION_INVALID, not READ_CANCELLED.
+    with pytest.raises(FieldProjectionInvalidError):
+        list(iter_records(dbf_path, fields=["NOPE"], cancel_check=lambda: True))
+    # Unknown memo policy: eager ARGUMENT_INVALID.
+    with pytest.raises(ArgumentInvalidError):
+        list(iter_records(dbf_path, memo="bogus", cancel_check=lambda: True))
+    # A missing header: eager typed error, still not masked.
+    with pytest.raises((DbfHeaderInvalidError, DbfPathError, DbfIoError)):
+        list(iter_records(tmp_path / "missing.dbf", cancel_check=lambda: True))
     dbf_path = _create_vfp_table(
         tmp_path / "jsonsafe.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
     )
@@ -1664,8 +1753,33 @@ def test_read_cancelled_error_is_json_safe(tmp_path: Path) -> None:
 
 
 def test_public_control_exports() -> None:
-    import dbf_bridge as bridge_module
+    from dbfbridge import CancellationCheck, ProgressCallback, ReadCancelledError  # noqa: F401
 
+    assert dbfbridge.ReadCancelledError is dbf_bridge.ReadCancelledError
+    assert dbfbridge.CancellationCheck is dbf_bridge.CancellationCheck
+    assert dbfbridge.ProgressCallback is dbf_bridge.ProgressCallback
+    assert dbfbridge.ProgressEvent is dbf_bridge.ProgressEvent
+    assert dbfbridge.ProgressEvent is dbf_bridge.api_models.ProgressEvent
+
+
+def test_single_canonical_progress_event_identity() -> None:
+    """progress.py is the ONLY source of the shared progress contract."""
+    import dbf_bridge as bridge_module
+    from dbf_bridge import api_models, progress
+    from dbf_bridge.api import ProgressCallback as ApiCallback
+    from dbf_bridge.progress import ProgressEvent as ProgressModuleEvent
+
+    # Four-way runtime identity across every historical import path.
+    canonical = progress.ProgressEvent
+    assert canonical is api_models.ProgressEvent
+    assert canonical is dbfbridge.ProgressEvent
+    assert canonical is dbf_bridge.ProgressEvent
+    assert ProgressModuleEvent is canonical
+    # api_models no longer defines a second class; it re-exports.
+    assert "class ProgressEvent" not in Path(api_models.__file__).read_text(encoding="utf-8")
+    # ProgressCallback has one canonical source (api.py re-exports it).
+    assert ApiCallback is progress.ProgressCallback
+    # The Direct Read API and public facade agree on the runtime class.
     assert bridge_module.ReadCancelledError is ReadCancelledError
     assert dbfbridge.CancellationCheck is CancellationCheck
     assert dbfbridge.ProgressCallback is ProgressCallback
