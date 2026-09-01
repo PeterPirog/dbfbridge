@@ -51,7 +51,7 @@ settings instead of creating a pending publisher.
 
 ## Publish
 
-1. Create a Git tag exactly matching `v<project.version>`, for example `v0.1.0`.
+1. Create a Git tag exactly matching `v<project.version>`, for example `v0.2.0`.
 2. Create and publish a GitHub Release from that tag, using the matching changelog section
    as its notes.
 3. Approve the protected `pypi` environment deployment.
@@ -62,13 +62,13 @@ Never rebuild and manually upload different files for the same version.
 
 ## Verify after publication
 
-Create a new environment outside the repository checkout. Replace `0.1.0` below with the
+Create a new environment outside the repository checkout. Replace `0.2.0` below with the
 version just published:
 
 ```bash
 python -m venv .venv-pypi-check
 .venv-pypi-check/bin/python -m pip install --upgrade pip
-.venv-pypi-check/bin/python -m pip install dbfbridge==0.1.0
+.venv-pypi-check/bin/python -m pip install dbfbridge==0.2.0
 .venv-pypi-check/bin/python -c "from dbfbridge import export_dbf; print(export_dbf)"
 .venv-pypi-check/bin/dbf-bridge --help
 ```
