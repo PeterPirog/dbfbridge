@@ -482,6 +482,37 @@ print(page.offset, page.limit, page.scanned, page.next_offset, page.exhausted)
 raws = [(r.physical_index, r.deleted, r.raw_record) for r in iter_raw_records("K:/dbf_source/klienci.dbf")]
 ```
 
+#### Progress and cancellation (0.3)
+
+Direct Read functions accept two optional keyword-only callbacks:
+
+```python
+from dbfbridge import ProgressEvent, ReadCancelledError, iter_records
+
+events: list[ProgressEvent] = []
+state = {"stop": False}
+
+try:
+    for record in iter_records(
+        "data/customer.dbf",
+        fields=["ID", "NAME"],
+        memo="skip",
+        progress=events.append,          # ProgressEvent(operation="read", ...)
+        cancel_check=lambda: state["stop"],  # cooperative, checked before
+    ):                                    # every physical record
+        ...
+        state["stop"] = True              # stop before the next record
+except ReadCancelledError as exc:
+    print(exc.code)                       # READ_CANCELLED
+```
+
+Cancelling raises `ReadCancelledError` (machine code `READ_CANCELLED`) with a
+JSON-safe progress context; all handles close and the source stays
+byte-identical.  The full semantics — event fields, physical vs yielded
+counters, cadence, `READ_CANCELLED` context, resource cleanup, callback
+exception policy — are documented in
+[the PyPI usage guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md#progress-and-cancellation).
+
 Contract:
 
 - `physical_index` is the zero-based **physical** record index (deleted

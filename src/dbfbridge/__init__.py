@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from dbf_bridge import (  # noqa: F401
         ArgumentInvalidError,
+        CancellationCheck,
         DBFBridgeRunError,
         DbfFormatUnsupportedError,
         DbfHeaderInvalidError,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
         ProgressCallback,
         ProgressEvent,
         QualityRunResult,
+        ReadCancelledError,
         ReconstructionOptions,
         ReconstructionResult,
         ReconstructionRunResult,
