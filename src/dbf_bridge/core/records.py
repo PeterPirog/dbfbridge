@@ -600,12 +600,18 @@ def _stream_records(
     unless ``emit_final=False`` (the internal pagination wrapper then owns
     exactly one ``"page completed"`` event instead, so a call never produces
     two final events).
+
+    Cancellation probes follow an exact one-probe-per-boundary contract: the
+    first probe runs before the physical stream starts (before the first
+    prospective record), and after every consumed frame exactly one probe
+    runs before the following prospective record is attempted — so consuming
+    N frames costs N+1 probes, never N+2.
     """
     ended = False
     if cancel_check is not None and cancel_check():
-        # Cooperative cancellation BEFORE the first physical record: zero
-        # frames are consumed, nothing is decoded or yielded, and the
-        # backend physical-record loop is never entered.  (Eager
+        # The single boundary probe for the FIRST prospective physical
+        # record: zero frames are consumed, nothing is decoded or yielded,
+        # and the backend physical-record loop is never entered.  (Eager
         # argument/header/companion validation already ran in _prepare and
         # may have briefly read header/companion metadata — unchanged
         # contract.)
@@ -630,13 +636,13 @@ def _stream_records(
     )
     try:
         if progress is None and cancel_check is None:
-            # Fast path — identical to the historical no-callback loop.
+            # Fast path — identical to the historical no-callback loop
+            # (no yielded bookkeeping: the default path needs none).
             for frame in frames:
                 track["scanned"] += 1
                 track["last_index"] = frame.index
                 if frame.deleted and not request.include_deleted:
                     continue
-                track["yielded"] += 1
                 yield DirectRecord(
                     physical_index=frame.index,
                     deleted=frame.deleted,
@@ -646,11 +652,6 @@ def _stream_records(
             ended = True
         else:
             while True:
-                # Cooperative cancellation boundary: BEFORE the next physical
-                # record is read/decoded.  Only a True return cancels; an
-                # exception from the callable propagates unchanged.
-                if cancel_check is not None and cancel_check():
-                    raise _read_cancelled(request, track, start_index)
                 try:
                     frame = next(frames)
                 except StopIteration:
@@ -661,14 +662,20 @@ def _stream_records(
                 if progress is not None and track["scanned"] % _PROGRESS_EVERY == 0:
                     _emit_read_progress(progress, request, track, current=frame.index + 1)
                 if frame.deleted and not request.include_deleted:
-                    continue
-                track["yielded"] += 1
-                yield DirectRecord(
-                    physical_index=frame.index,
-                    deleted=frame.deleted,
-                    values=_build_values(request, frame),
-                    raw_record=frame.raw,
-                )
+                    pass  # consumed, but not yielded
+                else:
+                    track["yielded"] += 1
+                    yield DirectRecord(
+                        physical_index=frame.index,
+                        deleted=frame.deleted,
+                        values=_build_values(request, frame),
+                        raw_record=frame.raw,
+                    )
+                # Exactly ONE cooperative probe per boundary: before the next
+                # prospective physical record is read/decoded.  Only a True
+                # return cancels; an exception propagates unchanged.
+                if cancel_check is not None and cancel_check():
+                    raise _read_cancelled(request, track, start_index)
             if progress is not None and emit_final:
                 # Final event for a normally completed call.
                 current = (
@@ -820,13 +827,20 @@ def read_records(
 
     if progress is not None:
         # Final event for a normally completed page (cancellation and callback
-        # exceptions propagate above and never produce one).
-        last = records[-1].physical_index if records else offset - 1
+        # exceptions propagate above and never produce one).  `current` is the
+        # PHYSICAL position after the last processed physical record — derived
+        # from the scanned track, never from the returned records (skipped
+        # deleted records after the last yielded record still advance it).
+        if track["last_index"] is not None:
+            current = int(track["last_index"]) + 1
+        else:
+            # Nothing was consumed: clamp to the physical table bounds.
+            current = min(offset, request.record_count)
         _emit_read_progress(
             progress,
             request,
             track,
-            current=last + 1,
+            current=current,
             message="page completed",
         )
 

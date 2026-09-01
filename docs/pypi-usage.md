@@ -490,7 +490,10 @@ for record in iter_records(
 - **Pagination**: for `read_records(offset=1000, limit=100)` the `current`
   value is still an absolute physical position in the table (the same
   physical index space as `offset`/`next_offset`), never an active-record
-  number.
+  number.  `current` follows the **scanned** physical cursor: deleted
+  records after the last returned record still advance it (a page over
+  4 physical records with the last 2 deleted and `include_deleted=False`
+  returns 2 records but finishes at `current = 4`).
 - **Callback exceptions are never swallowed**: if `progress(event)` raises,
   all DBF/FPT handles are closed and the original exception propagates to
   the caller.  The same is true for `cancel_check` exceptions.
