@@ -33,6 +33,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from ..progress import CancellationCheck, ProgressCallback, ProgressEvent
 from . import errors
 from .backend import dbfread_backend, is_memo_pointer_field
 from .header import (
@@ -49,6 +50,11 @@ MEMO_POLICIES: tuple[str, ...] = ("lazy", "inline", "null", "skip")
 
 #: Supported character decode error policies.
 DECODE_ERROR_POLICIES: tuple[str, ...] = ("strict", "replace", "ignore")
+
+#: Physical records processed per progress event (bounded internal cadence;
+#: not a public knob — responsiveness is owned by the cancellation boundary,
+#: which is checked at every physical record).
+_PROGRESS_EVERY = 1000
 
 __all__ = [
     "DECODE_ERROR_POLICIES",
@@ -526,11 +532,69 @@ def _build_values(request: _RecordRequest, frame: object) -> Mapping[str, Any]:
     return values
 
 
+def _read_cancelled(
+    request: _RecordRequest, track: dict[str, Any], start_index: int
+) -> errors.ReadCancelledError:
+    """Build the typed, JSON-safe cancellation error from the live counters."""
+    last = track.get("last_index")
+    next_physical = start_index if last is None else int(last) + 1
+    return errors.ReadCancelledError(
+        "The Direct Read was cancelled by the caller before the next physical record.",
+        path=request.dbf_path,
+        context={
+            "offset": start_index,
+            "next_physical_index": next_physical,
+            "scanned": int(track["scanned"]),
+            "yielded": int(track["yielded"]),
+            "record_count": request.record_count,
+        },
+    )
+
+
+def _emit_read_progress(
+    progress: ProgressCallback,
+    request: _RecordRequest,
+    track: dict[str, Any],
+    *,
+    current: int,
+    message: str | None = None,
+) -> None:
+    """Emit one ``operation="read"`` progress event (never swallows errors)."""
+    progress(
+        ProgressEvent(
+            operation="read",
+            current=current,
+            total=request.record_count,
+            table=os.fspath(request.dbf_path),
+            records=int(track["yielded"]),
+            message=message,
+        )
+    )
+
+
 def _stream_records(
-    request: _RecordRequest, *, start_index: int = 0, track: dict[str, Any]
+    request: _RecordRequest,
+    *,
+    start_index: int = 0,
+    track: dict[str, Any],
+    progress: ProgressCallback | None = None,
+    cancel_check: CancellationCheck | None = None,
 ) -> Generator[DirectRecord, None, None]:
     """Yield decoded records from the backend stream (handles live in the
-    generator; they close on exhaustion, error, close(), and GC)."""
+    generator; they close on exhaustion, error, close(), and GC).
+
+    ``track`` carries the live counters (``scanned``, ``yielded``,
+    ``last_index``, ``ended``).  When both callbacks are ``None`` the loop is
+    the historical fast path with zero per-record control overhead;
+    otherwise the cooperative boundary checks cancellation **before** the
+    next physical record is read/decoded and emits bounded-cadence progress.
+    """
+    ended = False
+    if cancel_check is not None and cancel_check():
+        # Cooperative cancellation BEFORE the first physical record: zero
+        # records are read (no frame is ever consumed), no DBF/FPT handle is
+        # even opened here, and nothing is written anywhere.
+        raise _read_cancelled(request, track, start_index)
     table = dbfread_backend.open_table(
         request.dbf_path,
         encoding=request.encoding,
@@ -549,20 +613,55 @@ def _stream_records(
         start_index=start_index,
         skip_deleted_parse=not request.include_deleted,
     )
-    ended = False
     try:
-        for frame in frames:
-            track["scanned"] += 1
-            track["last_index"] = frame.index
-            if frame.deleted and not request.include_deleted:
-                continue
-            yield DirectRecord(
-                physical_index=frame.index,
-                deleted=frame.deleted,
-                values=_build_values(request, frame),
-                raw_record=frame.raw,
-            )
-        ended = True
+        if progress is None and cancel_check is None:
+            # Fast path — identical to the historical no-callback loop.
+            for frame in frames:
+                track["scanned"] += 1
+                track["last_index"] = frame.index
+                if frame.deleted and not request.include_deleted:
+                    continue
+                track["yielded"] += 1
+                yield DirectRecord(
+                    physical_index=frame.index,
+                    deleted=frame.deleted,
+                    values=_build_values(request, frame),
+                    raw_record=frame.raw,
+                )
+            ended = True
+        else:
+            while True:
+                # Cooperative cancellation boundary: BEFORE the next physical
+                # record is read/decoded.  Only a True return cancels; an
+                # exception from the callable propagates unchanged.
+                if cancel_check is not None and cancel_check():
+                    raise _read_cancelled(request, track, start_index)
+                try:
+                    frame = next(frames)
+                except StopIteration:
+                    ended = True
+                    break
+                track["scanned"] += 1
+                track["last_index"] = frame.index
+                if progress is not None and track["scanned"] % _PROGRESS_EVERY == 0:
+                    _emit_read_progress(progress, request, track, current=frame.index + 1)
+                if frame.deleted and not request.include_deleted:
+                    continue
+                track["yielded"] += 1
+                yield DirectRecord(
+                    physical_index=frame.index,
+                    deleted=frame.deleted,
+                    values=_build_values(request, frame),
+                    raw_record=frame.raw,
+                )
+            if progress is not None:
+                # Final event for a normally completed call.
+                current = (
+                    int(track["last_index"]) + 1
+                    if track["last_index"] is not None
+                    else start_index
+                )
+                _emit_read_progress(progress, request, track, current=current, message="completed")
     finally:
         frames.close()
         track["ended"] = ended
@@ -582,6 +681,8 @@ def iter_records(
     raw: bool = False,
     encoding: str = "auto",
     decode_errors: str = "strict",
+    progress: ProgressCallback | None = None,
+    cancel_check: CancellationCheck | None = None,
 ) -> Iterator[DirectRecord]:
     """Stream decoded records of one DBF table (O(1) memory, read-only).
 
@@ -596,7 +697,18 @@ def iter_records(
     - ``raw=False`` stores no raw bytes; ``raw=True`` keeps the exact physical
       record in ``raw_record``;
     - ``encoding="auto"`` resolves from the language driver, an explicit
-      override wins; strict decode failures raise ``TEXT_DECODE_ERROR``.
+      override wins; strict decode failures raise ``TEXT_DECODE_ERROR``;
+    - ``progress`` — optional callback receiving
+      :class:`~dbf_bridge.progress.ProgressEvent` notifications
+      (``operation="read"``) at a bounded internal cadence (every 1000
+      scanned physical records) plus one final event on normal completion;
+      ``current`` is the absolute physical position after the last processed
+      record, ``records`` counts records yielded by this call;
+    - ``cancel_check`` — cooperative cancellation: called at **every physical
+      record boundary before the next record is read**; returning ``True``
+      stops the read with :class:`ReadCancelledError` (records already
+      yielded remain valid, all handles close, nothing is written).  An
+      exception raised by the callable propagates unchanged.
 
     Argument/header/companion validation runs eagerly; iterate the returned
     generator to stream.  Closing the iterator releases all file handles.
@@ -610,7 +722,12 @@ def iter_records(
         encoding=encoding,
         decode_errors=decode_errors,
     )
-    return _stream_records(request, track={"scanned": 0, "ended": False})
+    return _stream_records(
+        request,
+        track={"scanned": 0, "yielded": 0, "last_index": None, "ended": False},
+        progress=progress,
+        cancel_check=cancel_check,
+    )
 
 
 def read_records(
@@ -624,6 +741,8 @@ def read_records(
     raw: bool = False,
     encoding: str = "auto",
     decode_errors: str = "strict",
+    progress: ProgressCallback | None = None,
+    cancel_check: CancellationCheck | None = None,
 ) -> RecordPage:
     """Read one bounded physical page of records (O(limit) memory).
 
@@ -632,6 +751,14 @@ def read_records(
     (``ARGUMENT_INVALID`` otherwise).  ``next_offset`` is the physical index
     of the first record after the page (``None`` when exhausted); ``scanned``
     counts the physical records consumed including skipped deleted ones.
+
+    ``progress`` receives ``operation="read"`` events at the internal cadence
+    plus one final event when the page completes normally (``current`` stays
+    a physical position: ``offset`` is a physical index, never an active
+    record number).  ``cancel_check`` returning ``True`` raises
+    :class:`ReadCancelledError` — never a partially filled page pretending to
+    be a completed one; the progress accumulated so far is available in the
+    error context.
     """
     if isinstance(offset, bool) or not isinstance(offset, int):
         raise errors.ArgumentInvalidError("offset must be an int.", context={"offset": offset})
@@ -657,8 +784,14 @@ def read_records(
         encoding=encoding,
         decode_errors=decode_errors,
     )
-    track: dict[str, Any] = {"scanned": 0, "ended": False}
-    stream = _stream_records(request, start_index=offset, track=track)
+    track: dict[str, Any] = {"scanned": 0, "ended": False, "yielded": 0, "last_index": None}
+    stream = _stream_records(
+        request,
+        start_index=offset,
+        track=track,
+        progress=progress,
+        cancel_check=cancel_check,
+    )
     records: list[DirectRecord] = []
     try:
         for record in stream:
@@ -667,6 +800,18 @@ def read_records(
                 break
     finally:
         stream.close()
+
+    if progress is not None:
+        # Final event for a normally completed page (cancellation and callback
+        # exceptions propagate above and never produce one).
+        last = records[-1].physical_index if records else offset - 1
+        _emit_read_progress(
+            progress,
+            request,
+            track,
+            current=last + 1,
+            message="page completed",
+        )
 
     if len(records) < limit:
         exhausted = True
@@ -685,7 +830,12 @@ def read_records(
     )
 
 
-def iter_raw_records(path: str | os.PathLike[str]) -> Iterator[DirectRecord]:
+def iter_raw_records(
+    path: str | os.PathLike[str],
+    *,
+    progress: ProgressCallback | None = None,
+    cancel_check: CancellationCheck | None = None,
+) -> Iterator[DirectRecord]:
     """Stream every physical record as a pure forensic (raw) snapshot.
 
     This is clean physical streaming: **no field is parsed or decoded** (the
@@ -696,6 +846,11 @@ def iter_raw_records(path: str | os.PathLike[str]) -> Iterator[DirectRecord]:
     exact ``raw_record`` bytes (delete marker + field bytes) and an **empty
     read-only** ``values`` mapping.  Decoded values together with the raw
     image are available through :func:`iter_records` with ``raw=True``.
+
+    ``progress``/``cancel_check`` follow the shared Direct Read contract:
+    cancellation is checked cooperatively before the next physical record
+    (``READ_CANCELLED``); the forensic semantics of every record returned
+    before the cancellation are unchanged.
     """
     dbf_path = _as_dbf_path(path)
     header = parse_header(dbf_path)
@@ -717,4 +872,9 @@ def iter_raw_records(path: str | os.PathLike[str]) -> Iterator[DirectRecord]:
         memo_path=None,
         memo_format=None,
     )
-    return _stream_records(request, track={"scanned": 0, "ended": False})
+    return _stream_records(
+        request,
+        track={"scanned": 0, "yielded": 0, "ended": False},
+        progress=progress,
+        cancel_check=cancel_check,
+    )

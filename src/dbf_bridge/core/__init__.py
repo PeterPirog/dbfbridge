@@ -24,10 +24,15 @@ from .errors import (
     FieldTypeUnsupportedError,
     FptInvalidError,
     FptRequiredMissingError,
+    ReadCancelledError,
     TextDecodeError,
 )
-from .header import SUPPORTED_MEMO_FORMATS, memo_companion_extension, memo_companion_format
-from .inspect import inspect_table, read_schema
+from .header import (  # noqa: F401 - re-exported public surface
+    SUPPORTED_MEMO_FORMATS,
+    memo_companion_extension,  # noqa: F401 - re-exported
+    memo_companion_format,  # noqa: F401 - re-exported
+)
+from .inspect import inspect_table, read_schema  # noqa: F401 - re-exported
 from .models import CompanionFile, FieldInfo, TableInfo, TableSchema
 from .records import (
     DirectRecord,
@@ -39,6 +44,7 @@ from .records import (
 )
 
 __all__ = [
+    "SUPPORTED_MEMO_FORMATS",
     "ArgumentInvalidError",
     "CompanionFile",
     "DbfFormatUnsupportedError",
@@ -57,16 +63,13 @@ __all__ = [
     "FptInvalidError",
     "FptRequiredMissingError",
     "LazyMemoValue",
+    "ReadCancelledError",
     "RecordPage",
-    "SUPPORTED_MEMO_FORMATS",
     "TableInfo",
     "TableSchema",
     "TextDecodeError",
-    "inspect_table",
     "iter_raw_records",
     "iter_records",
-    "memo_companion_extension",
-    "memo_companion_format",
     "read_records",
     "read_schema",
 ]

@@ -32,6 +32,7 @@ class ErrorCode(str, enum.Enum):
     ARGUMENT_INVALID = "ARGUMENT_INVALID"
     FIELD_PROJECTION_INVALID = "FIELD_PROJECTION_INVALID"
     FIELD_TYPE_UNSUPPORTED = "FIELD_TYPE_UNSUPPORTED"
+    READ_CANCELLED = "READ_CANCELLED"
 
 
 def _json_safe(value: Any) -> Any:
@@ -171,6 +172,25 @@ class FieldTypeUnsupportedError(DirectReadError):
     code = ErrorCode.FIELD_TYPE_UNSUPPORTED
 
 
+class ReadCancelledError(DirectReadError):
+    """A Direct Read was cooperatively cancelled by the caller.
+
+    Raised when the caller-supplied ``cancel_check`` callable returned
+    ``True`` at a physical record boundary — **before** the next physical
+    record was read or decoded.  Records already yielded to the caller remain
+    valid; no sentinel record is produced.  The structured ``context``
+    carries the machine fields needed to resume or audit the read:
+
+    - ``offset``              — physical start index of this call;
+    - ``next_physical_index`` — physical index of the next unread record;
+    - ``scanned``             — physical records consumed (deleted included);
+    - ``yielded``             — records actually yielded/returned;
+    - ``record_count``        — declared physical record count of the table.
+    """
+
+    code = ErrorCode.READ_CANCELLED
+
+
 __all__ = [
     "ArgumentInvalidError",
     "DbfFormatUnsupportedError",
@@ -186,5 +206,6 @@ __all__ = [
     "FieldTypeUnsupportedError",
     "FptInvalidError",
     "FptRequiredMissingError",
+    "ReadCancelledError",
     "TextDecodeError",
 ]

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .api import (
-        ProgressCallback,
+        ProgressCallback,  # noqa: F401 - re-exported public symbol (shared contract)
         check_conversion_quality,
         export_dbf,
         reconstruct_dbf,
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         FptInvalidError,
         FptRequiredMissingError,
         LazyMemoValue,
+        ReadCancelledError,
         RecordPage,
         TableInfo,
         TableSchema,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
     )
     from .importer.models import InputFormat, ReconstructionResult
     from .optional_deps import OptionalDependencyMissingError
+    from .progress import CancellationCheck
 
 __version__ = "0.2.0"
 
@@ -87,7 +89,6 @@ _LAZY_SYMBOLS: dict[str, str] = {
     "reconstruct_dbf": "dbf_bridge.api",
     "verify_conversion": "dbf_bridge.api",
     "check_conversion_quality": "dbf_bridge.api",
-    "ProgressCallback": "dbf_bridge.api",
     # typed run results and options
     "DBFBridgeRunError": "dbf_bridge.api_models",
     "ExportOptions": "dbf_bridge.api_models",
@@ -137,6 +138,13 @@ _LAZY_SYMBOLS: dict[str, str] = {
     "FieldTypeUnsupportedError": "dbf_bridge.core",
     # optional-dependency boundary
     "OptionalDependencyMissingError": "dbf_bridge.optional_deps",
+    # direct-read control contract
+    # direct-read control contract
+    "ReadCancelledError": "dbf_bridge.core",
+    # shared progress/cancellation contract (ProgressEvent stays on
+    # dbf_bridge.api_models — the very same class)
+    "ProgressCallback": "dbf_bridge.progress",
+    "CancellationCheck": "dbf_bridge.progress",
 }
 
 __all__ = [
@@ -170,6 +178,7 @@ __all__ = [
     "ProgressCallback",
     "ProgressEvent",
     "QualityRunResult",
+    "ReadCancelledError",
     "RecordPage",
     "ReconstructionOptions",
     "ReconstructionResult",
@@ -190,6 +199,7 @@ __all__ = [
     "read_schema",
     "reconstruct_dbf",
     "verify_conversion",
+    "CancellationCheck",
 ]
 
 

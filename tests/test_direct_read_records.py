@@ -27,6 +27,7 @@ import dbf_bridge
 import dbfbridge
 from dbfbridge import (
     ArgumentInvalidError,
+    CancellationCheck,
     DbfIoError,
     DbfRecordInvalidError,
     DbfTruncatedError,
@@ -37,6 +38,9 @@ from dbfbridge import (
     FptInvalidError,
     FptRequiredMissingError,
     LazyMemoValue,
+    ProgressCallback,
+    ProgressEvent,
+    ReadCancelledError,
     RecordPage,
     TableSchema,
     TextDecodeError,
@@ -1303,3 +1307,369 @@ def test_direct_read_matches_schema_headers(sample_input_dir: Path) -> None:
     assert page.exhausted is True
     assert page.scanned == 2
     assert page.records[0].values["ID_ZAM"] == 10000 + 49
+
+
+# ---------------------------------------------------------------------------
+# 0.3 direct-read control: progress + cooperative cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_progress_normal_exhaustion(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "progress.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    events: list[ProgressEvent] = []
+    records = list(iter_records(dbf_path, progress=events.append))
+    assert len(records) == 10
+    assert len(events) == 1  # below cadence: only the final event
+    final = events[-1]
+    assert final.operation == "read"
+    assert final.current == 10 and final.total == 10
+    assert final.records == 10
+    assert final.table == str(dbf_path)
+    assert final.message == "completed"
+
+
+def test_progress_pagination_uses_physical_positions(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "page.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    events: list[ProgressEvent] = []
+    page = read_records(dbf_path, offset=5, limit=3, progress=events.append)
+    assert [record.physical_index for record in page.records] == [5, 6, 7]
+    assert page.next_offset == 8
+    final = events[-1]
+    assert final.current == 8 and final.records == 3
+    assert final.message == "page completed"
+
+
+def test_progress_deleted_records(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "deleted.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    _mark_deleted(dbf_path, 3)
+    events: list[ProgressEvent] = []
+    active = list(iter_records(dbf_path, progress=events.append))
+    assert len(active) == 9
+    final = events[-1]
+    # Deleted records count toward the physical position, not toward records.
+    assert final.current == 10 and final.records == 9
+
+    include_events: list[ProgressEvent] = []
+    included = list(iter_records(dbf_path, include_deleted=True, progress=include_events.append))
+    assert len(included) == 10
+    assert include_events[-1].records == 10
+
+
+def test_progress_raw_records(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "raw_progress.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    _mark_deleted(dbf_path, 3)
+    events: list[ProgressEvent] = []
+    total = sum(1 for _ in iter_raw_records(dbf_path, progress=events.append))
+    assert total == 10
+    assert events[-1].current == 10 and events[-1].records == 10
+
+
+def test_progress_and_cancellation_are_independent(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "independent.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    events: list[ProgressEvent] = []
+    assert len(list(iter_records(dbf_path, progress=events.append))) == 10
+    assert events  # progress without cancel_check works
+
+    collected: list[DirectRecord] = []
+    with pytest.raises(ReadCancelledError):
+        for record in iter_records(dbf_path, cancel_check=lambda: len(collected) >= 4):
+            collected.append(record)
+    assert len(collected) == 4  # cancellation without progress works too
+
+
+def test_progress_cadence_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dbf_bridge.core import records as records_module
+
+    dbf_path = _create_vfp_table(
+        tmp_path / "cadence.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    monkeypatch.setattr(records_module, "_PROGRESS_EVERY", 3)
+    events: list[ProgressEvent] = []
+    records = list(iter_records(dbf_path, progress=events.append))
+    assert len(records) == 10
+    # Events at scanned == 3, 6, 9 plus the final event.
+    assert [event.current for event in events] == [3, 6, 9, 10]
+    assert events[-1].message == "completed"
+
+
+def test_read_records_progress_and_semantics(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "page.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    events: list[ProgressEvent] = []
+    page = read_records(dbf_path, offset=4, limit=3, progress=events.append)
+    assert [record.physical_index for record in page.records] == [4, 5, 6]
+    final = events[-1]
+    assert final.current == 7 and final.records == 3
+    assert page.next_offset == 7 and page.exhausted is False
+
+
+def test_cancel_before_first_record_reads_zero_records(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "early.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    source_sha = _sha256(dbf_path)
+    with pytest.raises(ReadCancelledError) as error:
+        list(iter_records(dbf_path, cancel_check=lambda: True))
+    payload = error.value.to_dict()
+    assert payload["code"] == "READ_CANCELLED"
+    assert payload["context"] == {
+        "offset": 0,
+        "next_physical_index": 0,
+        "scanned": 0,
+        "yielded": 0,
+        "record_count": 10,
+    }
+    assert json.dumps(payload)  # JSON-safe
+    assert _sha256(dbf_path) == source_sha
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["early.dbf"]
+
+
+def test_cancel_after_deterministic_n_records(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "cancel_n.dbf", "ID N(4,0)", [{"ID": index} for index in range(1, 51)]
+    )
+    collected: list[DirectRecord] = []
+
+    def _cancel_after_five() -> bool:
+        return len(collected) >= 5
+
+    with pytest.raises(ReadCancelledError) as error:
+        for record in iter_records(dbf_path, cancel_check=_cancel_after_five):
+            collected.append(record)
+    # Records already returned remain correctly returned.
+    assert [record.values["ID"] for record in collected] == [1, 2, 3, 4, 5]
+    assert [record.physical_index for record in collected] == [0, 1, 2, 3, 4]
+    payload = error.value.to_dict()
+    assert payload["context"] == {
+        "offset": 0,
+        "next_physical_index": 5,
+        "scanned": 5,
+        "yielded": 5,
+        "record_count": 50,
+    }
+
+
+def test_cancel_read_records_never_returns_partial_page(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "page_cancel.dbf", "ID N(4,0)", [{"ID": index} for index in range(1, 51)]
+    )
+    calls = {"count": 0}
+
+    def _cancel_at_three() -> bool:
+        # checks: initial, before #1, #2, #3, before #4 -> cancel
+        calls["count"] += 1
+        return calls["count"] >= 5
+
+    with pytest.raises(ReadCancelledError) as error:
+        read_records(dbf_path, offset=0, limit=100, cancel_check=_cancel_at_three)
+    payload = error.value.to_dict()["context"]
+    assert payload == {
+        "offset": 0,
+        "next_physical_index": 3,
+        "scanned": 3,
+        "yielded": 3,
+        "record_count": 50,
+    }
+
+
+def test_cancel_raw_reader_keeps_forensic_semantics(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "raw_cancel.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    _mark_deleted(dbf_path, 3)
+    seen: list[DirectRecord] = []
+
+    def _cancel_at_four() -> bool:
+        return len(seen) >= 4
+
+    with pytest.raises(ReadCancelledError):
+        for record in iter_raw_records(dbf_path, cancel_check=_cancel_at_four):
+            seen.append(record)
+    assert len(seen) == 4
+    assert seen[3].deleted is True and seen[3].values == {}
+    assert isinstance(seen[3].raw_record, bytes)
+
+
+def test_cancel_before_first_record_with_inline_memo(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "inline.dbf",
+        "ID N(3,0); NOTATKA M",
+        [{"ID": index, "NOTATKA": f"m{index}"} for index in range(1, 11)],
+    )
+    fpt = dbf_path.with_suffix(".fpt")
+    with pytest.raises(ReadCancelledError):
+        list(iter_records(dbf_path, memo="inline", cancel_check=lambda: True))
+    # Zero side effects, no FPT hold: the companion can be renamed at once.
+    renamed = tmp_path / "moved.fpt"
+    os.rename(fpt, renamed)
+    os.rename(renamed, fpt)
+
+
+def test_cancel_before_first_record_error_context(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "zero.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    dbf_path = _create_vfp_table(
+        tmp_path / "zero.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    source_sha = _sha256(dbf_path)
+    with pytest.raises(ReadCancelledError) as error:
+        read_records(dbf_path, offset=5, limit=4, cancel_check=lambda: True)
+    payload = error.value.to_dict()
+    assert payload["code"] == "READ_CANCELLED"
+    assert payload["context"] == {
+        "offset": 5,
+        "next_physical_index": 5,
+        "scanned": 0,
+        "yielded": 0,
+        "record_count": 10,
+    }
+    assert json.dumps(payload)
+    assert _sha256(dbf_path) == source_sha
+
+
+def test_resource_release_windows_rename_delete(tmp_path: Path) -> None:
+    """After cancellation/close/exceptions, DBF and FPT can be renamed at once
+    (the Windows-critical proof that no handle is left open)."""
+    dbf_path = _create_vfp_table(
+        tmp_path / "handles.dbf",
+        "ID N(3,0); NOTATKA M",
+        [{"ID": index, "NOTATKA": f"m{index}"} for index in range(1, 11)],
+    )
+    fpt = dbf_path.with_suffix(".fpt")
+
+    def _assert_releasable() -> None:
+        moved_dbf = tmp_path / "moved.dbf"
+        os.rename(dbf_path, moved_dbf)
+        os.rename(moved_dbf, dbf_path)
+        moved_fpt = tmp_path / "moved.fpt"
+        os.rename(fpt, moved_fpt)
+        os.rename(moved_fpt, fpt)
+
+    # 1) manual close.
+    iterator = iter_records(dbf_path, memo="inline")
+    next(iterator)
+    iterator.close()
+    _assert_releasable()
+    # 2) cancellation.
+    with pytest.raises(ReadCancelledError):
+        for _ in iter_records(dbf_path, memo="inline", cancel_check=lambda: True):
+            break
+        list(iter_records(dbf_path, memo="inline", cancel_check=lambda: True))
+    _assert_releasable()
+    # 3) progress callback exception.
+    def _broken_progress(event: ProgressEvent) -> None:
+        raise RuntimeError("progress failed")
+
+    with pytest.raises(RuntimeError, match="progress failed"):
+        for _ in iter_records(dbf_path, progress=_broken_progress):
+            pass
+    _assert_releasable()
+    # 4) cancel-check exception propagates unchanged (never READ_CANCELLED).
+    def _broken_cancel() -> bool:
+        raise KeyError("cancel failure")
+
+    with pytest.raises(KeyError, match="cancel failure"):
+        for _ in iter_records(dbf_path, cancel_check=_broken_cancel):
+            break
+        list(iter_records(dbf_path, cancel_check=_broken_cancel))
+    with pytest.raises(KeyError, match="cancel failure"):
+        for _ in iter_records(dbf_path, cancel_check=_broken_cancel):
+            break
+        list(iter_records(dbf_path, cancel_check=_broken_cancel))
+    _assert_releasable()
+
+
+def test_cancel_lazy_memo_never_reads_memo_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "lazy.dbf",
+        "ID N(3,0); NOTATKA M",
+        [{"ID": index, "NOTATKA": f"m{index}"} for index in range(1, 11)],
+    )
+    from dbf_bridge.core.backend import dbfread_backend
+
+    calls = {"memo_payload_reads": 0}
+    original_read = dbfread_backend.read_memo_payload
+
+    def _counting(*args: Any, **kwargs: Any) -> bytes:
+        calls["memo_payload_reads"] += 1
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(dbfread_backend, "read_memo_payload", _counting)
+    with pytest.raises(ReadCancelledError):
+        list(iter_records(dbf_path, memo="lazy", cancel_check=lambda: True))
+    assert calls["memo_payload_reads"] == 0
+
+
+def test_source_immutability_across_control_modes(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "immutable.dbf",
+        "ID N(3,0); NOTATKA M",
+        [{"ID": index, "NOTATKA": f"m{index}"} for index in range(1, 11)],
+    )
+    fpt = dbf_path.with_suffix(".fpt")
+    before_dbf = _sha256(dbf_path)
+    before_fpt = _sha256(fpt)
+
+    def _assert_unchanged() -> None:
+        assert _sha256(dbf_path) == before_dbf
+        assert _sha256(fpt) == before_fpt
+
+    # normal read
+    assert len(list(iter_records(dbf_path))) == 10
+    _assert_unchanged()
+    # progress read
+    assert len(list(iter_records(dbf_path, progress=lambda event: None))) == 10
+    _assert_unchanged()
+    # cancelled read
+    with pytest.raises(ReadCancelledError):
+        list(iter_records(dbf_path, cancel_check=lambda: True))
+    _assert_unchanged()
+    # raw cancelled read
+    with pytest.raises(ReadCancelledError):
+        list(iter_raw_records(dbf_path, cancel_check=lambda: True))
+    _assert_unchanged()
+    # inline-memo cancelled read (DBF + FPT both untouched)
+    with pytest.raises(ReadCancelledError):
+        list(iter_records(dbf_path, memo="inline", cancel_check=lambda: True))
+    _assert_unchanged()
+    # no output artifacts anywhere
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["immutable.dbf", "immutable.fpt"]
+
+
+def test_read_cancelled_error_is_json_safe(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "jsonsafe.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    with pytest.raises(ReadCancelledError) as error:
+        list(iter_records(dbf_path, cancel_check=lambda: True))
+    payload = error.value.to_dict()
+    restored = json.loads(json.dumps(payload))
+    assert restored["code"] == "READ_CANCELLED"
+    assert restored["path"].endswith("jsonsafe.dbf")
+    assert restored["context"]["record_count"] == 10
+
+
+def test_public_control_exports() -> None:
+    import dbf_bridge as bridge_module
+
+    assert bridge_module.ReadCancelledError is ReadCancelledError
+    assert dbfbridge.CancellationCheck is CancellationCheck
+    assert dbfbridge.ProgressCallback is ProgressCallback
+    assert dbfbridge.ProgressEvent is ProgressEvent
+    assert "CancellationCheck" in dbfbridge.__all__
+    assert "ReadCancelledError" in dbfbridge.__all__
+    assert "ProgressCallback" in dbfbridge.__all__

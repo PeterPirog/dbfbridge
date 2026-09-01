@@ -196,6 +196,7 @@ import json, sys
 from pathlib import Path
 from dbfbridge import (
     inspect_table, read_schema, iter_records, read_records, iter_raw_records,
+    CancellationCheck, ReadCancelledError, ProgressEvent, ProgressCallback,
 )
 
 source = r"{fixture_posix}"
@@ -217,6 +218,32 @@ try:
 finally:
     records.close()
 assert count == 10, count
+
+# --- progress + cancellation contract (base install, no extras) ---
+progress_events = []
+for record in iter_records(source, progress=progress_events.append):
+    pass
+assert progress_events, "progress events expected"
+assert progress_events[-1].message == "completed"
+assert progress_events[-1].current == 200 and progress_events[-1].total == 200
+assert progress_events[-1].records == 200
+
+cancelled = []
+try:
+    for record in iter_records(source, cancel_check=lambda: len(cancelled) >= 10):
+        cancelled.append(record)
+except ReadCancelledError as error:
+    payload = error.to_dict()
+    assert payload["code"] == "READ_CANCELLED", payload
+    assert payload["context"]["scanned"] == 10 and payload["context"]["yielded"] == 10
+else:
+    raise SystemExit("cancel_check must stop the read")
+assert len(cancelled) == 10
+
+try:
+    list(iter_records(source, cancel_check=lambda: True))
+except ReadCancelledError as early:
+    assert early.to_dict()["context"]["scanned"] == 0
 
 page = read_records(source, offset=0, limit=100)
 assert len(page.records) == 100 and page.next_offset == 100
