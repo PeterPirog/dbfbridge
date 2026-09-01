@@ -76,6 +76,7 @@ if TYPE_CHECKING:
         TableStatus,
     )
     from .importer.models import InputFormat, ReconstructionResult
+    from .optional_deps import OptionalDependencyMissingError
 
 __version__ = "0.2.0"
 
@@ -134,6 +135,8 @@ _LAZY_SYMBOLS: dict[str, str] = {
     "ArgumentInvalidError": "dbf_bridge.core",
     "FieldProjectionInvalidError": "dbf_bridge.core",
     "FieldTypeUnsupportedError": "dbf_bridge.core",
+    # optional-dependency boundary
+    "OptionalDependencyMissingError": "dbf_bridge.optional_deps",
 }
 
 __all__ = [
@@ -162,6 +165,7 @@ __all__ = [
     "LazyMemoValue",
     "MemoPolicy",
     "MissingMemoPolicy",
+    "OptionalDependencyMissingError",
     "OutputFormat",
     "ProgressCallback",
     "ProgressEvent",
