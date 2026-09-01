@@ -42,9 +42,11 @@ from typing import Any
 
 from .contract import (
     CONTRACT_PHASE_1,
+    CONTRACT_PHASE_3,
     build_manifest,
     manifest_problems,
     validate_saved_phase1_after,
+    validate_saved_phase3_before,
 )
 
 #: Versioned identity of the Phase 1 benchmark report contract (direct
@@ -54,11 +56,34 @@ BENCHMARK_CONTRACT = CONTRACT_PHASE_1
 #: The preserved BEFORE snapshot that must never be touched by Phase 1.
 RESERVED_PHASE_0_BASELINE_FILES = frozenset({"phase-0-full.json", "phase-0-full.md"})
 
+#: The frozen Phase 1 AFTER baseline trio that Phase 3 publication must
+#: never overwrite (the same files the existing-baseline guard protects).
+RESERVED_PHASE_1_BASELINE_FILES = frozenset(
+    {
+        "phase-1-direct-read-full.json",
+        "phase-1-direct-read-full.md",
+        "phase-1-direct-read-full.manifest.json",
+    }
+)
+
+#: The complete set of frozen historical baseline names (Phase 0 BEFORE pair
+#: and the Phase 1 AFTER trio) that no later phase may publish over.
+RESERVED_FROZEN_BASELINE_FILES = RESERVED_PHASE_0_BASELINE_FILES | RESERVED_PHASE_1_BASELINE_FILES
+
+#: Saved-artifact validator for each versioned contract that may be published.
+_CONTRACT_VALIDATORS = {
+    CONTRACT_PHASE_1: validate_saved_phase1_after,
+    CONTRACT_PHASE_3: validate_saved_phase3_before,
+}
+
 __all__ = [
     "BENCHMARK_CONTRACT",
     "BaselinePublishError",
     "CONTRACT_PHASE_1",
+    "CONTRACT_PHASE_3",
+    "RESERVED_FROZEN_BASELINE_FILES",
     "RESERVED_PHASE_0_BASELINE_FILES",
+    "RESERVED_PHASE_1_BASELINE_FILES",
     "UnknownBenchmarkContractError",
     "baseline_target_names",
     "baseline_target_paths",
@@ -87,10 +112,13 @@ def contract_report_prefix(contract: Any) -> str:
     """
     if contract == CONTRACT_PHASE_1:
         return "phase-1-direct-read"
+    if contract == CONTRACT_PHASE_3:
+        return "phase-3-performance"
     if contract in (None, "", "phase-0"):
         return "phase-0"
     raise UnknownBenchmarkContractError(
-        f"Unknown benchmark_contract {contract!r}; expected {CONTRACT_PHASE_1!r}."
+        f"Unknown benchmark_contract {contract!r}; expected "
+        f"{CONTRACT_PHASE_1!r} or {CONTRACT_PHASE_3!r}."
     )
 
 
@@ -106,23 +134,31 @@ def baseline_target_paths(contract: str, profile: str = "full") -> tuple[str, st
 
     Returns ``(json_name, markdown_name, manifest_name)``; the derived names
     can never collide with the preserved Phase 0 BEFORE pair
-    (``phase-0-full.{json,md}`` — see :data:`RESERVED_PHASE_0_BASELINE_FILES`).
+    (``phase-0-full.{json,md}``) or the frozen Phase 1 AFTER trio — see
+    :data:`RESERVED_FROZEN_BASELINE_FILES`.
     """
-    if contract != CONTRACT_PHASE_1:
+    if contract not in _CONTRACT_VALIDATORS:
         raise UnknownBenchmarkContractError(
-            f"A versioned baseline requires benchmark_contract "
-            f"{CONTRACT_PHASE_1!r}; got {contract!r}. The Phase 0 BEFORE files "
-            f"are a historical legacy artifact and are never a publication target."
+            f"A versioned baseline requires a versioned benchmark_contract "
+            f"({CONTRACT_PHASE_1!r} or {CONTRACT_PHASE_3!r}); got {contract!r}. The "
+            f"Phase 0 BEFORE files are a historical legacy artifact and are "
+            f"never a publication target."
         )
-    if profile != "full":
+    # Each versioned contract publishes exactly one profile: the Phase 1
+    # AFTER baseline runs the full profile, the Phase 3 BEFORE baseline runs
+    # the dedicated phase3 profile.  The baseline trio is always named
+    # <prefix>-full.* ; the manifest records the run's own profile value.
+    expected_profile = "phase3" if contract == CONTRACT_PHASE_3 else "full"
+    if profile != expected_profile:
         raise UnknownBenchmarkContractError(
-            f"A versioned baseline is only published for the full profile, got {profile!r}."
+            f"A {contract!r} baseline is only published for the "
+            f"{expected_profile!r} profile, got {profile!r}."
         )
-    stem = report_stem(contract, profile)
+    stem = f"{contract_report_prefix(contract)}-full"
     json_name = f"{stem}.json"
     md_name = f"{stem}.md"
     manifest_name = f"{stem}.manifest.json"
-    _reject_reserved_names(json_name, md_name, manifest_name)
+    _reject_reserved_names(json_name, md_name, manifest_name, contract=contract)
     return json_name, md_name, manifest_name
 
 
@@ -132,17 +168,29 @@ def baseline_target_names(contract: str, profile: str = "full") -> tuple[str, st
     return json_name, md_name
 
 
-def _reject_reserved_names(*names: str) -> None:
+def _reject_reserved_names(*names: str, contract: Any = None) -> None:
+    """Refuse target names that belong to a frozen historical phase.
+
+    The Phase 0 prefix is forbidden for every versioned publication.  The
+    frozen Phase 1 AFTER trio may only ever be produced by the Phase 1
+    contract itself — a Phase 3 (or later) publication can never adopt
+    Phase 1's names.  An existing file is additionally protected by the
+    never-overwrite guard in :func:`publish_baseline_pair`.
+    """
     reserved = RESERVED_PHASE_0_BASELINE_FILES
     for name in names:
         if name in reserved:
             raise BaselinePublishError(
-                f"Refusing to publish a Phase 1 baseline under the preserved "
-                f"Phase 0 BEFORE name {name!r}."
+                f"Refusing to publish a baseline under the preserved Phase 0 BEFORE name {name!r}."
             )
         if name.lower().startswith("phase-0"):
             raise BaselinePublishError(
-                f"Phase 1 artifacts must not use the Phase 0 prefix: {name!r}."
+                f"Versioned baseline artifacts must not use the Phase 0 prefix: {name!r}."
+            )
+        if name in RESERVED_PHASE_1_BASELINE_FILES and contract != CONTRACT_PHASE_1:
+            raise BaselinePublishError(
+                f"Refusing to publish a baseline under the frozen Phase 1 "
+                f"AFTER name {name!r}; only the Phase 1 contract may use it."
             )
 
 
@@ -164,14 +212,24 @@ def _remove_quietly(path: Path) -> None:
         path.unlink()  # pragma: no cover - best effort cleanup path
 
 
+def _validator_for(contract: Any):
+    """Return the saved-artifact validator for *contract* (None if unknown)."""
+    if not isinstance(contract, str):
+        return None
+    return _CONTRACT_VALIDATORS.get(contract)
+
+
 def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) -> dict[str, Any]:
-    """Publish a versioned Phase 1 AFTER baseline trio, exception-safe.
+    """Publish a versioned baseline trio (Phase 1 AFTER or Phase 3 BEFORE),
+    exception-safe.
 
     The publication validates the ACTUALLY read JSON (never an independently
     passed payload): the target names, contract, profile, and run id are
-    derived from the source JSON itself and the full Phase 1 AFTER contract
-    validator runs on the real bytes.  The Markdown must carry the same
-    ``run_id`` — otherwise it belongs to another run and is refused.
+    derived from the source JSON itself and the contract's saved-artifact
+    validator (Phase 1 AFTER for ``phase-1-direct-read-v1``, Phase 3 BEFORE
+    for ``phase-3-performance-v1``) runs on the real bytes.  The Markdown must
+    carry the same ``run_id`` — otherwise it belongs to another run and is
+    refused.
 
     Guarantees:
 
@@ -206,15 +264,21 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
         ) from exc
 
     # Never trust a separately passed payload: the ACTUAL source bytes decide.
-    problems = validate_saved_phase1_after(payload)
+    env = payload.get("environment")
+    env = env if isinstance(env, dict) else {}
+    validator = _validator_for(env.get("benchmark_contract"))
+    if validator is None:
+        raise BaselinePublishError(
+            "The report JSON carries no publishable benchmark_contract "
+            f"(expected {CONTRACT_PHASE_1!r} or {CONTRACT_PHASE_3!r})."
+        )
+    problems = validator(payload)
     if problems:
         summary = "; ".join(problems[:6]) + ("..." if len(problems) > 6 else "")
         raise BaselinePublishError(
-            f"The report JSON does not satisfy the Phase 1 AFTER baseline contract ({summary})."
+            f"The report JSON does not satisfy its saved-baseline contract ({summary})."
         )
 
-    env = payload.get("environment")
-    env = env if isinstance(env, dict) else {}
     run_id = env["run_id"]
     contract = env["benchmark_contract"]
     profile = env["profile"]
@@ -361,7 +425,7 @@ def publish_baseline_pair(source_json: Path, source_md: Path, target_dir: Path) 
                 "Post-publish manifest verification failed: " + "; ".join(published_problems)
             )
         revalidated = json.loads(_read_bytes(target_json).decode("utf-8"))
-        republished_problems = validate_saved_phase1_after(revalidated)
+        republished_problems = validator(revalidated)
         if republished_problems:
             raise BaselinePublishError(
                 "Post-publish re-validation of the published JSON failed: "

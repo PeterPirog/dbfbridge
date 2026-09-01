@@ -1421,4 +1421,230 @@ def test_phase1_scenario_contract() -> None:
     )
     for name in former_placeholders:
         assert name in fast and name in full
-        assert hasattr(worker.Runner, f"scenario_{name}"), name
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 BEFORE contract (phase-3-performance-v1)
+# ---------------------------------------------------------------------------
+
+
+def _phase3_scenario(name: str, warmup: int = 1, repetitions: int = 3) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "scenario": name,
+        "status": "MEASURED",
+        "warmup": warmup,
+        "repetitions": repetitions,
+        "warmup_samples": [_sample(True) for _ in range(warmup)],
+        "samples": [],
+        "aggregated": (
+            _memo_aggregated() if name == "migration_jsonl_to_dbf_fpt" else _aggregated()
+        ),
+    }
+    if name == "migration_jsonl_to_dbf_fpt":
+        entry["samples"] = [_memo_sample() for _ in range(repetitions)]
+    else:
+        entry["samples"] = [_sample(False) for _ in range(repetitions)]
+    return entry
+
+
+def _phase3_env(**overrides: Any) -> dict[str, Any]:
+    env = _phase1_env()
+    env["benchmark_contract"] = benchmark_contract.CONTRACT_PHASE_3
+    env["profile"] = "phase3"
+    env.update(overrides)
+    return env
+
+
+def _phase3_payload(**env_overrides: Any) -> dict[str, Any]:
+    env = _phase3_env(**env_overrides)
+    env["run_id"] = benchmark_contract.generate_run_id(
+        contract=benchmark_contract.CONTRACT_PHASE_3,
+        profile=env["profile"],
+        warmup=env["warmup"],
+        repetitions=env["repetitions"],
+    )
+    payload = {
+        "environment": env,
+        "fixtures": {},
+        "scenarios": [
+            _phase3_scenario(name, repetitions=env["repetitions"], warmup=env["warmup"])
+            for name in sorted(benchmark_contract.PHASE3_SCENARIO_NAMES)
+        ],
+    }
+    payload["environment"]["generated_at"] = datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    )
+    return payload
+
+
+def test_phase3_contract_accepts_the_full_matrix() -> None:
+    payload = _phase3_payload()
+    assert benchmark_contract.validate_saved_phase3_before(payload) == []
+
+
+def test_phase3_contract_requires_the_exact_scenario_set() -> None:
+    payload = _phase3_payload()
+    dropped = sorted(benchmark_contract.PHASE3_SCENARIO_NAMES)[0]
+    payload["scenarios"] = [
+        entry
+        for entry in payload["scenarios"]
+        if entry["scenario"] != dropped  # type: ignore[union-attr]
+    ]
+    problems = benchmark_contract.validate_saved_phase3_before(payload)
+    assert any(dropped in problem and "must be MEASURED" in problem for problem in problems)
+
+
+def test_phase3_contract_rejects_foreign_names_and_missing_contract() -> None:
+    payload = _phase3_payload()
+    payload["scenarios"].append(  # type: ignore[union-attr]
+        _phase3_scenario("export_1m_records")
+    )
+    problems = benchmark_contract.validate_saved_phase3_before(payload)
+    assert any("unknown scenario" in problem for problem in problems)
+
+    legacy = _phase3_payload()
+    legacy["environment"]["benchmark_contract"] = benchmark_contract.CONTRACT_PHASE_1
+    problems = benchmark_contract.validate_saved_phase3_before(legacy)
+    assert any("benchmark_contract" in problem for problem in problems)
+
+
+def test_phase3_contract_requires_the_phase3_profile() -> None:
+    payload = _phase3_payload(profile="full")
+    problems = benchmark_contract.validate_saved_phase3_before(payload)
+    assert any("profile must be 'phase3'" in problem for problem in problems)
+
+
+def test_phase3_memo_rebuild_scenario_requires_fpt_extras() -> None:
+    payload = _phase3_payload()
+    for entry in payload["scenarios"]:  # type: ignore[union-attr]
+        if entry["scenario"] == "migration_jsonl_to_dbf_fpt":
+            for sample in entry["samples"]:
+                sample.pop("output_fpt_bytes")
+    problems = benchmark_contract.validate_saved_phase3_before(payload)
+    assert any("output_fpt_bytes" in problem for problem in problems)
+
+
+def test_baseline_gate_dispatches_by_benchmark_contract() -> None:
+    phase1 = _phase1_payload()
+    assert run_benchmark.check_baseline_gate(phase1) == []
+    phase3 = _phase3_payload()
+    assert run_benchmark.check_baseline_gate(phase3) == []
+
+    # A payload whose contract/shape disagree with each other must be
+    # refused by the validator selected from the declared contract.
+    swapped = _phase3_payload()
+    swapped["environment"]["benchmark_contract"] = benchmark_contract.CONTRACT_PHASE_1
+    reasons = run_benchmark.check_baseline_gate(swapped)
+    assert reasons, "a Phase 3-shaped payload declared as Phase 1 must be refused"
+
+    swapped2 = _phase1_payload()
+    swapped2["environment"]["benchmark_contract"] = benchmark_contract.CONTRACT_PHASE_3
+    reasons2 = run_benchmark.check_baseline_gate(swapped2)
+    assert reasons2, "a Phase 1-shaped payload declared as Phase 3 must be refused"
+
+    unknown = _phase1_payload()
+    unknown["environment"]["benchmark_contract"] = "phase-9-unknown"
+    reasons3 = run_benchmark.check_baseline_gate(unknown)
+    assert any("phase-9-unknown" in reason for reason in reasons3)
+
+
+def test_phase3_baseline_publishes_the_complete_trio(tmp_path: Path) -> None:
+    payload = _phase3_payload()
+    json_path, md_path = _write_reports(tmp_path / "src", "phase-3-performance-phase3", payload)
+    published = artifacts.publish_baseline_pair(json_path, md_path, tmp_path / "baselines")
+    assert published["json"].name == "phase-3-performance-full.json"
+    assert published["markdown"].name == "phase-3-performance-full.md"
+    assert published["manifest"].name == "phase-3-performance-full.manifest.json"
+    for path in (published["json"], published["markdown"], published["manifest"]):
+        assert path.is_file()
+
+
+def test_phase3_publish_never_touches_the_frozen_phase1_trio(tmp_path: Path) -> None:
+    phase1_json, phase1_md = _write_reports(
+        tmp_path / "src", "phase-1-direct-read-full", _phase1_payload()
+    )
+    artifacts.publish_baseline_pair(phase1_json, phase1_md, tmp_path / "baselines")
+    frozen = tmp_path / "baselines" / "phase-1-direct-read-full.json"
+    frozen_bytes = frozen.read_bytes()
+
+    phase3_json, phase3_md = _write_reports(
+        tmp_path / "src2", "phase-3-performance-phase3", _phase3_payload()
+    )
+    artifacts.publish_baseline_pair(phase3_json, phase3_md, tmp_path / "baselines")
+    assert frozen.read_bytes() == frozen_bytes
+
+
+def test_phase3_report_never_targets_phase0_or_phase1_names() -> None:
+    for name in ("phase-0-full.json", "phase-0-full.md"):
+        with pytest.raises(artifacts.BaselinePublishError):
+            artifacts._reject_reserved_names(name, contract=benchmark_contract.CONTRACT_PHASE_3)
+    for name in (
+        "phase-1-direct-read-full.json",
+        "phase-1-direct-read-full.md",
+        "phase-1-direct-read-full.manifest.json",
+    ):
+        with pytest.raises(artifacts.BaselinePublishError):
+            artifacts._reject_reserved_names(name, contract=benchmark_contract.CONTRACT_PHASE_3)
+    # The Phase 1 contract itself may still produce its own names.
+    assert (
+        artifacts._reject_reserved_names(  # type: ignore[func-returns-value]
+            "phase-1-direct-read-full.json", contract=benchmark_contract.CONTRACT_PHASE_1
+        )
+        is None
+    )
+
+
+def test_manifest_validation_uses_the_expected_contract() -> None:
+    manifest = benchmark_contract.build_manifest(
+        run_id="run-" + "0" * 32,
+        contract=benchmark_contract.CONTRACT_PHASE_3,
+        profile="phase3",
+        git_commit="a" * 40,
+        generated_at="2026-09-01T10:00:00.000000+00:00",
+        json_name="phase-3-performance-full.json",
+        json_sha256="0" * 64,
+        markdown_name="phase-3-performance-full.md",
+        markdown_sha256="1" * 64,
+        runner="runner",
+        storage="storage",
+    )
+    assert (
+        benchmark_contract.manifest_problems(
+            manifest,
+            expected_json_name="phase-3-performance-full.json",
+            expected_json_sha256="0" * 64,
+            expected_markdown_name="phase-3-performance-full.md",
+            expected_markdown_sha256="1" * 64,
+            expected_run_id=manifest["run_id"],
+            expected_contract=benchmark_contract.CONTRACT_PHASE_3,
+            expected_profile="phase3",
+            expected_git_commit="a" * 40,
+            expected_generated_at=manifest["generated_at"],
+            expected_runner="runner",
+            expected_storage="storage",
+        )
+        == []
+    )
+    problems = benchmark_contract.manifest_problems(
+        manifest,
+        expected_json_name="phase-3-performance-full.json",
+        expected_json_sha256="0" * 64,
+        expected_markdown_name="phase-3-performance-full.md",
+        expected_markdown_sha256="1" * 64,
+        expected_run_id=manifest["run_id"],
+        expected_contract=benchmark_contract.CONTRACT_PHASE_1,
+        expected_profile="phase3",
+        expected_git_commit="a" * 40,
+        expected_generated_at=manifest["generated_at"],
+        expected_runner="runner",
+        expected_storage="storage",
+    )
+    assert any("expected 'phase-1-direct-read-v1'" in problem for problem in problems)
+
+
+def test_phase3_scenario_contract_matches_the_worker_profile() -> None:
+    from benchmarks import worker
+
+    phase3 = list(worker._scenario_names("phase3"))
+    assert len(phase3) == 23 == len(set(phase3)), phase3
+    assert set(phase3) == set(benchmark_contract.PHASE3_SCENARIO_NAMES)
