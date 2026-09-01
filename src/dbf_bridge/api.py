@@ -108,6 +108,18 @@ def export_dbf(
     if xlsx_long_text not in {"overflow", "error"}:
         raise ValueError("xlsx_long_text must be one of: overflow, error")
 
+    if "xlsx" in resolved_formats:
+        # Fail BEFORE any output is created (no JSONL, no .partial, no tree).
+        from .optional_deps import require_optional
+
+        require_optional(
+            "xlsxwriter",
+            dependency="xlsxwriter",
+            extra="xlsx",
+            operation="export_dbf",
+            purpose="XLSX export",
+        )
+
     from .cli import run_export
 
     return run_export(
@@ -158,6 +170,27 @@ def reconstruct_dbf(
     output_path = Path(output)
     if not source_path.exists():
         raise FileNotFoundError(f"Export source does not exist: {source_path}")
+
+    # Reconstruction writes DBF/FPT with the `dbf` writer ([write] extra);
+    # XLSX input additionally needs openpyxl ([xlsx] extra).  Both checks run
+    # BEFORE any output directory, .partial file or DBF/FPT is created.
+    from .optional_deps import require_optional
+
+    require_optional(
+        "dbf",
+        dependency="dbf",
+        extra="write",
+        operation="reconstruct_dbf",
+        purpose="DBF/FPT reconstruction",
+    )
+    if normalized_format == "xlsx":
+        require_optional(
+            "openpyxl",
+            dependency="openpyxl",
+            extra="xlsx",
+            operation="reconstruct_dbf",
+            purpose="XLSX input reading",
+        )
 
     from .importer import ImportConfig, reconstruct_tree
 
@@ -261,6 +294,18 @@ def check_conversion_quality(
     output_path = Path(output)
     if not source_path.exists():
         raise FileNotFoundError(f"DBF source does not exist: {source_path}")
+
+    # The quality round trip reconstructs a DBF internally, which needs the
+    # `dbf` writer ([write] extra); fail BEFORE any output is created.
+    from .optional_deps import require_optional
+
+    require_optional(
+        "dbf",
+        dependency="dbf",
+        extra="write",
+        operation="check_conversion_quality",
+        purpose="diagnostic DBF -> JSONL -> DBF round trip",
+    )
 
     from .quality import run_quality_check
 

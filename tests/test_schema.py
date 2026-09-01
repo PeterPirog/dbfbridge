@@ -99,10 +99,22 @@ def test_vfp_schema_contains_reconstruction_metadata(tmp_path: Path) -> None:
     assert fields["NOTATKA"]["memo_storage"]["pointer_length_bytes"] == 4
 
 
-def test_xlsxwriter_is_installed_by_default() -> None:
+def test_optional_dependencies_are_extras_since_03() -> None:
+    """The 0.3 optional-dependency split: base install needs only dbfread."""
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
+    extras = project["project"]["optional-dependencies"]
 
-    assert any(dependency.startswith("xlsxwriter>=") for dependency in dependencies)
-    assert any(dependency.startswith("openpyxl>=") for dependency in dependencies)
-    assert any(dependency.startswith("dbf>=") for dependency in dependencies)
+    # Base: exactly one mandatory runtime dependency (dbfread).
+    assert dependencies == ["dbfread>=2.0.7"]
+
+    # write: DBF/FPT reconstruction.
+    assert any(dependency.startswith("dbf>=") for dependency in extras["write"])
+    # xlsx: export (xlsxwriter) + input reading (openpyxl).
+    assert any(dependency.startswith("xlsxwriter>=") for dependency in extras["xlsx"])
+    assert any(dependency.startswith("openpyxl>=") for dependency in extras["xlsx"])
+    # fast: optional accelerators only.
+    assert any(dependency.startswith("orjson>=") for dependency in extras["fast"])
+    assert any(dependency.startswith("polars>=") for dependency in extras["fast"])
+    # import: historical compatibility alias of [write].
+    assert extras["import"] == extras["write"]

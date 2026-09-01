@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
+from .optional_deps import OptionalDependencyMissingError
+
 try:
     import orjson
 except ImportError:
@@ -31,8 +33,13 @@ class ConversionCancelled(RuntimeError):
     """Raised when a conversion is cancelled by its callback."""
 
 
-class MissingConversionDependency(RuntimeError):
-    """Raised when an output dependency is unavailable."""
+class MissingConversionDependency(OptionalDependencyMissingError):
+    """Deprecated internal alias of :class:`OptionalDependencyMissingError`.
+
+    Kept only so that code importing it from ``dbf_bridge.converters``
+    continues to work; new code should catch
+    :class:`OptionalDependencyMissingError` instead.
+    """
 
 
 @dataclass(frozen=True)
@@ -389,9 +396,11 @@ def jsonl_to_xlsx(
     try:
         import xlsxwriter
     except ImportError as exc:
-        raise MissingConversionDependency(
-            "XLSX conversion requires XlsxWriter. Reinstall dbfbridge or run: "
-            'pip install "xlsxwriter>=3.2"'
+        raise OptionalDependencyMissingError(
+            dependency="xlsxwriter",
+            extra="xlsx",
+            operation="export_dbf",
+            purpose="XLSX export",
         ) from exc
 
     source_path, destination_path, partial = _prepare_paths(source, destination, overwrite)

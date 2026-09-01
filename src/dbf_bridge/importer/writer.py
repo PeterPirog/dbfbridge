@@ -59,7 +59,14 @@ def write_dbf(
     try:
         import dbf
     except ImportError as exc:
-        raise RuntimeError("DBF reconstruction requires dbf>=0.99.11.") from exc
+        from ..optional_deps import OptionalDependencyMissingError
+
+        raise OptionalDependencyMissingError(
+            dependency="dbf",
+            extra="write",
+            operation="reconstruct_dbf",
+            purpose="DBF/FPT reconstruction",
+        ) from exc
 
     fields = [field for field in schema["fields"] if field.get("dbf_type") != "0"]
     unsupported = sorted(

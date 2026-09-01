@@ -24,6 +24,47 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _write_minimal_dbf(path: Path) -> None:
+    """Hand-write a minimal VFP DBF (KOD N(4,0); NAME C(20), 2 records).
+
+    Pure stdlib (struct) fixture: no `dbf` writer needed in the fresh venv
+    (whose only install is the wheel) nor in the outer smoke environment.
+    """
+    import struct
+
+    fields = (("KOD", b"N", 5, 0), ("NAME", b"C", 20, 0))
+    header_length = 32 + 32 * len(fields) + 1
+    record_length = 1 + sum(length for _name, _type, length, _dec in fields)
+    now = (126, 9, 1)  # 2026-09-01 (year byte: years since 1900)
+
+    header = struct.pack(
+        "<BBBBLHH20x",
+        0x03,  # dBase III (no memo, no VFP 263-byte backlink extension)
+        now[0],
+        now[1],
+        now[2],
+        2,  # numrecords
+        header_length,
+        record_length,
+    )
+    descriptors = b""
+    for name, ftype, length, decimals in fields:
+        descriptors += (
+            name.encode("ascii").ljust(11, b"\x00")
+            + ftype
+            + b"\x00\x00\x00\x00"
+            + bytes([length, decimals])
+            + b"\x00" * 14
+        )
+    records = b""
+    for kod, name in ((1, "smoke"), (2, "smoke-2")):
+        records += b" " + f"{kod: >5}".encode("ascii") + name.encode("ascii").ljust(20, b"\x20")
+
+    with path.open("wb") as outfile:
+        outfile.write(header + descriptors + b"\x0d" + records + b"\x1a")
+        outfile.flush()
+
+
 def _venv_python(venv_dir: Path) -> Path:
     if sys.platform == "win32":
         return venv_dir / "Scripts" / "python.exe"
@@ -181,17 +222,13 @@ print("module origins: PASS (fresh venv)")
     print("legacy API: PASS")
 
     # --- Create a synthetic DBF for a real Direct Read round trip ---
-    _run(
-        [
-            str(fresh_python),
-            "-c",
-            "import dbf; t = dbf.Table('smoke.dbf', field_specs='KOD N(4,0); NAME C(20)', "
-            "dbf_type='vfp', codepage=0xC8); t.open(mode=dbf.READ_WRITE); "
-            "t.append({'KOD': 1, 'NAME': 'smoke'}); t.close()",
-        ],
-        cwd=work_dir,
-        label="synthetic_dbf",
-    )
+    # Stdlib-only fixture writer: the fresh venv contains ONLY the wheel
+    # (the 0.3 optional-dependency split removed `dbf` from the mandatory
+    # dependencies), and the outer smoke environment may be as bare as
+    # `build` + `twine` (the CI package job).  A hand-written minimal VFP
+    # table keeps the fixture preparation dependency-free; the measured
+    # round trip below still runs entirely inside the fresh venv.
+    _write_minimal_dbf(work_dir / "smoke.dbf")
 
     _run(
         [
@@ -230,4 +267,3 @@ print("module origins: PASS (fresh venv)")
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
