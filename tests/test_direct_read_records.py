@@ -1494,9 +1494,10 @@ def test_cancel_read_records_never_returns_partial_page(tmp_path: Path) -> None:
     calls = {"count": 0}
 
     def _cancel_at_three() -> bool:
-        # checks: initial, before #1, #2, #3, before #4 -> cancel
+        # probes: 1 before the stream + 1 after each consumed frame;
+        # the 4th probe is the boundary before the 4th physical record.
         calls["count"] += 1
-        return calls["count"] >= 5
+        return calls["count"] >= 4
 
     with pytest.raises(ReadCancelledError) as error:
         read_records(dbf_path, offset=0, limit=100, cancel_check=_cancel_at_three)
@@ -1541,6 +1542,147 @@ def test_cancel_before_first_record_with_inline_memo(tmp_path: Path) -> None:
     renamed = tmp_path / "moved.fpt"
     os.rename(fpt, renamed)
     os.rename(renamed, fpt)
+
+
+def test_cancel_check_probe_count_is_exactly_one_per_boundary(tmp_path: Path) -> None:
+    """Exactly one cancellation probe per prospective physical record read."""
+    dbf_path = _create_vfp_table(
+        tmp_path / "probe.dbf", "ID N(4,0)", [{"ID": index} for index in range(1, 51)]
+    )
+    # (a) cancel before the first record: ONE probe, zero frames.
+    first_calls = {"count": 0}
+
+    def _always() -> bool:
+        first_calls["count"] += 1
+        return True
+
+    with pytest.raises(ReadCancelledError) as error:
+        list(iter_records(dbf_path, cancel_check=_always))
+    assert first_calls["count"] == 1, first_calls
+    assert error.value.to_dict()["context"]["scanned"] == 0
+
+    # (b) cancel at the boundary before the 4th physical record:
+    # 3 records consumed and exactly 4 probe invocations (1 pre-stream +
+    # 1 after each consumed frame).
+    boundary_calls = {"count": 0}
+
+    def _cancel_before_fourth() -> bool:
+        boundary_calls["count"] += 1
+        return boundary_calls["count"] >= 4
+
+    collected: list[DirectRecord] = []
+    with pytest.raises(ReadCancelledError):
+        for record in iter_records(dbf_path, cancel_check=_cancel_before_fourth):
+            collected.append(record)
+    assert len(collected) == 3
+    assert boundary_calls["count"] == 4
+
+
+def test_read_records_final_current_is_physical_scanned(tmp_path: Path) -> None:
+    """`current` follows scanned physical records, not returned records."""
+    dbf_path = _create_vfp_table(
+        tmp_path / "trail.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 5)]
+    )
+    _mark_deleted(dbf_path, 2)
+    _mark_deleted(dbf_path, 3)
+    events: list[ProgressEvent] = []
+    page = read_records(
+        dbf_path, offset=0, limit=100, include_deleted=False, progress=events.append
+    )
+    assert len(page.records) == 2
+    assert page.scanned == 4 and page.exhausted is True
+    assert len(events) == 1
+    final = events[-1]
+    # Deleted records AFTER the last yielded record still advance `current`.
+    assert final.current == 4 and final.total == 4 and final.records == 2
+    assert final.message == "page completed"
+
+
+def test_read_records_all_deleted_page(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "all_deleted.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 5)]
+    )
+    for index in range(4):
+        _mark_deleted(dbf_path, index)
+    events: list[ProgressEvent] = []
+    page = read_records(
+        dbf_path, offset=0, limit=100, include_deleted=False, progress=events.append
+    )
+    assert page.records == () and page.scanned == 4 and page.exhausted is True
+    assert len(events) == 1
+    final = events[-1]
+    assert final.current == 4 and final.total == 4 and final.records == 0
+
+
+def test_offset_at_and_beyond_eof_clamps_progress_current(tmp_path: Path) -> None:
+    dbf_path = _create_vfp_table(
+        tmp_path / "eof.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    # offset == record_count: existing empty exhausted-page semantics kept.
+    at_eof = read_records(dbf_path, offset=10, limit=5)
+    assert at_eof.records == () and at_eof.exhausted is True and at_eof.next_offset is None
+    events: list[ProgressEvent] = []
+    read_records(dbf_path, offset=10, limit=5, progress=events.append)
+    assert len(events) == 1
+    assert (events[-1].current, events[-1].total) == (10, 10)
+
+    # offset beyond EOF: progress invariant 0 <= current <= total still holds.
+    beyond = read_records(dbf_path, offset=20, limit=5)
+    assert beyond.records == () and beyond.exhausted is True
+    beyond_events: list[ProgressEvent] = []
+    read_records(dbf_path, offset=20, limit=5, progress=beyond_events.append)
+    assert len(beyond_events) == 1
+    assert (beyond_events[-1].current, beyond_events[-1].total) == (10, 10)
+    assert 0 <= beyond_events[-1].current <= beyond_events[-1].total
+
+
+def test_progress_event_invariants_across_fixtures(tmp_path: Path) -> None:
+    """Every final event satisfies 0 <= current <= total and records >= 0."""
+    fixtures: list[Path] = []
+    empty = _create_vfp_table(tmp_path / "empty.dbf", "ID N(3,0)", [])
+    fixtures.append(empty)
+    normal = _create_vfp_table(
+        tmp_path / "normal.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    fixtures.append(normal)
+    deleted = _create_vfp_table(
+        tmp_path / "deleted.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
+    )
+    _mark_deleted(deleted, 2)
+    _mark_deleted(deleted, 3)
+    fixtures.append(deleted)
+    all_deleted = _create_vfp_table(
+        tmp_path / "all_deleted.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 5)]
+    )
+    for index in range(4):
+        _mark_deleted(all_deleted, index)
+    fixtures.append(all_deleted)
+
+    for fixture in fixtures:
+        for include_deleted in (False, True):
+            events: list[ProgressEvent] = []
+            list(iter_records(fixture, include_deleted=include_deleted, progress=events.append))
+            assert events
+            for event in events:
+                assert 0 <= event.current <= event.total
+                assert event.records is not None and event.records >= 0
+            page_events: list[ProgressEvent] = []
+            page = read_records(
+                fixture,
+                offset=0,
+                limit=3,
+                include_deleted=include_deleted,
+                progress=page_events.append,
+            )
+            assert page_events
+            for event in page_events:
+                assert 0 <= event.current <= event.total
+                assert event.records is not None and event.records >= 0
+            raw_events: list[ProgressEvent] = []
+            list(iter_raw_records(fixture, progress=raw_events.append))
+            for event in raw_events:
+                assert 0 <= event.current <= event.total
+                assert event.records is not None and event.records >= 0
 
 
 def test_cancel_before_first_record_error_context(tmp_path: Path) -> None:
@@ -1610,10 +1752,7 @@ def test_resource_release_windows_rename_delete(tmp_path: Path) -> None:
         for _ in iter_records(dbf_path, cancel_check=_broken_cancel):
             break
         list(iter_records(dbf_path, cancel_check=_broken_cancel))
-    with pytest.raises(KeyError, match="cancel failure"):
-        for _ in iter_records(dbf_path, cancel_check=_broken_cancel):
-            break
-        list(iter_records(dbf_path, cancel_check=_broken_cancel))
+    _assert_releasable()
     _assert_releasable()
 
 
@@ -1740,6 +1879,9 @@ def test_eager_validation_not_masked_by_cancellation(tmp_path: Path) -> None:
     # A missing header: eager typed error, still not masked.
     with pytest.raises((DbfHeaderInvalidError, DbfPathError, DbfIoError)):
         list(iter_records(tmp_path / "missing.dbf", cancel_check=lambda: True))
+
+
+def test_read_cancelled_error_is_json_safe(tmp_path: Path) -> None:
     dbf_path = _create_vfp_table(
         tmp_path / "jsonsafe.dbf", "ID N(3,0)", [{"ID": index} for index in range(1, 11)]
     )

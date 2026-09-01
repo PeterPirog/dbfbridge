@@ -492,15 +492,18 @@ from dbfbridge import ProgressEvent, ReadCancelledError, iter_records
 events: list[ProgressEvent] = []
 state = {"stop": False}
 
-for record in iter_records(
-    "data/customer.dbf",
-    fields=["ID", "NAME"],
-    memo="skip",
-    progress=events.append,          # ProgressEvent(operation="read", ...)
-    cancel_check=lambda: state["stop"],  # cooperative, checked before
-):                                    # every physical record
-    ...
-    state["stop"] = True              # stop before the next record
+try:
+    for record in iter_records(
+        "data/customer.dbf",
+        fields=["ID", "NAME"],
+        memo="skip",
+        progress=events.append,          # ProgressEvent(operation="read", ...)
+        cancel_check=lambda: state["stop"],  # cooperative, checked before
+    ):                                    # every physical record
+        ...
+        state["stop"] = True              # stop before the next record
+except ReadCancelledError as exc:
+    print(exc.code)                       # READ_CANCELLED
 ```
 
 Cancelling raises `ReadCancelledError` (machine code `READ_CANCELLED`) with a
