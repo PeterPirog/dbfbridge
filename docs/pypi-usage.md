@@ -7,10 +7,13 @@ have a repository checkout, a `src/` directory, or any development tools.
 Everything here works with a normal `pip install`; nothing requires Git, an
 `examples/` folder, or `PYTHONPATH`.
 
-> **Version note:** the install-profile extras described here are the
-> upcoming **0.3** contract. The currently published **0.2.0** release still
-> installs all optional dependencies by default; the extras shown below are
-> the forward-compatible target documented on this feature branch.
+> **Availability note:** the GitHub release **v0.2.0** exists, but the PyPI
+> publication of 0.2.0 is currently **pending** (external account recovery /
+> Trusted Publisher setup).  The install-profile extras described here are
+> the upcoming **0.3** contract.  The `pip install` instructions below show
+> exactly how installation **will** work once the corresponding release is
+> on PyPI; until that publication, installing `dbfbridge` from PyPI is not
+> yet possible.
 
 ## Contents
 
