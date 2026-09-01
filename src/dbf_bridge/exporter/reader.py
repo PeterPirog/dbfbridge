@@ -15,7 +15,6 @@ from ..core import backend as core_backend
 from ..core.codecs import (
     POLISH_FALLBACK_ENCODINGS,
     decode_with_polish_fallback,
-    register_polish_codecs,
 )
 from ..core.header import (
     fpt_header_details,
@@ -25,10 +24,10 @@ from ..core.header import (
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, TableMetadata
 from .validation import sha256_file
 
-# Rejestrujemy polskie tabele kodowe (Mazovia/PIAST) przy imporcie modułu,
-# aby były dostępne automatycznie — bez konieczności wywoływania przez
-# użytkownika skryptu 05.
-register_polish_codecs()
+# Polish OEM codecs (Mazovia/PIAST) are registered ON DEMAND at operation
+# time (core.codecs._ensure_encoding_available / decode_with_polish_fallback /
+# core.header.parse_header) — no module-import registration, so importing the
+# exporter has no global codec-registry side effects.
 
 
 class UnsupportedTableError(ValueError):

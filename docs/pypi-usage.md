@@ -585,6 +585,21 @@ for record in iter_records("data/customer.dbf"):
 | `"cp1250"` | force Windows-1250 |
 | `"cp852"` | force Latin-2 (DOS) |
 | `"mazovia"` | force the historical Mazovia (Polish MS-DOS) page |
+| `"piast"` / `"pki"` | aliases of the same Polish OEM page family |
+
+An explicit value overrides the header-declared driver (precedence is
+unchanged).  All explicit Polish overrides are handled **at operation time**
+— no manual codec registration and no private-module import is ever needed:
+
+```python
+from dbfbridge import iter_records
+
+for record in iter_records("data/legacy.dbf", encoding="mazovia"):
+    print(record.values["TEKST"])
+```
+
+The same works for `read_records(..., encoding=...)` and for memo payloads
+(`memo="lazy"` / `memo="inline"` decode with the same explicit encoding).
 
 `decode_errors`:
 
@@ -593,6 +608,10 @@ for record in iter_records("data/customer.dbf"):
 | `"strict"` | undecodable bytes raise a typed `TEXT_DECODE_ERROR` (never a raw `UnicodeDecodeError`) |
 | `"replace"` | undecodable bytes become the Unicode replacement character |
 | `"ignore"` | undecodable bytes are dropped |
+
+An unknown explicit codec raises the typed
+`EncodingUnknownError` (machine code `ENCODING_UNKNOWN`, JSON-safe payload
+carrying the offending `encoding`) — never a raw Python `LookupError`.
 
 ## What dbfbridge does not support
 
