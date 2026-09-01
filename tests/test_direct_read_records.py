@@ -1667,7 +1667,7 @@ def test_progress_event_invariants_across_fixtures(tmp_path: Path) -> None:
                 assert 0 <= event.current <= event.total
                 assert event.records is not None and event.records >= 0
             page_events: list[ProgressEvent] = []
-            page = read_records(
+            read_records(
                 fixture,
                 offset=0,
                 limit=3,
