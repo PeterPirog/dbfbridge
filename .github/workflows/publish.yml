@@ -29,6 +29,10 @@ jobs:
       - run: python -m pytest
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Fresh-wheel smoke (reusable helper)
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
+          python scripts/release_wheel_smoke.py --wheel "$wheel" --expected-version "0.2.0"
       - name: Store release distributions
         uses: actions/upload-artifact@v5
         with:
