@@ -75,7 +75,7 @@ jobs:
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
           python -m pip install --force-reinstall "$wheel"
-          python -c "from dbfbridge import export_dbf; from dbf_bridge import reconstruct_dbf"
+          python -c "from dbfbridge import export_dbf, inspect_table, read_schema, iter_records, read_records, iter_raw_records, TableInfo, TableSchema, FieldInfo, DirectRecord, RecordPage, LazyMemoValue; from dbf_bridge import reconstruct_dbf"
           dbf-bridge --help >/dev/null
           dbf-bridge-import --help >/dev/null
           dbf-bridge-verify --help >/dev/null
