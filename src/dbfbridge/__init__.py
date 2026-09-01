@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         LazyMemoValue,
         MemoPolicy,
         MissingMemoPolicy,
+        OptionalDependencyMissingError,
         OutputFormat,
         ProgressCallback,
         ProgressEvent,

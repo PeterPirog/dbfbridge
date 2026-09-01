@@ -189,7 +189,14 @@ def _iter_xlsx(path: Path) -> Iterator[dict[str, Any]]:
     try:
         import openpyxl
     except ImportError as exc:
-        raise RuntimeError("XLSX reconstruction requires openpyxl>=3.1.5.") from exc
+        from ..optional_deps import OptionalDependencyMissingError
+
+        raise OptionalDependencyMissingError(
+            dependency="openpyxl",
+            extra="xlsx",
+            operation="reconstruct_dbf",
+            purpose="XLSX input reading",
+        ) from exc
 
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=False)
     try:

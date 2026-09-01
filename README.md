@@ -2,6 +2,7 @@
 
 `dbfbridge` is a migration toolkit for Visual FoxPro DBF/FPT data:
 
+- read DBF/FPT files directly — inspection, schema, streaming records (read-only);
 - export DBF directory trees to CSV, JSON, JSONL, and XLSX;
 - reconstruct DBF/FPT directory trees from one exported format and companion schemas;
 - verify exported files and run diagnostic DBF → JSONL → DBF round trips;
@@ -10,34 +11,129 @@
 
 > Status: **0.2.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
 
-## Installation
+## Requirements
 
-Python 3.10 or newer is required.
+- Python **3.10–3.14** (3.12 recommended)
+- `pip`
+- one or more DBF files (and their sibling `.FPT` memo files when present)
 
-```bash
+No Git, no source checkout, and no compiler are needed for normal use.
+
+## Installing from PyPI
+
+### 1. Create a virtual environment
+
+Windows PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install dbfbridge
 ```
 
-A standard installation includes DBF reading and reconstruction, JSON/CSV conversion,
-and XLSX reading/writing. The historical `import` and `xlsx` extras remain accepted as
-compatibility no-ops. For development tools use:
+Linux/macOS:
 
 ```bash
-python -m pip install -e ".[dev]"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install dbfbridge
 ```
 
-The main runtime dependencies are:
+### 2. Verify the installation
 
-| Package | Purpose |
-|---|---|
-| `dbfread` | streaming DBF/FPT reading |
-| `dbf` | schema-driven DBF/FPT writing |
-| `orjson` | JSONL parsing and validation |
-| `polars` | streaming JSONL → CSV conversion |
-| `xlsxwriter` | constant-memory XLSX writing |
-| `openpyxl` | read-only XLSX reconstruction |
+```bash
+python -c "import dbfbridge; print(dbfbridge.__version__); print(dbfbridge.__file__)"
+python -m pip show dbfbridge
+dbf-bridge --help
+```
 
-## Quick start
+- The **distribution name** and the **recommended import** are both `dbfbridge`.
+- `dbf_bridge` (with an underscore) is a compatibility namespace that exports the same public symbols; user code should prefer `from dbfbridge import ...`.
+- `dbf-bridge` and the other commands are executable scripts from the active virtual environment — no repository checkout, no `examples/` directory, and no `PYTHONPATH` are needed.
+
+### 3. Choose the install profile
+
+| Command | Capabilities | When to use |
+|---|---|---|
+| `pip install dbfbridge` | `import dbfbridge`, full Direct Read (`inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`), DBF → JSONL/JSON/CSV migration (stdlib/Python engines) | reading and exporting DBF data |
+| `pip install "dbfbridge[write]"` | everything above + DBF/FPT reconstruction (`reconstruct_dbf`) and quality round trips (`check_conversion_quality`) | rebuilding DBF files from exported data |
+| `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX input reading (`openpyxl`) | spreadsheet exchange |
+| `pip install "dbfbridge[write,xlsx]"` | reconstruction from XLSX exports too | XLSX → DBF round trips |
+| `pip install "dbfbridge[fast]"` | optional accelerators (`orjson`, `polars`); identical logical results, faster conversions | large conversion jobs |
+| `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
+| `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
+
+> **Availability note:** the GitHub release **v0.2.0** exists, but the PyPI
+> publication of 0.2.0 is currently **pending** (external account recovery /
+> Trusted Publisher setup).  The install-profile extras documented here are
+> the upcoming **0.3** contract; once the corresponding release is on PyPI,
+> `pip install dbfbridge` installs the minimal base profile and the extras
+> below become opt-in.  Until that publication, installation from PyPI is
+> not yet possible.
+
+`[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
+stdlib `json` module; without `polars`, CSV conversion uses the Python
+streaming engine. Both fallbacks produce the same logical result — `[fast]`
+never affects correctness and its absence never raises.
+
+### 4. Direct Read quick start (base install)
+
+```python
+from pathlib import Path
+from dbfbridge import inspect_table
+
+table = Path("data/customer.dbf")
+
+info = inspect_table(table)
+
+print(info.record_count)
+print(info.encoding)
+print(info.has_memo)
+
+for field in info.fields:
+    print(field.name, field.dbf_type)
+```
+
+```python
+from dbfbridge import read_schema
+
+schema = read_schema("data/customer.dbf")
+
+print(schema.dbversion_name)
+print(schema.memo_companion_format)
+print(schema.companion_cdx_present)
+```
+
+`inspect_table()` and `read_schema()` are strictly read-only: no output files
+are created and the source stays byte-identical. CDX companion **presence**
+is reported structurally, but CDX tag names/expressions are not parsed.
+
+### 5. Migration quick start (base install)
+
+```python
+from dbfbridge import export_dbf
+
+result = export_dbf(
+    "data",
+    "output",
+    formats=("jsonl",),
+)
+
+result.raise_for_errors()
+```
+
+JSONL is the preferred migration format (streaming, inline memo support,
+raw-record metadata). JSON uses the stdlib fallback and CSV uses the Python
+streaming engine when `[fast]` is not installed — the logical results are the
+same.
+
+The full guide for PyPI-installed usage (profiles, Direct Read, memo
+policies, pagination, reconstruction, XLSX, CLI, structured errors) is
+[docs/pypi-usage.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md).
+
+## CLI quick start
 
 Installation provides four commands: `dbf-bridge`, `dbf-bridge-verify`,
 `dbf-bridge-import`, and `dbf-bridge-quality`.
@@ -58,11 +154,11 @@ dbf-bridge --source <DBF_DIR> --output <OUT_DIR> \
 dbf-bridge-verify --source <DBF_DIR> --output <OUT_DIR> \
   --formats csv,json,jsonl,xlsx
 
-# Reconstruct from exactly one format
+# Reconstruct from exactly one format (requires [write])
 dbf-bridge-import --source <OUT_DIR> --output <REBUILT_DIR> \
   --formats jsonl --memo inline --overwrite --progress
 
-# Retain a diagnostic DBF → JSONL → DBF round trip
+# Retain a diagnostic DBF → JSONL → DBF round trip (requires [write])
 dbf-bridge-quality --source <DBF_DIR> --output <QUALITY_DIR> \
   --overwrite --progress
 ```
@@ -206,7 +302,8 @@ for failures, and `2` for warnings.
 
 The installed distribution is named `dbfbridge`, and the recommended import is also
 `dbfbridge` (without an underscore). The historical internal package name
-`dbf_bridge` exports the same public symbols for compatibility.
+`dbf_bridge` exports the same public symbols for compatibility — user code should
+not import from `dbf_bridge.core...` or `dbf_bridge.exporter...` directly.
 
 ### Operations
 
@@ -214,6 +311,9 @@ The installed distribution is named `dbfbridge`, and the recommended import is a
 |---|---|---|
 | `inspect_table()` | `TableInfo` | read-only inspection of one DBF header (no files created) |
 | `read_schema()` | `TableSchema` | full safe header/memo/CDX-companion schema (no files created) |
+| `iter_records()` | iterator of `DirectRecord` | read-only streaming decode of every record (O(1) memory) |
+| `read_records()` | `RecordPage` | read-only bounded page of records (O(limit) memory) |
+| `iter_raw_records()` | iterator of `DirectRecord` | pure forensic physical stream (raw bytes only, no FPT) |
 | `export_dbf()` | `ExportRunResult` | DBF/FPT tree → one or more modern formats |
 | `reconstruct_dbf()` | `ReconstructionRunResult` | one exported format + schemas → DBF/FPT tree |
 | `verify_conversion()` | `VerificationRunResult` | exported files vs source DBF and migration report |
@@ -540,6 +640,29 @@ Invalid global arguments, unsafe paths, and missing source directories raise sta
 `ValueError` or `FileNotFoundError` immediately. `DBFBridgeRunError` is raised only by
 `raise_for_errors()` and keeps the complete run object in its `result` attribute.
 
+### Missing optional dependencies (structured error)
+
+Operations that need an extra fail **before creating any output** with a
+typed, JSON-safe error — never a partial tree and never an automatic
+installation:
+
+```python
+from dbfbridge import OptionalDependencyMissingError
+
+try:
+    reconstruct_dbf("K:/dbf_output", "K:/dbf_rebuilt", input_format="jsonl")
+except OptionalDependencyMissingError as error:
+    print(error.code)             # OPTIONAL_DEPENDENCY_MISSING
+    print(error.dependency)       # dbf
+    print(error.extra)            # write
+    print(error.operation)        # reconstruct_dbf
+    print(error.install_command)  # python -m pip install "dbfbridge[write]"
+    print(error.to_dict())        # JSON-safe payload
+```
+
+The `[fast]` accelerators are different by contract: missing `orjson`/`polars`
+never raise — the stdlib/Python fallbacks are used instead.
+
 The lower-level modules under `dbf_bridge.exporter` and `dbf_bridge.importer` remain
 available for custom pipelines, but the functions above are the supported high-level API.
 A complete executable example is in
@@ -547,7 +670,14 @@ A complete executable example is in
 
 ## Development
 
+Everything above describes normal PyPI-installed usage. The following is for
+repository/development work only.
+
 ```bash
+git clone https://github.com/PeterPirog/dbfbridge.git
+cd dbfbridge
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1   # Windows
 python -m pip install -e ".[dev]"
 pytest
 ruff check src tests benchmarks examples
@@ -555,7 +685,7 @@ python -m build
 twine check dist/*
 ```
 
-Continuous integration runs linting and the test suite on Python 3.10–3.13 on Linux,
+Continuous integration runs linting and the test suite on Python 3.10–3.14 on Linux,
 plus Python 3.12 on Windows. Release archives are built separately and published through
 PyPI Trusted Publishing; no long-lived PyPI token is stored in the repository. The exact
 versioning, publisher configuration, release, and post-publication checks are documented
@@ -576,6 +706,7 @@ the [benchmark guide](https://github.com/PeterPirog/dbfbridge/blob/main/benchmar
 
 | Symptom | What to check |
 |---|---|
+| `OPTIONAL_DEPENDENCY_MISSING` | install the extra named in `error.install_command` (e.g. `pip install "dbfbridge[write]"`) |
 | missing memo/FPT error | keep the sibling `.FPT`, or deliberately use `--missing-memo null-with-warning` |
 | exit code `2` | the operation completed with warnings; inspect its report before accepting the result |
 | CDX warning | rebuild the index in Visual FoxPro; the exported data is not an index definition |
