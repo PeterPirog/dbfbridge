@@ -2,14 +2,25 @@
 
 ## 1. Motivation
 
-This baseline measures the release/0.2.0 Direct Read Core code.  This
-document establishes the measured performance baseline and
-architecture/dependency audits that will justify (or reject) specific 0.3
-optimizations.
+This baseline measures the **released 0.2.0 Direct Read Core** (the code at
+tag `v0.2.0` / `main`).  This document establishes the measured performance
+baseline and the architecture/dependency audits that will justify (or reject)
+specific 0.3 optimizations.
 
 **No optimization implementation is performed in this phase.**  Every future
-0.3 change must have BEFORE (this document) and AFTER (later measurement) with
-the same logical results and safety guarantees.
+0.3 change must have BEFORE (this document and its canonical artifacts) and
+AFTER (later measurement) with the same logical results and safety
+guarantees.  Hard rule: **no production optimization before the canonical
+Phase 3 BEFORE run is recorded.**
+
+The measurement contract is `phase-3-performance-v1` (profile `phase3`), a
+separate scenario contract from the frozen Phase 0/1 name sets.  The saved
+artifact is validated by
+`benchmarks.contract.validate_saved_phase3_before`, published by
+`benchmarks.artifacts.publish_baseline_pair` (which dispatches the validator
+by the payload's own `benchmark_contract`), and gated by
+`run_benchmark.check_baseline_gate` (same dispatch).  The manifest check uses
+the *expected* contract of the run — never a hardcoded Phase 1 value.
 
 ## 2. Architecture audit
 
@@ -36,17 +47,29 @@ backend.  **HARDEN** in 0.3 (add `HeaderInspectionBackend` usage to `inspect.py`
 
 ### D. Implicit dbfread dependency outside `core.backend`?
 
-- `exporter/reader.py`: imports `dbfread` (LosslessFieldParser subclass).
-  Intentional reference adapter.
-- `benchmarks/worker.py`: imports from `dbfread.memo` (memo guard).
-  Intentional instrumentation.
-- No other modules.  **OK**.
+`dbfread` is imported in **six** source modules (all internal, all loaded
+lazily with their importing module — `import dbfbridge` itself loads none of
+them, verified below):
+
+- `core/backend.py` — the reference adapter (intentional, the only private-API user);
+- `core/codecs.py` — driver table source (`dbfread.codepages`);
+- `exporter/reader.py` — lossless field parser for the export path;
+- `exporter/writer.py` — raw-record metadata for export;
+- `importer/reconstruct.py` — legacy DBF read for reconstruction checks;
+- `verifier.py` — verification read path.
+
+Plus the benchmark harness (`benchmarks/worker.py` imports `dbfread.memo` for
+the memo-boundary guard — instrumentation only).  **OK** (documented).
 
 ### E. Migration layer bypasses backend?
 
-`reconstruct_tree` calls `write_dbf` from `importer/writer.py` which delegates
-to `write.backend.write_dbf`.  No bypass.  Legacy read → `parse_header`.  No
-bypass.  **OK**.
+`reconstruct_tree` calls `write_dbf` implemented in
+`src/dbf_bridge/importer/writer.py`, which creates DBF/FPT files **directly
+with the `dbf` package** (`dbf.Table`, `import dbf` at function scope).  There
+is **no** `write/backend.py` module and no `write.backend.write_dbf`
+delegation — earlier drafts of this document wrongly claimed such a
+delegation.  The reconstruction writer is a self-contained write path by
+design (read via `dbfread`, write via `dbf`).  **OK**.
 
 ### F. Second record parser?
 
@@ -75,92 +98,108 @@ separate read/write paths by design: `dbfread` reads, `dbf` writes.  **OK**.
 `iter_physical_records` handles live inside a generator; `finally` closes all
 handles.  The backend does not expose handles.  **OK**.
 
+### K. Explicit non-auto encoding in Direct Read (audit note)
+
+`iter_records(..., encoding="mazovia")` requires the Polish Mazovia/PIAST
+codecs to be registered **in the current process**: the auto path registers
+them on demand (`core.codecs.resolve_driver_encoding`), the explicit
+non-auto path does not.  The Phase 3 encoding scenarios therefore register
+the Polish codecs outside the measured window (harness-side, documented).
+Candidate 0.3 hardening: register the Polish codecs on demand in the explicit
+encoding path too.  **NOT an optimization — deferred to 0.3 planning.**
+
 ## Multi-pass table
 
 | Operation | DBF opens | FPT opens | directory scans | record passes | header parses |
 |---|---|---|---|---|---|
 | inspect_table | 1 (header) | 0 | 0–1 | 0 | 1 |
-| read_schema | 1 (header) | 0 | 0–1 | 0 | 1 |
-| read_schema (VFP backlink) | 1 (header) | 0 | 0–1 | 0 | 1 |
+| read_schema (memo-free) | 1 (header) | 0 | 0–1 | 0 | 1 |
+| read_schema (memo table) | 1 (header) | 1 (header only) | 0–1 | 0 | 1 |
 | iter_records full | 1 (streaming) | 0 or 1 (inline) | 0–1 | 1 | 1 |
 | read_records page | 1 (streaming) | 0 or 1 | 0–1 | 1 (seek + limit scan) | 1 |
 | iter_raw_records | 1 | 0 | 0–1 | 1 | 1 |
 | export_dbf | 1+ (per stage) | 0+ | 1 (discovery) | 1 (read) + 1 (verify) | 1 |
+| reconstruct_dbf (write) | 0 reads | 0 | 1 (input scan) | 1 (write) | 0 |
 
-There is no duplicate header parse for `read_schema` (single pass).  The
-`write_dbf` FPT header repair is a single pass.  Companion discovery uses
-protected stat with direct paths first.
+There is no duplicate header parse for `read_schema` (single pass; a memo
+table's FPT header is read at most once).  The reconstruction writer's FPT
+header repair is a single pass.  Companion discovery uses protected stat with
+direct paths first.
 
-## Dependency audit
+## Dependency audit (re-derived from code, not from documentation)
 
-### Import graph
+The table below was produced by an AST scan of `src/` plus a fresh-interpreter
+check: `import dbfbridge` loads **none** of the six optional/heavy
+dependencies; the Direct Read path loads only `dbfread` at call time.
 
-| dependency | importing module | timing | required for `import dbfbridge`? | required for Direct Read? | required for migration? |
+| dependency | importing modules (src/) | import scope | required for `import dbfbridge`? | required for Direct Read? | required for migration? |
 |---|---|---|---|---|---|
-| dbfread | core.backend, exporter.reader | lazy (call time) | no | YES (read) | no |
-| dbf | write.backend, tests.fixtures | lazy (write_time) | no | no | YES (reconstruct) |
-| orjson | importer.readers | lazy | no | no | YES (JSONL reconstruction) |
-| polars | exporters.converter | lazy | no | no | yes |
-| openpyxl | importer.readers | lazy | no | no | yes (XLSX reconstruction) |
-| xlsxwriter | exporters.writer | lazy | no | no | yes (XLSX export) |
+| dbfread | core/backend, core/codecs, exporter/reader, exporter/writer, importer/reconstruct, verifier | module scope of lazily-loaded internal modules | no | YES (read) | no |
+| dbf | importer/writer (function body) | lazy (write time) | no | no | YES (reconstruct) |
+| orjson | converters (module-scope `try` with `None` fallback) | optional module-scope | no | no | yes (JSONL/JSON/CSV/XLSX conversion pipeline) |
+| polars | converters (function body) | lazy | no | no | yes (CSV conversion) |
+| xlsxwriter | converters (function body) | lazy | no | no | yes (XLSX export) |
+| openpyxl | importer/readers (function body) | lazy | no | no | yes (XLSX reconstruction) |
 
-### Decision matrix
+Verified facts (code, not docs):
 
-| dependency | verdict | evidence |
+- `import dbfbridge` → none of `dbf`, `dbfread`, `orjson`, `polars`,
+  `openpyxl`, `xlsxwriter` in `sys.modules`;
+- Direct Read public imports + one streamed record → only `dbfread` added;
+- `dbf` is imported exactly once in `src/` (inside `write_dbf`,
+  `importer/writer.py`);
+- `orjson` is used only by `converters.py` (JSONL → JSON/CSV/XLSX stream
+  conversion), not by the importer's JSONL reading;
+- no `write/backend` module exists.
+
+## Phase 3 scenario matrix (contract `phase-3-performance-v1`)
+
+| # | scenario | what it measures |
 |---|---|---|
-| dbfread | **KEEP_BASE** | Direct Read is the core 0.2 feature; required at record-iteration time |
-| dbf | **MOVE_TO_WRITE** | only imported inside `write_dbf(); no Direct Read dependency |
-| openpyxl | **MOVE_TO_XLSX** | only imported in `importer/readers.py` for XLSX reconstruction |
-| orjson | **MOVE_TO_ALL_ONLY** | used by exporter (JSONL validation) and importer (JSONL parse) |
-| polars | **MOVE_TO_FAST** | only used by CSV conversion |
-| xlsxwriter | **MOVE_TO_XLSX** | only used by XLSX writer |
+| 1 | `inspect_schema_1` | 1× `inspect_table` + `read_schema` on the 300-record table |
+| 2 | `inspect_schema_100` | 100× call loop |
+| 3 | `inspect_schema_1000` | 1000× call loop |
+| 4 | `direct_read_190k` | full `iter_records` stream, 190,000 records (count + ID-sum verified, O(1) memory) |
+| 5 | `direct_read_1m` | full stream over 1,000,000 records |
+| 6 | `direct_read_memo_heavy` | `memo="inline"` over the 190,000-record memo table (per-record FPT block reads) |
+| 7 | `direct_read_deleted_include` | `include_deleted=True` over 1,000 records / 100 deleted |
+| 8 | `direct_read_deleted_skip` | `include_deleted=False` (900 active) |
+| 9 | `direct_read_cp1250` | forced cp1250, strict decode, logical text verified |
+| 10 | `direct_read_cp852` | forced cp852 |
+| 11 | `direct_read_mazovia` | forced Mazovia |
+| 12 | `migration_dbf_to_jsonl` | DBF → JSONL export over the 190k table (validate on) |
+| 13 | `migration_jsonl_to_dbf_fpt` | JSONL → DBF+FPT memo reconstruction over the 190k memo table |
+| 14 | `migration_validate_off` | DBF → JSONL with output validation disabled |
+| 15 | `migration_validate_on` | DBF → JSONL with output validation enabled |
+| 16 | `direct_read_raw_none` | `raw=False` (no physical record images kept) |
+| 17 | `direct_read_raw_full` | `raw=True` (every record image kept) |
+| 18 | `direct_read_projection_selected` | `fields=("ID", "NAZWA", "KWOTA")` (unselected fields never parsed) |
+| 19 | `direct_read_projection_all` | every schema field selected explicitly |
+| 20 | `direct_read_memo_skip` | `memo="skip"` (memo field absent from values) |
+| 21 | `direct_read_memo_lazy` | `memo="lazy"` (`LazyMemoValue` metadata, no FPT I/O) |
+| 22 | `direct_read_memo_inline` | `memo="inline"` (decoded strings, real FPT reads) |
+| 23 | `cold_import` | cold `import dbfbridge` in a fresh subprocess (asserts no heavy deps loaded) |
 
-**Evidence**: every import is inside a `try:` block or a function body, not at
-module scope.  Fresh interpreter `import dbfbridge` loads none of these
-(verified by tests/test_documentation.py and the one-shot import test).
-Safe to split into optional extras in 0.3.
-
-## Cancellation / progress proposal
-
-0.3 design (not implemented): a lightweight `progress_callback` + optional
-`cancellation_check` callable passed to `iter_records`/`read_records`.
-Must remain a pure library API with no threading or global state.  No CLI or
-MCP dependency.  Progress callback can report interval-based checkpoint
-(e.g. every 10,000 records or every 1 MiB read).  Cancellation is a callable
-checked per-record (zero overhead when not set).
-
-## Backend abstraction proposal
-
-`HARDEN_EXISTING_PROTOCOLS`: add a registration hook for alternate backends
-without breaking the existing Protocol contracts.  No new `ADD_BACKEND_CONTAINER`:
-the current single-protocol approach is sufficient for the expected 0.3
-optimization scope.  No measured bottleneck justifies a native reader.
+No LAN or network-storage latency is simulated anywhere: all scenarios run on
+local runner storage, and every baseline records an explicit
+`environment.storage` provenance label instead.
 
 ## Decision record
 
 | Candidate | Measured cost | Expected benefit | Correctness risk | API risk | Implementation size | Decision |
 |---|---|---|---|---|---|---|
-| inspect_table reopens | Low (header only) | Low | Low | Low | Small | **DEFER** |
-| companion directory scans | Low (direct stat first) | Low | Low | Low | Small | **DEFER** |
-| Reduced duplicate header work | None (already single pass) | None | — | — | — | **REJECT** |
-| Projected record parsing | Low (already skips parser) | Low | Low | Low | Small | **DEFER** |
-| Memo read batching | Medium (inline reads per record) | Medium | Medium (caching) | Low | Medium | **INVESTIGATE** |
-| Optional dependency split | Low runtime cost | Install size only | Low | Low | Small | **DO_NEXT** |
+| inspect_table reopens | header-only | Low | Low | Low | Small | **DEFER** |
+| companion directory scans | direct stat first | Low | Low | Low | Small | **DEFER** |
+| Reduced duplicate header work | already single pass | None | — | — | — | **REJECT** |
+| Projected record parsing | already skips parser | Low | Low | Low | Small | **DEFER** |
+| Memo read batching | per-record FPT block reads (measured by `direct_read_memo_heavy`) | Medium | Medium (caching) | Low | Medium | **PENDING canonical BEFORE** |
+| Optional dependency split | install size only | Low runtime cost | Low | Low | Small | **PENDING canonical BEFORE** |
 | Backend call overhead | Low | Low | Low | Low | Small | **REJECT** |
-| Native reader | NOT MEASURED as bottleneck | unclear | HIGH | HIGH | Large | **DEFER** |
+| Native reader | not measured as a bottleneck | unclear | HIGH | HIGH | Large | **DEFER** |
 
-### Primary next candidate
-
-**Optional dependency split.**  All heavy dependencies (`dbf`, `polars`,
-`openpyxl`, `xlsxwriter`, `orjson`) are already lazy-imported.  The remaining
-work is adding typed guards and split `pyproject.toml` extras.  This produces
-measurable install-size reduction and a cleaner dependency contract without
-runtime performance claims.
-
-### Secondary fallback
-
-**Memo read batching/caching** (investigate actual FPT I/O overhead in the
-memo_lazy scenario; if per-block I/O dominates, batch small memos).
+No **DO_NEXT** is chosen in this phase.  Every candidate marked PENDING is
+decided only after the canonical Phase 3 BEFORE artifacts are published and
+read; the final decision must cite the measured numbers.
 
 ## Performance regression CI proposal
 

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.metadata
 import json
 import os
@@ -53,9 +54,11 @@ from .artifacts import BENCHMARK_CONTRACT as BENCHMARK_CONTRACT
 from .artifacts import CONTRACT_PHASE_1 as CONTRACT_PHASE_1
 from .artifacts import BaselinePublishError, publish_baseline_pair, report_stem
 from .contract import (
+    CONTRACT_PHASE_3,
     derive_runner_from_environment,
     generate_run_id,
     validate_saved_phase1_after,
+    validate_saved_phase3_before,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -414,15 +417,26 @@ def _is_positive_int(value: Any, minimum: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
 
 
+#: Saved-artifact validator per versioned benchmark contract.  The gate
+#: dispatches on the payload's own ``benchmark_contract`` so a Phase 3 run is
+#: never measured against the Phase 1 contract (and vice versa).
+_CONTRACT_VALIDATORS = {
+    CONTRACT_PHASE_1: validate_saved_phase1_after,
+    CONTRACT_PHASE_3: validate_saved_phase3_before,
+}
+
+
 def check_baseline_gate(payload: dict[str, Any], *, require_provenance: bool = True) -> list[str]:
     """Return the list of reasons a versioned baseline must be REJECTED.
 
     An empty list means the run is eligible to be copied into
-    ``benchmarks/baselines/``.  The shared saved-artifact contract (frozen
+    ``benchmarks/baselines/``.  The shared saved-artifact contract (exact
     scenario names, exact sample/warm-up counts, per-sample statuses and
     metrics, valid_baseline, full commit and clean worktree, system/package
     metadata, run_id/generated_at) is delegated to the host-independent
-    validator :func:`benchmarks.contract.validate_saved_phase1_after`, which
+    validator selected by the payload's own ``benchmark_contract``
+    (``phase-1-direct-read-v1`` → :func:`validate_saved_phase1_after`,
+    ``phase-3-performance-v1`` → :func:`validate_saved_phase3_before`), which
     works purely on the payload content.
 
     The gate additionally enforces the runner/storage PROVENANCE
@@ -442,8 +456,17 @@ def check_baseline_gate(payload: dict[str, Any], *, require_provenance: bool = T
     # recorded samples were actually able to carry RSS/IO metrics.
     if not psutil_available():
         reasons.append("psutil is not available; a baseline requires RSS/IO metrics")
-    # Everything else is the pure saved-artifact contract.
-    reasons.extend(validate_saved_phase1_after(payload))
+    # Everything else is the pure saved-artifact contract, dispatched by the
+    # payload's own benchmark_contract.
+    contract = env.get("benchmark_contract")
+    validator = _CONTRACT_VALIDATORS.get(contract) if isinstance(contract, str) else None
+    if validator is None:
+        reasons.append(
+            f"environment.benchmark_contract is {contract!r}; a versioned baseline "
+            f"requires {CONTRACT_PHASE_1!r} or 'phase-3-performance-v1'"
+        )
+    else:
+        reasons.extend(validator(payload))
     if require_provenance:
         if not isinstance(env.get("runner"), str) or not env.get("runner"):
             reasons.append(
@@ -719,6 +742,13 @@ def main(argv: list[str] | None = None) -> int:
     args.results_dir.mkdir(parents=True, exist_ok=True)
     scenario_suffix = "_".join(requested) if requested else ""
     stem = report_stem(active_contract, args.profile, scenario_suffix)
+    if len(stem) > 140:
+        # A long --scenario list would exceed the Windows MAX_PATH budget in
+        # the report file names.  Keep the first scenario plus a deterministic
+        # digest of the full selection so re-runs stay reproducible.
+        digest = hashlib.sha256(scenario_suffix.encode("utf-8")).hexdigest()[:8]
+        scenario_suffix = f"{requested[0]}-etc-{digest}"
+        stem = report_stem(active_contract, args.profile, scenario_suffix)
     json_path = args.results_dir / f"{stem}.json"
     md_path = args.results_dir / f"{stem}.md"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
