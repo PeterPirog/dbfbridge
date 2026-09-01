@@ -117,7 +117,8 @@ jobs:
         with:
           name: phase3-benchmark-reports
           path: |
-            benchmarks/results/phase-3-performance-phase3.*
+            benchmarks/results/phase-3-performance-phase3*.json
+            benchmarks/results/phase-3-performance-phase3*.md
           if-no-files-found: error
           retention-days: 14
 
