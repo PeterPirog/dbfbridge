@@ -68,8 +68,11 @@ __all__ = [
     "TableInfo",
     "TableSchema",
     "TextDecodeError",
+    "inspect_table",
     "iter_raw_records",
     "iter_records",
+    "memo_companion_extension",
+    "memo_companion_format",
     "read_records",
     "read_schema",
 ]

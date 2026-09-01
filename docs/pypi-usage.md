@@ -412,13 +412,6 @@ dbf-bridge-import --source out --output rebuilt --formats jsonl --memo inline
 dbf-bridge-quality --source data --output quality
 ```
 
-```bash
-dbf-bridge --source data --output out --formats jsonl
-dbf-bridge-verify --source data --output out --formats jsonl
-dbf-bridge-import --source out --output rebuilt --formats jsonl --memo inline
-dbf-bridge-quality --source data --output quality
-```
-
 ## Structured error handling
 
 ```python
@@ -538,9 +531,14 @@ Semantics:
 - `cancel_check() -> False` continues; `True` stops the read **before** the
   next physical record is read or decoded — records already yielded remain
   valid and no sentinel record is produced;
-- cancelling **before the first record** reads zero records (no DBF/FPT
-  handle is even opened) and raises `ReadCancelledError` with
-  `scanned == 0`;
+- cancelling **before the first record** consumes zero physical record
+  frames — nothing is decoded, nothing is yielded, the backend
+  physical-record loop is never entered, no streaming handle stays open,
+  and the source stays unchanged.  (The normal eager argument/header/
+  companion validation still runs before iteration starts, exactly as in
+  previous releases; for `memo="inline"` that validation may briefly open
+  the FPT companion to check its header metadata.)  The typed
+  `ReadCancelledError` is raised with `scanned == 0`;
 - `read_records` raises `ReadCancelledError` instead of returning a partially
   filled page that would pretend to be a completed page;
 - `iter_raw_records` has the same guarantees, and the forensic semantics of
