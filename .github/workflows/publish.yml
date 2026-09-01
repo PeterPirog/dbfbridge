@@ -29,6 +29,34 @@ jobs:
       - run: python -m pytest
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Fresh-wheel smoke (Direct Read + legacy + CLI)
+        shell: bash
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
+          python -m venv "$RUNNER_TEMP/fresh-venv"
+          "$RUNNER_TEMP/dbfbridge-p2-smoke/venv/Scripts/python.exe" -m pip install --force-reinstall "$wheel" 2>/dev/null || true
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/dbfbridge-p2-smoke/venv/Scripts/python.exe" -m pip install --force-reinstall "$(cd - && echo "$GITHUB_WORKSPACE/$wheel")" 2>/dev/null || \
+            python -m pip install --force-reinstall "$wheel"
+          python -c "
+            import dbfbridge, dbf_bridge
+            from dbfbridge import (
+                inspect_table, read_schema,
+                iter_records, read_records, iter_raw_records,
+                TableInfo, TableSchema, FieldInfo,
+                DirectRecord, RecordPage, LazyMemoValue,
+            )
+            from dbfbridge import (
+                export_dbf, reconstruct_dbf, verify_conversion,
+                check_conversion_quality,
+            )
+            import dbfbridge as m
+            assert m.__version__ == dbf_bridge.__version__
+          "
+          dbf-bridge --help >/dev/null
+          dbf-bridge-import --help >/dev/null
+          dbf-bridge-verify --help >/dev/null
+          dbf-bridge-quality --help >/dev/null
       - name: Store release distributions
         uses: actions/upload-artifact@v5
         with:
