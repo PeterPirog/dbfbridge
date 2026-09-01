@@ -1,4 +1,10 @@
-"""Public result models shared by the Python API and command-line adapters."""
+"""Public result models shared by the Python API and command-line adapters.
+
+The shared progress contract (:class:`Operation`, :class:`ProgressEvent`) is
+defined **only** in :mod:`dbf_bridge.progress`; this module re-exports the
+very same objects so historical ``from dbf_bridge.api_models import
+ProgressEvent`` imports keep resolving to the canonical runtime class.
+"""
 
 from __future__ import annotations
 
@@ -15,21 +21,20 @@ from .exporter.models import (
     TableResult,
 )
 from .importer.models import InputFormat, ReconstructionResult
+from .progress import Operation, ProgressEvent
 
-Operation = Literal["export", "convert", "reconstruct", "verify", "quality"]
-
-
-@dataclass(frozen=True)
-class ProgressEvent:
-    """A structured progress notification emitted by long-running API calls."""
-
-    operation: Operation
-    current: int
-    total: int
-    table: str | None = None
-    format: str | None = None
-    records: int | None = None
-    message: str | None = None
+__all__ = [
+    "DBFBridgeRunError",
+    "ExportOptions",
+    "ExportRunResult",
+    "InputFormat",
+    "Operation",
+    "ProgressEvent",
+    "QualityRunResult",
+    "ReconstructionOptions",
+    "ReconstructionRunResult",
+    "VerificationRunResult",
+]
 
 
 class DBFBridgeRunError(RuntimeError):

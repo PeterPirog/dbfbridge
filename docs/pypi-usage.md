@@ -36,8 +36,9 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 17. [Full installation](#full-installation)
 18. [Command-line interface](#command-line-interface)
 19. [Structured error handling](#structured-error-handling)
-20. [Polish encodings](#polish-encodings)
-21. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
+20. [Progress and cancellation](#progress-and-cancellation)
+21. [Polish encodings](#polish-encodings)
+22. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
 
 ## Requirements
 
@@ -413,8 +414,6 @@ dbf-bridge-quality --source data --output quality
 
 ## Structured error handling
 
-Direct Read failures are typed, JSON-safe, and carry a machine code:
-
 ```python
 from dbfbridge import DirectReadError
 
@@ -442,6 +441,132 @@ except OptionalDependencyMissingError as error:
 
 dbfbridge never installs, downloads, or opens anything automatically; the
 error payload only tells you what to run.
+
+## Progress and cancellation
+
+The three Direct Read entry points accept two keyword-only callbacks:
+
+```python
+iter_records(path, progress=None, cancel_check=None)
+read_records(path, offset=0, limit=100, progress=None, cancel_check=None)
+iter_raw_records(path, progress=None, cancel_check=None)
+```
+
+Both are optional, keyword-only, and default to `None`; existing callers do
+not change.  Progress and cancellation are independent of each other — either
+can be used alone.
+
+### Progress callback
+
+```python
+from dbfbridge import ProgressEvent, iter_records
+
+
+def show_progress(event: ProgressEvent) -> None:
+    print(event.current, event.total, event.records)
+
+
+for record in iter_records(
+    "data/customer.dbf",
+    fields=["ID", "NAME"],
+    memo="skip",
+    progress=show_progress,
+):
+    ...
+```
+
+`ProgressEvent` fields for Direct Read (`operation="read"`):
+
+| field | meaning |
+|---|---|
+| `current` | absolute **physical** position after the last processed record (`0 <= current <= total`); deleted records count toward it |
+| `total` | declared physical record count of the table |
+| `table` | the DBF path as a string |
+| `records` | records yielded/returned by this call so far (deleted records do **not** count when `include_deleted=False`) |
+
+- **Cadence**: progress is emitted at a bounded internal cadence — every
+  1000 scanned physical records — plus one final event when the call/page
+  completes normally.  It is not emitted per record.
+- **Pagination**: for `read_records(offset=1000, limit=100)` the `current`
+  value is still an absolute physical position in the table (the same
+  physical index space as `offset`/`next_offset`), never an active-record
+  number.  `current` follows the **scanned** physical cursor: deleted
+  records after the last returned record still advance it (a page over
+  4 physical records with the last 2 deleted and `include_deleted=False`
+  returns 2 records but finishes at `current = 4`).
+- **Callback exceptions are never swallowed**: if `progress(event)` raises,
+  all DBF/FPT handles are closed and the original exception propagates to
+  the caller.  The same is true for `cancel_check` exceptions.
+
+### Cancellation
+
+`cancel_check` is a plain callable you provide — the library creates **no
+threads, event loops, background workers, or global state**.  It is called
+cooperatively at **every physical record boundary, before the next record is
+read or decoded** (this is independent of progress cadence):
+
+```python
+from dbfbridge import ReadCancelledError, iter_records
+
+state = {"stop": False}
+
+
+def should_cancel() -> bool:
+    return state["stop"]
+
+
+try:
+    for record in iter_records(
+        "data/customer.dbf",
+        cancel_check=should_cancel,
+    ):
+        process(record)
+
+        if some_condition():
+            state["stop"] = True
+except ReadCancelledError as exc:
+    print(exc.code)       # READ_CANCELLED
+    print(exc.to_dict())  # JSON-safe progress context
+```
+
+Semantics:
+
+- `cancel_check() -> False` continues; `True` stops the read **before** the
+  next physical record is read or decoded — records already yielded remain
+  valid and no sentinel record is produced;
+- cancelling **before the first record** consumes zero physical record
+  frames — nothing is decoded, nothing is yielded, the backend
+  physical-record loop is never entered, no streaming handle stays open,
+  and the source stays unchanged.  (The normal eager argument/header/
+  companion validation still runs before iteration starts, exactly as in
+  previous releases; for `memo="inline"` that validation may briefly open
+  the FPT companion to check its header metadata.)  The typed
+  `ReadCancelledError` is raised with `scanned == 0`;
+- `read_records` raises `ReadCancelledError` instead of returning a partially
+  filled page that would pretend to be a completed page;
+- `iter_raw_records` has the same guarantees, and the forensic semantics of
+  records returned before the stop are unchanged;
+- the typed error carries stable machine fields in `to_dict()["context"]`:
+
+```python
+{
+    "code": "READ_CANCELLED",
+    "path": "data/customer.dbf",
+    "context": {
+        "offset": 0,                # physical start index of this call
+        "next_physical_index": 10000,
+        "scanned": 10000,
+        "yielded": 10000,
+        "record_count": 190000,
+    },
+}
+```
+
+- **Resource cleanup**: after cancellation, a callback exception, or
+  `iterator.close()`, every DBF/FPT handle is closed — the files can be
+  renamed or deleted immediately (Windows-safe);
+- the read stays read-only: no output files, no `.partial`, no locks, no
+  network, and the source stays byte-identical.
 
 ## Polish encodings
 

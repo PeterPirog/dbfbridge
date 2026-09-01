@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,9 +25,9 @@ from .exporter.models import (
     OutputFormat,
 )
 from .importer.models import InputFormat
+from .progress import ProgressCallback  # canonical shared contract (re-export)
 
 PathLike = str | os.PathLike[str]
-ProgressCallback = Callable[[ProgressEvent], None]
 SUPPORTED_FORMATS = ("csv", "json", "jsonl", "xlsx")
 SUPPORTED_INPUT_FORMATS = ("jsonl", "json", "csv", "xlsx")
 
@@ -205,18 +205,20 @@ def reconstruct_dbf(
             progress=False,
         ),
         progress_callback=(
-            lambda current, total, table, records: progress(
-                ProgressEvent(
-                    operation="reconstruct",
-                    current=current,
-                    total=total,
-                    table=table,
-                    format=normalized_format,
-                    records=records,
+            lambda current, total, table, records: (
+                progress(
+                    ProgressEvent(
+                        operation="reconstruct",
+                        current=current,
+                        total=total,
+                        table=table,
+                        format=normalized_format,
+                        records=records,
+                    )
                 )
+                if progress is not None
+                else None
             )
-            if progress is not None
-            else None
         ),
     )
     if not table_results:
@@ -316,18 +318,20 @@ def check_conversion_quality(
         progress=False,
         max_differences=max_differences,
         progress_callback=(
-            lambda stage, current, total, table, records: progress(
-                ProgressEvent(
-                    operation="quality",
-                    current=current,
-                    total=total,
-                    table=table,
-                    records=records,
-                    message=stage,
+            lambda stage, current, total, table, records: (
+                progress(
+                    ProgressEvent(
+                        operation="quality",
+                        current=current,
+                        total=total,
+                        table=table,
+                        records=records,
+                        message=stage,
+                    )
                 )
+                if progress is not None
+                else None
             )
-            if progress is not None
-            else None
         ),
     )
     failed = int(summary["failed"])
@@ -347,7 +351,9 @@ def _normalize_formats(
     supported: tuple[str, ...],
 ) -> tuple[str, ...]:
     values = formats.split(",") if isinstance(formats, str) else list(formats)
-    normalized = tuple(dict.fromkeys(str(value).strip().lower() for value in values if str(value).strip()))
+    normalized = tuple(
+        dict.fromkeys(str(value).strip().lower() for value in values if str(value).strip())
+    )
     if not normalized:
         raise ValueError("At least one format is required.")
     invalid = [value for value in normalized if value not in supported]
