@@ -8,7 +8,7 @@
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
-> Status: **0.1.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
+> Status: **0.2.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
 
 ## Installation
 
@@ -212,6 +212,8 @@ The installed distribution is named `dbfbridge`, and the recommended import is a
 
 | Function | Result type | Purpose |
 |---|---|---|
+| `inspect_table()` | `TableInfo` | read-only inspection of one DBF header (no files created) |
+| `read_schema()` | `TableSchema` | full safe header/memo/CDX-companion schema (no files created) |
 | `export_dbf()` | `ExportRunResult` | DBF/FPT tree → one or more modern formats |
 | `reconstruct_dbf()` | `ReconstructionRunResult` | one exported format + schemas → DBF/FPT tree |
 | `verify_conversion()` | `VerificationRunResult` | exported files vs source DBF and migration report |
@@ -250,6 +252,210 @@ console output unless a progress callback is supplied.
 | `reconstruct_dbf()` | `input_format="jsonl"`, `memo="inline"`, `overwrite=False`; also accepts `ReconstructionOptions` |
 | `verify_conversion()` | all four formats, `strict=True`, writes `<output>/verification_report.json`; set `write_report=False` for an in-memory check |
 | `check_conversion_quality()` | `overwrite=False`, `max_differences=20`; retains all three diagnostic trees |
+
+#### Direct read (Phase 1A)
+
+`inspect_table()` and `read_schema()` implement the Phase 1A direct read core.
+They are strictly read-only: the DBF read is bounded by the declared header
+length (independent of the record count, plus a companion-file lookup in the
+table's directory), they never create files, never open memo payloads, and
+leave the source byte-identical.
+
+```python
+from dbfbridge import FieldInfo, TableInfo, TableSchema, inspect_table, read_schema
+
+info: TableInfo = inspect_table("K:/dbf_source/klienci.dbf")
+print(info.record_count, info.encoding, info.has_memo, info.dbc_bound)
+for field in info.fields:
+    print(field.ordinal, field.name, field.dbf_type, field.dbf_type_name)
+
+schema: TableSchema = read_schema("K:/dbf_source/klienci.dbf")
+print(schema.dbversion_name, schema.last_update)
+print(schema.memo_companion_format, schema.companion_cdx_present)
+print(json.dumps(info.to_dict()))  # JSON-safe: no bytes, no Path
+```
+
+The header table-flags byte (offset 28) is a **bit mask**: `has_structural_cdx`
+(0x01), `has_memo_flag` (0x02), `is_database_container` (0x04). Its raw value is
+exposed as `table_flags` (int) and `table_flags_hex` on both `TableInfo` and
+`TableSchema`. `dbc_bound` comes from the VFP database-container backlink path
+in the 263-byte header extension (`schema.dbc_backlink_path`), decoded with the
+encoding resolved from the language driver (or the explicit override), not from
+a neighbouring `.dbc` file; an undecodable backlink keeps `dbc_bound = true`
+and reports the path as null plus a warning. The last-update date is
+`1900 + year_byte` with no century pivot. `FieldInfo` exposes the descriptor
+facts an MCP consumer needs: `nocptrans` is the binary flag **where VFP
+documents it** (Character/Varchar and memo fields only — it is never inferred
+from an autoincrement Integer), `index_field_flag` (byte 31) is kept only for
+migration-schema compatibility (VFP reserves bytes 24-31, so it is **not**
+reliable CDX-membership evidence), and the VFP autoincrement facts
+(`is_autoincrement`, `autoincrement_next_value`, `autoincrement_step`)
+follow the VFP field-flags mask 0x0C on an Integer (`I`) field — the dBASE
+Level 7 type `+` is recognized outside VFP only; the semantic `is_binary`
+classification also covers G/P/binary memo fields.
+
+Memo companion format follows the DBF version: VFP/FoxPro use `.fpt` (the
+only format Direct Read can read), dBASE III+/IV use `.dbt` and HiPer-Six
+`.smt`, which are reported with an explicit "not supported" warning and are
+never interpreted as FPT headers. A complete FPT header record is 512 bytes;
+the 8-byte prefix is enough to read the next-free block and the block size,
+files shorter than 512 bytes are reported as structurally suspicious, and a
+block size of 0 is invalid — sizes 1-32 select 512-byte units (SET BLOCKSIZE
+TO 0 stores 1) and sizes above 32 are plain byte counts, so there is no
+power-of-two rule. A missing required companion, an unreadable/suspicious FPT
+header, or a structural-CDX flag without a `.cdx` file is a structured warning
+in `warnings`, never an opaque failure.
+
+Companion discovery is a typed I/O boundary: the exact-path candidate check
+(protected `stat`), the case-insensitive directory scan, and per-entry checks
+all convert `OSError` into `DbfIoError` (`DBF_IO_ERROR`) with the specific
+companion path and a JSON-safe context. A genuinely absent companion means
+`present=False`; an inaccessible one (e.g. access denied) raises instead of
+being disguised as missing.
+
+Structured failures carry a machine code instead of free text:
+
+```python
+from dbfbridge import (
+    DbfFormatUnsupportedError,
+    DbfHeaderInvalidError,
+    DbfIoError,
+    DbfPathError,
+    DbfTruncatedError,
+    DirectReadError,
+    EncodingUnknownError,
+    ErrorCode,
+)
+
+try:
+    inspect_table("K:/damaged/dane.dbf")
+except DirectReadError as error:
+    print(error.code)   # e.g. ErrorCode.DBF_TRUNCATED or DBF_IO_ERROR
+    print(error.to_dict())  # JSON-safe: code, message, path, context
+```
+
+Phase 1A scope notes:
+
+- CDX presence is reported structurally (`has_structural_cdx`,
+  `companion_cdx`); CDX tag expressions are **not** parsed;
+- export honors the Mazovia language driver (0x69): the header-resolved
+  encoding is passed to the reader, so `--encoding auto` produces correct
+  Polish characters (a manual `--encoding` override still wins);
+- the Phase 0 benchmark results remain the BEFORE reference and are not
+  regenerated by this phase.
+
+A complete executable example is in
+[`examples/inspect_table.py`](examples/inspect_table.py).
+
+#### Streaming direct record read (Phase 1B)
+
+Phase 1B adds read-only record streaming on top of the Phase 1A contracts.
+The implementation is backed by the **dbfread reference backend** isolated in
+`dbf_bridge.core.backend` (the only module allowed to use private `dbfread`
+API); the migration exporter delegates its physical record loop to the same
+backend, so there is exactly one record loop and one header parser in the
+codebase.
+
+```python
+from dbfbridge import (
+    DirectRecord,
+    LazyMemoValue,
+    RecordPage,
+    iter_raw_records,
+    iter_records,
+    read_records,
+)
+
+# Streaming iteration (O(1) memory); close() releases the file handles.
+for record in iter_records("K:/dbf_source/klienci.dbf", memo="lazy"):
+    value = record.values["NOTATKA"]
+    if isinstance(value, LazyMemoValue):
+        meta = value.to_dict()          # table, field, physical memo block
+        text = value.load()             # explicit read through the backend
+    print(record.physical_index, record.deleted, record.values.keys())
+
+# One bounded physical page: O(limit) memory.
+page = read_records("K:/dbf_source/klienci.dbf", offset=200, limit=100, fields=["ID_KL", "NAZWA"])
+print(page.offset, page.limit, page.scanned, page.next_offset, page.exhausted)
+
+# Every physical record (deleted included) with its exact raw bytes, no FPT.
+raws = [(r.physical_index, r.deleted, r.raw_record) for r in iter_raw_records("K:/dbf_source/klienci.dbf")]
+```
+
+Contract:
+
+- `physical_index` is the zero-based **physical** record index (deleted
+  records keep their index); `offset`/`next_offset` use the same physical
+  space; a page seek jumps to `offset` without scanning earlier records;
+  running out of records (EOF or a `0x1A` marker) before the declared record
+  count is a typed `DBF_TRUNCATED` — EOF is normal only after the whole
+  declared record area;
+- `iter_records()` streams with O(1) memory; `read_records()` uses O(limit)
+  memory; `limit` must be positive and `offset` non-negative
+  (`ARGUMENT_INVALID` otherwise);
+- `include_deleted=False` skips deleted records **in the same pass** (no
+  second read of the record area); `iter_raw_records` returns *all* records,
+  deleted included, in physical order as **pure forensic snapshots**: no
+  field is parsed or decoded (the FPT is never opened, `values` is an empty
+  read-only mapping) and even damaged text bytes cannot hide the exact
+  `raw_record` image — decoded values together with the raw image are
+  available through `iter_records(..., raw=True)`;
+- `fields` is validated case-insensitively while `values` use schema names in
+  the caller's order; unselected fields are **never parsed**; unknown or
+  duplicate names raise `FIELD_PROJECTION_INVALID` and a selected unsupported
+  field raises `FIELD_TYPE_UNSUPPORTED` — an unsupported field left unselected
+  never blocks reading, and memo fields removed by `memo="skip"` are trimmed
+  from the projection *before* that validation;
+- memo policies: `skip` (field absent from `values`), `null` (field present
+  with `None`), `lazy` (a `LazyMemoValue`; the FPT is not opened during
+  iteration — loading it later costs a small per-value read), `inline` (the
+  payload is read through the backend immediately). Only an effective
+  projection that really decodes memo values requires the FPT for `inline`;
+  `skip`/`null`/`lazy` never open or read the FPT; `inline` without an FPT
+  raises `FPT_REQUIRED_MISSING` (also when the companion vanishes after
+  validation — the open is strict, never silently null) and a damaged FPT
+  raises `FPT_INVALID`;
+- `DirectRecord.values` takes a defensive read-only snapshot in projection
+  order (mutating the caller's dict never leaks in, item assignment raises
+  `TypeError`); `to_dict()` returns a fresh, independently mutable, JSON-safe
+  dict;
+- `encoding="auto"` resolves from the language driver, an explicit override
+  wins; strict decode failures raise `TEXT_DECODE_ERROR`, never a raw
+  `UnicodeDecodeError`;
+- Direct Read only opens the sources read-only: it never creates a directory,
+  lock, report, or `.partial`, never touches CDX, and never modifies the
+  source.
+- typed errors carry `ErrorCode`, `path`, and a JSON-safe `context` — including
+  `ARGUMENT_INVALID`, `FIELD_PROJECTION_INVALID`, `FIELD_TYPE_UNSUPPORTED`,
+  `FPT_REQUIRED_MISSING`, `FPT_INVALID`, `TEXT_DECODE_ERROR`,
+  `DBF_RECORD_INVALID`, `DBF_IO_ERROR`.
+
+The benchmark scenarios `direct_read_bounded`, `field_projection`, `memo_lazy`,
+and `raw_mode_none` are real `MEASURED` scenarios since Phase 1B (fast profile:
+19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`,
+with the versioned report identity `benchmark_contract:
+"phase-1-direct-read-v1"`). `field_projection` proves the same logical result
+with an O(1)-memory digest (the reference full read is computed once, outside
+the measured window); `memo_lazy` enforces zero operations on the real backend
+memo boundary. The full Phase 1 AFTER baseline has been measured on GitHub
+Actions ([run 33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
+SUCCESS) at commit `df035de662f2d78a7a8d9d9a141a8235e1161382` (Windows Server
+2025, Python 3.12.10, runner `github-actions-windows-2025-python-3.12.10`,
+storage `github-actions-windows-temp`, one warm-up + three measured
+repetitions per scenario, zero temporary residue) and is versioned under
+`benchmarks/baselines/phase-1-direct-read-full.{json,md,manifest.json}`, with
+the comparison pair `benchmarks/baselines/phase-0-vs-phase-1.{json,md}`.
+The preserved `benchmarks/baselines/phase-0-full.{json,md}` is the Phase 0
+BEFORE reference and stays byte-identical. The recorded BEFORE/AFTER verdict
+is **PARTIALLY_COMPARABLE**: runtime/dependency versions match, but the
+legacy Phase 0 carries no storage/runner descriptors, so the numbers may be
+read diagnostically without proving a performance improvement, and the four
+Direct Read scenarios are NEWLY_MEASURED (the BEFORE listed them as
+`NOT_IMPLEMENTED` — there is no BEFORE number to compare against). The
+Direct Read Core remains a transport-independent (no MCP adapter), bounded,
+read-only library returning stable JSON-serializable data. A complete
+executable example is in
+[`examples/read_records.py`](examples/read_records.py).
 
 #### Export and incremental export
 

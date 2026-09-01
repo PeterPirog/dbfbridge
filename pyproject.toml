@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbfbridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Visual FoxPro DBF migration, reconstruction, and quality verification toolkit."
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: File Formats",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -43,9 +44,13 @@ dependencies = [
 import = []
 # Kept as a backwards-compatible no-op; XLSX support is installed by default.
 xlsx = []
+# Benchmark-only: RSS/IO counters for the Phase 0 benchmark runner.  NOT a
+# runtime dependency of dbfbridge; required only for a versioned --baseline.
+benchmark = ["psutil>=5.9"]
 dev = [
     "dbf>=0.99.11",
     "openpyxl>=3.1.5",
+    "psutil>=5.9",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "build>=1.2",

@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..core.fields import FIELD_TYPE_NAMES as DBF_FIELD_TYPE_NAMES
+
 ExportFormat = Literal["jsonl", "csv", "json"]
 OutputFormat = Literal["jsonl", "csv", "json", "xlsx"]
 DecodeErrors = Literal["strict", "ignore", "replace"]
@@ -12,28 +14,6 @@ DeletedPolicy = Literal["skip", "separate", "include"]
 MissingMemoPolicy = Literal["fail", "null-with-warning"]
 MemoPolicy = Literal["skip", "inline", "null"]
 TableStatus = Literal["OK", "WARNING", "SKIPPED", "FAILED", "UNSUPPORTED"]
-
-DBF_FIELD_TYPE_NAMES = {
-    "0": "Null flags",
-    "+": "Autoincrement",
-    "@": "Timestamp",
-    "B": "Double or binary memo",
-    "C": "Character",
-    "D": "Date",
-    "F": "Float",
-    "G": "General/OLE memo",
-    "I": "Integer",
-    "L": "Logical",
-    "M": "Memo",
-    "N": "Numeric",
-    "O": "Double",
-    "P": "Picture memo",
-    "Q": "Varbinary",
-    "T": "DateTime",
-    "V": "Varchar",
-    "W": "Blob",
-    "Y": "Currency",
-}
 
 
 @dataclass(frozen=True)
@@ -211,15 +191,11 @@ class TableMetadata:
                 "block_size_bytes": self.memo_block_size,
                 "next_free_block": self.memo_next_free_block,
                 "block_header_bytes": 8 if self.memo_present and is_fpt else None,
-                "block_header_byte_order": "big-endian"
-                if self.memo_present and is_fpt
-                else None,
+                "block_header_byte_order": "big-endian" if self.memo_present and is_fpt else None,
                 "block_types": {"0": "picture", "1": "text", "2": "object"}
                 if self.memo_present and is_fpt
                 else None,
-                "dbf_pointer_byte_order": "little-endian"
-                if self.memo_fields and is_fpt
-                else None,
+                "dbf_pointer_byte_order": "little-endian" if self.memo_fields and is_fpt else None,
                 "text_encoding": self.encoding if self.memo_fields else None,
                 "field_names": self.memo_fields,
                 "export_policy": self.memo_export_policy,

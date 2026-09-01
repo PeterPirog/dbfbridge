@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import dbf_bridge
 import dbfbridge
 from dbfbridge import (
     DBFBridgeRunError,
@@ -18,7 +19,7 @@ from dbfbridge import (
 
 
 def test_distribution_import_exposes_the_documented_api() -> None:
-    assert dbfbridge.__version__ == "0.1.0"
+    assert dbfbridge.__version__ == dbf_bridge.__version__
     assert {
         "export_dbf",
         "reconstruct_dbf",

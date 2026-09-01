@@ -47,6 +47,9 @@ tests/fixtures/output/
 *.jsonl
 *.xlsx
 benchmark-data/
+benchmarks/results/
+# Accepted benchmark baselines are intentional, versioned evidence.
+!benchmarks/baselines/*.json
 # Schema/metadata/report files (generated)
 *.schema.jsonl
 *.metadata.json
