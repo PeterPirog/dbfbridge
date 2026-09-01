@@ -295,7 +295,10 @@ def test_json_conversion_without_orjson_matches_the_stdlib_fallback(
 def _load_pyproject() -> dict[str, Any]:
     from pathlib import Path as _Path
 
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     with _Path(__file__).parents[1].joinpath("pyproject.toml").open("rb") as infile:
         return tomllib.load(infile)
