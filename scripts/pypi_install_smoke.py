@@ -251,6 +251,20 @@ assert len(page.records) == 100 and page.next_offset == 100
 raw_total = sum(1 for _ in iter_raw_records(source))
 assert raw_total == 200, raw_total
 
+# --- explicit Polish encoding overrides (fresh base venv proves the
+# codecs are registered at operation time, not by import order) ---
+from dbfbridge import EncodingUnknownError as _EncUnknown
+
+explicit = list(iter_records(source, encoding="mazovia"))
+assert len(explicit) == 200, len(explicit)
+assert isinstance(explicit[0].values["NAME"], str)
+try:
+    list(iter_records(source, encoding="definitely-not-a-real-codec"))
+except _EncUnknown as unknown:
+    assert unknown.to_dict()["code"] == "ENCODING_UNKNOWN"
+else:
+    raise SystemExit("unknown codec must raise EncodingUnknownError")
+
 assert not list(Path(r"{work.as_posix()}").glob("**/*.partial"))
 print("direct-read OK")
 """
