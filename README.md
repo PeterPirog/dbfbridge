@@ -65,10 +65,13 @@ dbf-bridge --help
 | `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
-> **Version note:** this extras contract is the upcoming **0.3** layout. The
-> currently published PyPI **0.2.0** release installs all of the above
-> dependencies by default and treats `[import]`/`[xlsx]` as compatibility
-> no-ops. Nothing here misrepresents the public 0.2.0 package.
+> **Availability note:** the GitHub release **v0.2.0** exists, but the PyPI
+> publication of 0.2.0 is currently **pending** (external account recovery /
+> Trusted Publisher setup).  The install-profile extras documented here are
+> the upcoming **0.3** contract; once the corresponding release is on PyPI,
+> `pip install dbfbridge` installs the minimal base profile and the extras
+> below become opt-in.  Until that publication, installation from PyPI is
+> not yet possible.
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
 stdlib `json` module; without `polars`, CSV conversion uses the Python
