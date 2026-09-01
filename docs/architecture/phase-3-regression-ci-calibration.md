@@ -98,8 +98,12 @@ it is honestly classified `advisory_only` instead of inflating a threshold.
 - `center` = median of the per-run `aggregated.median_wall_seconds`
   (≥ 5 independent hosted-runner workflow runs on one source commit);
 - `mad` = median absolute deviation of those run medians;
-- `envelope_upper = center + max(3 × mad, max_observed_deviation)`
-  (always covers the observed spread and is never tighter than 3 MADs);
+- `envelope_upper = max(center + max(3 × mad, max_observed_deviation),
+  max_observed_value × 1.15)` (covers the observed spread AND a documented
+  small-sample safety factor over the worst observation — five runs
+  under-estimate the inter-run tail, and a first self-test run on
+  identical source indeed landed beyond the too-tight 5-sample envelope,
+  which would have been a false positive without this factor);
 - a same-run ratio is a **hard regression signal** when the candidate ratio
   exceeds `envelope_upper` on a `COMPARABLE` candidate; a ratio qualifies as
   a hard gate only when `envelope_upper <= center × 1.5`;

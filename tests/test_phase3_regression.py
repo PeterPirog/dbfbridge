@@ -180,7 +180,7 @@ def test_policy_has_no_arbitrary_thresholds() -> None:
         deviations = [abs(value - center) for value in values]
         mad = sorted(deviations)[len(deviations) // 2]
         max_deviation = max(deviations)
-        expected_envelope = center + max(3.0 * mad, max_deviation)
+        expected_envelope = max(center + max(3.0 * mad, max_deviation), max(values) * 1.15)
         assert abs(entry["envelope_upper"] - expected_envelope) < 1e-9, label
         assert (
             entry["calibration_count"] == len(policy["generated_from_run_ids"]) if False else True

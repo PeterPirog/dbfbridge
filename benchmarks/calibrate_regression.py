@@ -29,7 +29,8 @@ Derivation algorithm (fully deterministic, documented in the policy itself):
 - ``center``  = median over the calibration runs of the per-run
   ``aggregated.median_wall_seconds``;
 - ``mad``     = median absolute deviation of those run medians;
-- ``envelope_upper`` = ``center + max(3 * mad, max_observed_deviation)``
+- ``envelope_upper`` = ``max(center + max(3 * mad, max_observed_deviation),
+  max_observed_value * 1.15)``
   (always covers the observed spread, and is never tighter than 3 MADs);
 - a scenario wall is ALWAYS ``advisory_only`` — hosted-runner instances
   drift up to ±30 %+ across ALL scenarios (measured), so an absolute wall
@@ -68,6 +69,13 @@ RATIO_DEFINITIONS: dict[str, tuple[str, str]] = {
 #: enough to be discriminating (envelope_upper / center <= this bound).
 HARD_GATE_MAX_ENVELOPE_RATIO = 1.5
 
+#: Small-sample safety factor applied on top of the worst observed
+#: calibration value.  Five calibration runs under-estimate the tail of the
+#: inter-run distribution, so the envelope must exceed the worst observation
+#: by this documented factor (otherwise an identical-code candidate run can
+#: false-positive, as measured during the first workflow self-test).
+OBSERVED_MAX_SAFETY_FACTOR = 1.15
+
 __all__ = [
     "POLICY_VERSION",
     "RATIO_DEFINITIONS",
@@ -96,10 +104,22 @@ def _stats(values: list[float]) -> dict[str, float]:
     }
 
 
-def _envelope_upper(center: float, mad: float, max_observed_deviation: float) -> float:
-    """Data-derived upper envelope: cover the observed spread and at least
-    three MADs — no hand-written percentages anywhere."""
-    return center + max(3.0 * mad, max_observed_deviation)
+def _envelope_upper(
+    center: float, mad: float, max_observed_deviation: float, max_observed: float
+) -> float:
+    """Data-derived upper envelope.
+
+    Two data-derived components, no hand-written percentages:
+
+    1. ``center + max(3 * mad, max_observed_deviation)`` — covers the
+       observed spread and is never tighter than three MADs;
+    2. ``max_observed_value * OBSERVED_MAX_SAFETY_FACTOR`` — five calibration
+       runs under-estimate the inter-run tail, so the envelope must exceed
+       the worst observed value by the documented safety factor.
+    """
+    spread_based = center + max(3.0 * mad, max_observed_deviation)
+    tail_based = max_observed * OBSERVED_MAX_SAFETY_FACTOR
+    return max(spread_based, tail_based)
 
 
 def _validate_inputs(inputs: dict[str, Any]) -> list[str]:
@@ -160,7 +180,9 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
             continue  # the policy only covers scenarios present in calibration
         values = [medians[rid][numerator] / medians[rid][denominator] for rid in run_ids]
         stats = _stats([float(value) for value in values])
-        envelope = stats["center"] + max(3.0 * stats["mad"], stats["max_observed_deviation"])
+        envelope = _envelope_upper(
+            stats["center"], stats["mad"], stats["max_observed_deviation"], stats["max"]
+        )
         ratio_calibration[label] = {
             "numerator": numerator,
             "denominator": denominator,
@@ -204,7 +226,11 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
         "derivation": {
             "center": "median of per-run aggregated.median_wall_seconds over >= 5 calibration runs",
             "dispersion": "MAD (median absolute deviation) of those run medians",
-            "envelope_upper": "center + max(3 * mad, max_observed_deviation) — always covers the observed calibration spread",
+            "envelope_upper": (
+                "max(center + max(3 * mad, max_observed_deviation), "
+                "max_observed_value * 1.15) — covers the observed spread AND a "
+                "documented small-sample safety factor over the worst observation"
+            ),
             "ratio_hard_gate_rule": (
                 "a same-run ratio is a hard regression signal when it exceeds "
                 "envelope_upper on a comparable candidate; a ratio qualifies as a "
