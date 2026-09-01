@@ -25,7 +25,7 @@ from .models import DiscoveredTable, ExportConfig, FieldMetadata, TableMetadata
 from .validation import sha256_file
 
 # Polish OEM codecs (Mazovia/PIAST) are registered ON DEMAND at operation
-# time (core.codecs.ensure_encoding_available / decode_with_polish_fallback /
+# time (core.codecs._ensure_encoding_available / decode_with_polish_fallback /
 # core.header.parse_header) — no module-import registration, so importing the
 # exporter has no global codec-registry side effects.
 
