@@ -1,9 +1,26 @@
 # Przykłady
 
+## A. Użycie po instalacji z PyPI (normalny przypadek)
+
+Po instalacji:
+
+```bash
+python -m pip install dbfbridge
+```
+
+nie potrzebujesz tego repozytorium. Korzystasz z zainstalowanych poleceń
+(`dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import`, `dbf-bridge-quality`)
+oraz publicznego API `from dbfbridge import ...`. Kompletny przewodnik:
+[docs/pypi-usage.md](../docs/pypi-usage.md). Poniższe skrypty są **przykładami
+dla repozytorium** — zainstalowany pakiet działa bez nich i bez katalogu `src`.
+
+## B. Przykłady repozytorium / development
+
 Skrypty w tym katalogu uruchamiają te same interfejsy, które po instalacji są dostępne
 jako `dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import` i
 `dbf-bridge-quality`. Dodają lokalny katalog `src`, dlatego można ich użyć również przed
-instalacją pakietu.
+instalacją pakietu — to wygodne wyłącznie przy pracy na kodzie repozytorium, a nie
+normalny sposób instalacji dla użytkownika.
 
 | Skrypt | Odpowiednik po instalacji | Zastosowanie |
 |---|---|---|

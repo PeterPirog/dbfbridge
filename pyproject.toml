@@ -32,18 +32,34 @@ classifiers = [
 ]
 dependencies = [
     "dbfread>=2.0.7",
+]
+
+[project.optional-dependencies]
+# DBF/FPT reconstruction (`reconstruct_dbf`, `check_conversion_quality`) is
+# written with the `dbf` writer.  Missing [write] fails typed
+# (OPTIONAL_DEPENDENCY_MISSING) BEFORE any output is created.
+write = ["dbf>=0.99.11"]
+# XLSX export needs xlsxwriter; XLSX input reading for reconstruction needs
+# openpyxl.  XLSX -> DBF reconstruction requires BOTH extras:
+#   pip install "dbfbridge[write,xlsx]"
+xlsx = ["xlsxwriter>=3.2", "openpyxl>=3.1.5"]
+# Pure accelerators.  Missing [fast] NEVER fails: JSON uses the stdlib
+# fallback and CSV uses the Python streaming engine - the logical result is
+# identical, only the engine differs.
+fast = ["orjson>=3.10", "polars>=1.0"]
+# Full user-facing feature set: Direct Read + migration + reconstruction +
+# XLSX + accelerators.  Not a development environment (no pytest/ruff/build).
+all = [
     "dbf>=0.99.11",
     "openpyxl>=3.1.5",
     "orjson>=3.10",
     "polars>=1.0",
     "xlsxwriter>=3.2",
 ]
-
-[project.optional-dependencies]
-# Kept as a backwards-compatible no-op; DBF reconstruction is installed by default.
-import = []
-# Kept as a backwards-compatible no-op; XLSX support is installed by default.
-xlsx = []
+# Historical compatibility alias: [import] used to stand for the
+# reconstruction dependencies (installed by default before 0.3); it now
+# resolves to the same set as [write].
+import = ["dbf>=0.99.11"]
 # Benchmark-only: RSS/IO counters for the Phase 0 benchmark runner.  NOT a
 # runtime dependency of dbfbridge; required only for a versioned --baseline.
 benchmark = ["psutil>=5.9"]
@@ -69,7 +85,7 @@ dbf-bridge-verify = "dbf_bridge.verifier:main"
 Homepage = "https://github.com/PeterPirog/dbfbridge"
 Repository = "https://github.com/PeterPirog/dbfbridge"
 Source = "https://github.com/PeterPirog/dbfbridge"
-Documentation = "https://github.com/PeterPirog/dbfbridge#readme"
+Documentation = "https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md"
 Issues = "https://github.com/PeterPirog/dbfbridge/issues"
 Changelog = "https://github.com/PeterPirog/dbfbridge/blob/main/CHANGELOG.md"
 
