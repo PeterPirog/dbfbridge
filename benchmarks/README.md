@@ -499,3 +499,39 @@ Results from Python 3.12, Polars 1.43.2, orjson 3.11.9, and XlsxWriter 3.2.9
 The CSV fast path uses the DBF schema and validated record count, so it performs
 one Polars streaming pass.  If a progress or cancellation callback is supplied,
 CSV uses the slower Python streaming fallback.
+
+## Performance regression CI
+
+Performance regression checking is automated by
+`.github/workflows/performance-regression.yml` and the committed evidence
+policy `benchmarks/regression/phase-3-regression-policy-v1.json`:
+
+- **PR smoke** (pull_request, path-filtered to `src/`, `pyproject.toml`,
+  `benchmarks/`, this workflow): four low-runtime, stable scenarios
+  (`inspect_schema_1000`, `direct_read_190k`,
+  `direct_read_projection_selected`, `direct_read_projection_all`) compared
+  against the policy — including the same-run
+  `projection_selected_over_all` ratio hard gate.
+- **Weekly full** (`schedule`): all 23 Phase 3 scenarios; correctness is a
+  hard gate, absolute walls are advisory (hosted-runner instances drift by
+  tens of percent — see
+  `docs/architecture/phase-3-regression-ci-calibration.md`), the calibrated
+  same-run ratios (`projection_selected_over_all`, `read_1m_over_190k`,
+  `migration_validate_on_over_off`, `memo_lazy_over_inline`) are the hard
+  regression signals.
+- **workflow_dispatch**: smoke or full for controlled research.
+
+Hard failure rules: scenario FAILED/missing, duplicate scenario names, an
+invalid report or policy, or a hard-gate ratio beyond its calibrated
+envelope on a comparable candidate.  Advisory drift and
+NOT_COMPARABLE environments never fail the job but are always reported in
+the comparison Markdown and the GitHub job summary.  The workflow never
+runs `--baseline` and never writes into `benchmarks/baselines/`.
+
+Refresh the policy ONLY in a dedicated review/commit when a new
+Python/runner/dependency generation lands or an intentional performance
+trade-off is accepted; regenerate with:
+
+```bash
+python -m benchmarks.calibrate_regression --calibration-inputs benchmarks/regression/phase-3-regression-calibration-inputs.json --output benchmarks/regression/phase-3-regression-policy-v1.json
+```

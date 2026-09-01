@@ -1,0 +1,133 @@
+name: Performance regression
+
+# Evidence-based Phase 3 performance-regression checks.  This workflow never
+# publishes or mutates a baseline: canonical baseline work stays in the
+# separate manual `benchmark-phase3.yml` workflow.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "benchmarks/**"
+      - ".github/workflows/performance-regression.yml"
+  schedule:
+    # Weekly full 23-scenario regression (Monday 03:40 UTC).
+    - cron: "40 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Regression profile"
+        required: false
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  performance-regression:
+    name: Phase 3 regression (${{ github.event_name }})
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install project with benchmark extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Show runner provenance
+        run: |
+          python -c "import platform, psutil; print(platform.platform(), platform.python_version(), psutil.virtual_memory().total)"
+
+      - name: Run the Phase 3 PR smoke profile
+        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'smoke') }}
+        shell: bash
+        run: |
+          python -m benchmarks.run_benchmark \
+            --profile phase3 \
+            --warmup 1 \
+            --repetitions 3 \
+            --timeout 900 \
+            --storage-label "github-actions-windows-runner-temp" \
+            --scenario inspect_schema_1000,direct_read_190k,direct_read_projection_selected,direct_read_projection_all
+
+      - name: Run the full Phase 3 profile
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full') }}
+        shell: bash
+        run: |
+          python -m benchmarks.run_benchmark \
+            --profile phase3 \
+            --warmup 1 \
+            --repetitions 3 \
+            --timeout 900 \
+            --storage-label "github-actions-windows-runner-temp"
+
+      - name: Compare against the regression policy (PR smoke)
+        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'smoke') }}
+        shell: bash
+        run: |
+          report=$(ls -t benchmarks/results/phase-3-performance-phase3.json | head -n 1)
+          summary_args=()
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then summary_args=(--summary "$GITHUB_STEP_SUMMARY"); fi
+          python -m benchmarks.compare_phase3_regression \
+            --policy benchmarks/regression/phase-3-regression-policy-v1.json \
+            --candidate "$report" \
+            --mode smoke \
+            --scenarios inspect_schema_1000,direct_read_190k,direct_read_projection_selected,direct_read_projection_all \
+            --output-json benchmarks/results/phase-3-regression.json \
+            --output-md benchmarks/results/phase-3-regression.md \
+            "${summary_args[@]:-}"
+
+      - name: Compare against the regression policy (full)
+        if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full') }}
+        shell: bash
+        run: |
+          report=$(ls -t benchmarks/results/phase-3-performance-phase3.json | head -n 1)
+          summary_args=()
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then summary_args=(--summary "$GITHUB_STEP_SUMMARY"); fi
+          python -m benchmarks.compare_phase3_regression \
+            --policy benchmarks/regression/phase-3-regression-policy-v1.json \
+            --candidate "$report" \
+            --mode full \
+            --output-json benchmarks/results/phase-3-regression.json \
+            --output-md benchmarks/results/phase-3-regression.md \
+            "${summary_args[@]:-}"
+
+      - name: Upload raw benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-benchmark-reports
+          path: |
+            benchmarks/results/phase-3-performance-phase3.*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the regression comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-regression-comparison
+          path: |
+            benchmarks/results/phase-3-regression.json
+            benchmarks/results/phase-3-regression.md
+          if-no-files-found: warn
+          retention-days: 30
