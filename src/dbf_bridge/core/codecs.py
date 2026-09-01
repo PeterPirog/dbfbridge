@@ -40,10 +40,10 @@ def driver_to_encoding(language_driver: int) -> str | None:
 
 
 #: Custom (non-stdlib, non-dbfread) Polish codec names handled by this module.
-CUSTOM_POLISH_CODEC_NAMES: frozenset[str] = frozenset({"mazovia", "piast", "pki"})
+_CUSTOM_POLISH_CODEC_NAMES: frozenset[str] = frozenset({"mazovia", "piast", "pki"})
 
 
-def ensure_encoding_available(encoding: str) -> str:
+def _ensure_encoding_available(encoding: str) -> str:
     """Guarantee *encoding* can be used with ``bytes.decode`` at operation time.
 
     This is the operation-time registration boundary for **explicit** user
@@ -59,7 +59,7 @@ def ensure_encoding_available(encoding: str) -> str:
     boundary.  Calling this at :term:`import time` of ``dbfbridge`` is not
     done: the public facade must not mutate the global codec registry.
     """
-    if encoding.lower() in CUSTOM_POLISH_CODEC_NAMES:
+    if encoding.lower() in _CUSTOM_POLISH_CODEC_NAMES:
         register_polish_codecs()
         return encoding
     codecs.lookup(encoding)
@@ -83,7 +83,7 @@ def decode_with_polish_fallback(
         return "", primary
     # An unregistered custom primary (e.g. "mazovia" without a prior exporter
     # import) must fall back instead of leaking a raw LookupError.
-    if primary.lower() in CUSTOM_POLISH_CODEC_NAMES:
+    if primary.lower() in _CUSTOM_POLISH_CODEC_NAMES:
         register_polish_codecs()
     if errors != "strict":
         return text.decode(primary, errors=errors), primary
@@ -452,12 +452,10 @@ POLISH_FALLBACK_ENCODINGS: tuple[str, ...] = (
 )
 
 __all__ = [
-    "CUSTOM_POLISH_CODEC_NAMES",
     "EXTRA_DRIVER_ENCODINGS",
     "POLISH_FALLBACK_ENCODINGS",
     "TableCodec",
     "decode_with_polish_fallback",
     "driver_to_encoding",
-    "ensure_encoding_available",
     "register_polish_codecs",
 ]

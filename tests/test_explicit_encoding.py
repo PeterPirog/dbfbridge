@@ -94,7 +94,17 @@ def _patch_language_driver(dbf_path: Path, driver: int) -> None:
 
 
 def test_fresh_process_explicit_mazovia_without_exporter_import(tmp_path: Path) -> None:
-    """Direct Read with an explicit override must not depend on import order."""
+    """Direct Read with an explicit override must not depend on import order.
+
+    The fresh subprocess proves the OPERATION-TIME registration contract via
+    the codec lifecycle: after ``import dbfbridge`` the custom codec is NOT
+    registered (so no module-import side effect can have done it), and after
+    the explicit operation it IS available (process-wide).  Note: the public
+    facade legally imports ``dbf_bridge.exporter.reader`` through the
+    importer package chain (LosslessFieldParser), so the historical
+    registrar is not "required or imported" — its absence at import time is
+    proven by the lifecycle, not by sys.modules.
+    """
     from benchmarks.fixtures import generate_encoding
 
     fixture = generate_encoding(tmp_path / "mazovia.dbf", "mazovia")
@@ -102,37 +112,23 @@ def test_fresh_process_explicit_mazovia_without_exporter_import(tmp_path: Path) 
         "import sys, json\n"
         f"sys.path.insert(0, r'{SRC_ROOT}')\n"
         "import dbfbridge\n"
+        "stages = {}\n"
+        "try:\n"
+        "    b'x'.decode('mazovia')\n"
+        "    stages['before'] = 'registered'\n"
+        "except LookupError:\n"
+        "    stages['before'] = 'not-registered'\n"
         f"records = list(dbfbridge.iter_records(r'{fixture.as_posix()}', encoding='mazovia'))\n"
         "assert len(records) == 1\n"
         "text = records[0].values['TEKST']\n"
         "assert 'Żółw' in text and 'Ś' in text, text\n"
-        "print(json.dumps({'records': len(records)}))\n"
-    )
-    completed = subprocess.run(
-        [sys.executable, "-I", "-c", code],
-        capture_output=True,
-        text=True,
-        cwd=str(Path(__file__).parents[1]),
-    )
-    assert completed.returncode == 0, completed.stderr[-1500:]
-    assert json.loads(completed.stdout.strip().splitlines()[-1])["records"] == 1
-    # The exporter (historically the accidental codec registrar) is never
-    # imported by this fresh process.
-    assert "dbf_bridge.exporter" not in code
-
-
-def test_fresh_process_import_dbfbridge_has_no_codec_side_effects() -> None:
-    code = (
-        "import sys, json\n"
-        f"sys.path.insert(0, r'{SRC_ROOT}')\n"
-        "import dbfbridge\n"
         "try:\n"
-        "    b'x'.decode('mazovia')\n"
-        "    registered = True\n"
+        "    b'\\x8c'.decode('mazovia')\n"
+        "    stages['after'] = 'registered'\n"
         "except LookupError:\n"
-        "    registered = False\n"
-        "print(json.dumps({'registered': registered,\n"
-        "                  'exporter': 'dbf_bridge.exporter.reader' in sys.modules}))\n"
+        "    stages['after'] = 'not-registered'\n"
+        "stages['records'] = len(records)\n"
+        "print(json.dumps(stages))\n"
     )
     completed = subprocess.run(
         [sys.executable, "-I", "-c", code],
@@ -142,8 +138,44 @@ def test_fresh_process_import_dbfbridge_has_no_codec_side_effects() -> None:
     )
     assert completed.returncode == 0, completed.stderr[-1500:]
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert payload["registered"] is False, "import dbfbridge must not register Polish codecs"
-    assert payload["exporter"] is False, "import dbfbridge must not import the exporter"
+    # The codec was NOT registered by the import and became available only
+    # through the operation — the historical import-order bug cannot return.
+    assert payload["before"] == "not-registered"
+    assert payload["after"] == "registered"
+    assert payload["records"] == 1
+
+
+def test_operation_time_registration_lifecycle(tmp_path: Path) -> None:
+    """The custom codec becomes available only ON DEMAND (fresh process)."""
+    fixture, _expected = _encoding_fixture(tmp_path, "lifecycle.dbf", "mazovia")
+    code = (
+        "import sys, json\n"
+        f"sys.path.insert(0, r'{SRC_ROOT}')\n"
+        "import dbfbridge\n"
+        "stages = {}\n"
+        "try:\n"
+        "    b'x'.decode('mazovia')\n"
+        "    stages['before'] = 'registered'\n"
+        "except LookupError:\n"
+        "    stages['before'] = 'not-registered'\n"
+        f"records = list(dbfbridge.iter_records(r'{fixture.as_posix()}', encoding='mazovia'))\n"
+        "assert len(records) == 1\n"
+        "try:\n"
+        "    b'\\x8c'.decode('mazovia')\n"
+        "    stages['after'] = 'registered'\n"
+        "except LookupError:\n"
+        "    stages['after'] = 'not-registered'\n"
+        "print(json.dumps(stages))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parents[1]),
+    )
+    assert completed.returncode == 0, completed.stderr[-1500:]
+    stages = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert stages == {"before": "not-registered", "after": "registered"}
 
 
 # ---------------------------------------------------------------------------
@@ -321,4 +353,43 @@ def test_unknown_encoding_error_contract(tmp_path: Path) -> None:
     payload = error.value.to_dict()
     assert payload["code"] == "ENCODING_UNKNOWN"
     assert payload["context"]["encoding"] == "definitely-not-a-real-codec"
+    # The context names the actual offending codec plus the original request.
+    assert payload["context"]["requested_encoding"] == "definitely-not-a-real-codec"
     assert json.dumps(payload)
+
+
+def test_custom_codec_names_are_case_insensitive(tmp_path: Path) -> None:
+    """Mazovia/MAZOVIA/PIAST/PKI behave identically to lower-case names."""
+    for name in ("Mazovia", "MAZOVIA", "PIAST", "PKI"):
+        fixture, expected = _encoding_fixture(tmp_path, f"case_{name}.dbf", name.lower())
+        records = list(iter_records(fixture, encoding=name))
+        assert records[0].values["TEKST"] == expected, name
+
+
+def test_lazy_memo_load_after_stream_closed(tmp_path: Path) -> None:
+    """Lazy load works after the stream is closed: registration is
+    process-wide, so it cannot depend on an open stream."""
+    dbf_path, expected = _memo_fixture_with_mazovia_payload(tmp_path)
+    iterator = iter_records(dbf_path, encoding="mazovia", memo="lazy")
+    record = next(iterator)
+    iterator.close()
+    value = record.values["NOTATKA"]
+    assert isinstance(value, LazyMemoValue)
+    assert value.load() == expected
+
+
+def test_export_explicit_mazovia_migration_regression(tmp_path: Path) -> None:
+    """export_dbf(..., encoding='mazovia') keeps correct Polish text after the
+    module-level registration was removed."""
+    from dbfbridge import export_dbf
+
+    fixture, expected = _encoding_fixture(tmp_path, "export.dbf", "mazovia")
+    output = tmp_path / "out"
+    result = export_dbf(str(fixture), str(output), formats=("jsonl",), encoding="mazovia")
+    result.raise_for_errors()
+    jsonl = output / f"{fixture.stem}.jsonl"
+    assert jsonl.is_file()
+    rows = [
+        json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    assert rows and rows[0]["TEKST"] == expected
