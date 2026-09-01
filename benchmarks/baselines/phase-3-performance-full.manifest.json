@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "benchmark_contract": "phase-3-performance-v1",
+  "profile": "phase3",
+  "run_id": "run-1db4c04a3d4cd661011631d749acaf1a",
+  "generated_at": "2026-09-01T10:44:50.227661+00:00",
+  "git_commit": "783428fb4e3055d15aa0d8f4669016673b84dea8",
+  "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
+  "storage": "github-actions-windows-runner-temp",
+  "artifacts": {
+    "json": {
+      "name": "phase-3-performance-full.json",
+      "sha256": "88fcf32ed88e3e3ff32648f502772eda17f54b7e3347eb24af460af8ff105551"
+    },
+    "markdown": {
+      "name": "phase-3-performance-full.md",
+      "sha256": "66b8a151a68a57614251cd96e7514f819ea727ba5f02bf0a24b4fc6d0eb6cf97"
+    }
+  }
+}
