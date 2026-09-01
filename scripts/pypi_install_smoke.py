@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             code = (
                 "from pathlib import Path\n"
                 "from dbfbridge import export_dbf\n"
-                f"result = export_dbf(r\"{source_dbf.as_posix()}\", r\"{out.as_posix()}\", formats={formats!r}, overwrite=True)\n"
+                f'result = export_dbf(r"{source_dbf.as_posix()}", r"{out.as_posix()}", formats={formats!r}, overwrite=True)\n'
                 "result.raise_for_errors()\n"
                 "print('exported')\n"
             )
