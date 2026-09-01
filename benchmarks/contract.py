@@ -74,8 +74,55 @@ FROZEN_PHASE0_MEASURED_NAMES = frozenset(
 #: placeholders became real MEASURED scenarios in Phase 1).
 FROZEN_SCENARIO_NAMES = frozenset(FROZEN_PHASE0_MEASURED_NAMES | PHASE0_PLACEHOLDER_NAMES)
 
-#: The memo rebuild scenario that must carry its per-sample extras.
+#: The memo rebuild scenario that must carry its per-sample extras (Phase 1
+#: contract).
 MEMO_RECONSTRUCTION_SCENARIO = "reconstruction_memo_190k"
+
+#: The memo rebuild scenario that must carry its per-sample extras (Phase 3
+#: contract).
+PHASE3_MEMO_RECONSTRUCTION_SCENARIO = "migration_jsonl_to_dbf_fpt"
+
+#: The complete Phase 3 BEFORE scenario name contract
+#: (``CONTRACT_PHASE_3`` / profile ``phase3``).  Every name must be
+#: ``MEASURED``; no other name may appear.
+PHASE3_SCENARIO_NAMES = frozenset(
+    {
+        # inspect/schema call-count scaling (1 / 100 / 1000 over one table)
+        "inspect_schema_1",
+        "inspect_schema_100",
+        "inspect_schema_1000",
+        # Direct Read full-stream scaling
+        "direct_read_190k",
+        "direct_read_1m",
+        # memo-heavy Direct Read (inline FPT reads at scale)
+        "direct_read_memo_heavy",
+        # deleted-policy pair
+        "direct_read_deleted_include",
+        "direct_read_deleted_skip",
+        # forced-encoding trio (Polish diacritics)
+        "direct_read_cp1250",
+        "direct_read_cp852",
+        "direct_read_mazovia",
+        # migration pair (DBF -> JSONL, JSONL -> DBF+FPT)
+        "migration_dbf_to_jsonl",
+        "migration_jsonl_to_dbf_fpt",
+        # export validation pair
+        "migration_validate_off",
+        "migration_validate_on",
+        # raw-image pair
+        "direct_read_raw_none",
+        "direct_read_raw_full",
+        # projection pair (selected fields vs every schema field)
+        "direct_read_projection_selected",
+        "direct_read_projection_all",
+        # memo-policy triplet on a small memo table
+        "direct_read_memo_skip",
+        "direct_read_memo_lazy",
+        "direct_read_memo_inline",
+        # cold import cost
+        "cold_import",
+    }
+)
 
 #: Fields required in every sample (measured and warm-up) of a MEASURED
 #: scenario.  Presence is required; individual values may legitimately be
@@ -135,17 +182,23 @@ _MEASUREMENT_DEPENDENCIES: tuple[str, ...] = (
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
+CONTRACT_PHASE_3 = "phase-3-performance-v1"
+
 __all__ = [
+    "CONTRACT_PHASE_3",
     "CONTRACT_PHASE_1",
     "FROZEN_PHASE0_MEASURED_NAMES",
     "FROZEN_SCENARIO_NAMES",
     "MEMO_RECONSTRUCTION_SCENARIO",
     "PHASE0_PLACEHOLDER_NAMES",
+    "PHASE3_MEMO_RECONSTRUCTION_SCENARIO",
+    "PHASE3_SCENARIO_NAMES",
     "build_manifest",
     "environment_comparability",
     "manifest_problems",
     "validate_saved_phase0_before",
     "validate_saved_phase1_after",
+    "validate_saved_phase3_before",
 ]
 
 
@@ -209,7 +262,9 @@ def _shape_problems(payload: Any) -> tuple[int, int, list[str]]:
 
 
 def _scenario_map_problems(
-    payload: Any, allowed_statuses: frozenset[str]
+    payload: Any,
+    allowed_statuses: frozenset[str],
+    allowed_names: frozenset[str] = FROZEN_SCENARIO_NAMES,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     scenarios: dict[str, dict[str, Any]] = {}
     problems: list[str] = []
@@ -225,8 +280,8 @@ def _scenario_map_problems(
             problems.append(f"duplicate scenario name {name!r}")
             continue
         scenarios[name] = entry
-    unknown = set(scenarios) - FROZEN_SCENARIO_NAMES
-    missing = FROZEN_SCENARIO_NAMES - set(scenarios)
+    unknown = set(scenarios) - allowed_names
+    missing = allowed_names - set(scenarios)
     for name in sorted(unknown):
         problems.append(f"unknown scenario outside the frozen name contract: {name!r}")
     for name in sorted(missing):
@@ -238,10 +293,27 @@ def _scenario_map_problems(
     return scenarios, problems
 
 
+def _phase3_scenario_map_problems(
+    payload: Any,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Scenario-map check for the Phase 3 name contract (all MEASURED)."""
+    return _scenario_map_problems(payload, frozenset({"MEASURED"}), PHASE3_SCENARIO_NAMES)
+
+
 def _measured_scenario_problems(
-    name: str, entry: dict[str, Any], warmup: int, repetitions: int
+    name: str,
+    entry: dict[str, Any],
+    warmup: int,
+    repetitions: int,
+    *,
+    memo_extras_scenario: str = MEMO_RECONSTRUCTION_SCENARIO,
 ) -> list[str]:
-    """Check one MEASURED scenario: counts, statuses, metrics, residue."""
+    """Check one MEASURED scenario: counts, statuses, metrics, residue.
+
+    ``memo_extras_scenario`` names the scenario that rebuilds a memo table
+    and must therefore carry the per-sample DBF/FPT extras (Phase 1 uses
+    ``reconstruction_memo_190k``, Phase 3 uses ``migration_jsonl_to_dbf_fpt``).
+    """
     problems: list[str] = []
     samples = entry.get("samples")
     warmup_samples = entry.get("warmup_samples")
@@ -294,7 +366,7 @@ def _measured_scenario_problems(
         if aggregated.get("valid_baseline") is not True:
             problems.append(f"scenario {name!r} is not flagged valid_baseline=true")
 
-    if name == MEMO_RECONSTRUCTION_SCENARIO:
+    if name == memo_extras_scenario:
         for sample in samples:
             if not isinstance(sample, dict):
                 continue
@@ -428,6 +500,59 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
             entry = scenarios[name]
             assert isinstance(entry, dict)
             problems.extend(_measured_scenario_problems(name, entry, warmup, repetitions))
+    problems.extend(_repo_identity_problems(payload))
+    return problems
+
+
+def validate_saved_phase3_before(payload: Any) -> list[str]:
+    """Validate a Phase 3 BEFORE baseline payload against the full contract.
+
+    The Phase 3 contract (``phase-3-performance-v1``) covers the canonical
+    performance BEFORE matrix (profile ``phase3``): every scenario of
+    :data:`PHASE3_SCENARIO_NAMES` must be ``MEASURED`` — inspect/schema
+    call-count scaling (1/100/1000), Direct Read scaling (190k/1M), the
+    memo-heavy inline read, the deleted pair, the Polish-encoding trio, the
+    migration pair (DBF→JSONL, JSONL→DBF+FPT), the export-validation pair,
+    the raw-image pair, the projection pair, the memo-policy triplet and the
+    cold-import cost.  The JSONL→DBF+FPT rebuild scenario must additionally
+    carry the per-sample DBF/FPT extras.
+    """
+    problems: list[str] = []
+    if not isinstance(payload, dict) or not isinstance(payload.get("scenarios"), list):
+        return ["payload is not a benchmark report (needs a 'scenarios' list)"]
+    if _env_of(payload).get("benchmark_contract") != CONTRACT_PHASE_3:
+        problems.append(
+            f"benchmark_contract is {_env_of(payload).get('benchmark_contract')!r}; "
+            f"the Phase 3 BEFORE baseline requires exactly {CONTRACT_PHASE_3!r}"
+        )
+    problems.extend(_run_id_problems(payload))
+    problems.extend(_generated_at_problems(payload))
+    profile = _env_of(payload).get("profile")
+    if profile != "phase3":
+        problems.append(f"environment.profile must be 'phase3', got {profile!r}")
+    warmup, repetitions, shape = _shape_problems(payload)
+    problems.extend(shape)
+    scenarios, map_problems = _phase3_scenario_map_problems(payload)
+    problems.extend(map_problems)
+    measured_now = {n for n, e in scenarios.items() if e.get("status") == "MEASURED"}
+    if measured_now != PHASE3_SCENARIO_NAMES:
+        for name in sorted(measured_now - PHASE3_SCENARIO_NAMES):
+            problems.append(f"unexpected MEASURED scenario {name!r} for the Phase 3 contract")
+        for name in sorted(PHASE3_SCENARIO_NAMES - measured_now):
+            problems.append(f"scenario {name!r} must be MEASURED for the Phase 3 contract")
+    if warmup >= 1 and repetitions >= 3:
+        for name in sorted(measured_now & PHASE3_SCENARIO_NAMES):
+            entry = scenarios[name]
+            assert isinstance(entry, dict)
+            problems.extend(
+                _measured_scenario_problems(
+                    name,
+                    entry,
+                    warmup,
+                    repetitions,
+                    memo_extras_scenario=PHASE3_MEMO_RECONSTRUCTION_SCENARIO,
+                )
+            )
     problems.extend(_repo_identity_problems(payload))
     return problems
 
@@ -594,9 +719,10 @@ def manifest_problems(
         return ["baseline manifest is missing or not a JSON object"]
     if manifest.get("manifest_version") != MANIFEST_VERSION:
         problems.append(f"unsupported manifest_version {manifest.get('manifest_version')!r}")
-    if manifest.get("benchmark_contract") != CONTRACT_PHASE_1:
+    if manifest.get("benchmark_contract") != expected_contract:
         problems.append(
-            f"manifest carries benchmark_contract {manifest.get('benchmark_contract')!r}"
+            f"manifest carries benchmark_contract {manifest.get('benchmark_contract')!r}; "
+            f"expected {expected_contract!r}"
         )
     if manifest.get("profile") != expected_profile:
         problems.append(f"manifest profile {manifest.get('profile')!r} does not match the run")
