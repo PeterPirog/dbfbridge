@@ -37,6 +37,10 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The outer harness may use the checkout's own package for FIXTURE
+# PREPARATION ONLY (canonical Mazovia table).  The fresh venvs never see
+# this code path — their runtime inventory is asserted separately.
+sys.path.insert(0, str(REPO_ROOT / "src"))
 REQUIRED_BASE_ABSENT = ("dbf", "openpyxl", "xlsxwriter", "orjson", "polars")
 
 # ---------------------------------------------------------------------------
