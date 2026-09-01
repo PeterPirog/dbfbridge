@@ -110,6 +110,20 @@ print(schema.companion_cdx_present)
 are created and the source stays byte-identical. CDX companion **presence**
 is reported structurally, but CDX tag names/expressions are not parsed.
 
+Polish legacy data works out of the box:
+
+```python
+from dbfbridge import iter_records
+
+for row in iter_records("data/legacy.dbf", encoding="mazovia"):
+    print(row.values["TEKST"])
+```
+
+Explicit overrides (`cp1250`, `cp852`, `mazovia`, `piast`, `pki`) are handled
+at operation time — no manual codec registration — and an unknown codec
+raises the typed `EncodingUnknownError`. Full encoding contract:
+[the PyPI usage guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md#polish-encodings).
+
 ### 5. Migration quick start (base install)
 
 ```python

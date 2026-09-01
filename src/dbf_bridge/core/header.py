@@ -19,7 +19,7 @@ from datetime import date
 from pathlib import Path
 
 from . import errors
-from .codecs import driver_to_encoding
+from .codecs import _ensure_encoding_available, driver_to_encoding
 from .fields import (
     VFP_VERSIONS,
     classify_field,
@@ -328,6 +328,21 @@ def parse_header(
                 path=dbf_path,
                 context={"language_driver": language_driver},
             )
+        # Validate/prepare the codec BEFORE any descriptor/backlink decoding:
+        # an explicit custom Polish override (e.g. "mazovia") is registered on
+        # demand here, and an unknown codec is a deterministic typed error
+        # independent of the field content.
+        try:
+            resolved_encoding = _ensure_encoding_available(resolved_encoding)
+        except LookupError as exc:
+            # The context always names the ACTUAL offending codec: the user's
+            # explicit override, or (for the auto path) the driver-resolved
+            # name — never a meaningless None.
+            raise errors.EncodingUnknownError(
+                f"Unknown encoding {resolved_encoding!r} (no matching codec is available).",
+                path=dbf_path,
+                context={"encoding": resolved_encoding, "requested_encoding": encoding},
+            ) from exc
 
         # Read the complete declared header region up-front so that the
         # descriptor scan can never run past it into the record area.

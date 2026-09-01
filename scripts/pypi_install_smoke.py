@@ -34,8 +34,13 @@ import sys
 import tempfile
 import venv
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The outer harness may use the checkout's own package for FIXTURE
+# PREPARATION ONLY (canonical Mazovia table).  The fresh venvs never see
+# this code path — their runtime inventory is asserted separately.
+sys.path.insert(0, str(REPO_ROOT / "src"))
 REQUIRED_BASE_ABSENT = ("dbf", "openpyxl", "xlsxwriter", "orjson", "polars")
 
 # ---------------------------------------------------------------------------
@@ -111,7 +116,7 @@ def snippet(venv_dir: Path, code: str, *, cwd: Path | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def prepare_fixtures(work: Path) -> dict[str, Path]:
+def prepare_fixtures(work: Path) -> dict[str, Any]:
     try:
         import dbf  # noqa: F401 - preparation-only dependency
     except ImportError as exc:  # pragma: no cover - environment error
@@ -150,7 +155,70 @@ def prepare_fixtures(work: Path) -> dict[str, Path]:
     for index in range(1, 51):
         memo_table.append({"ID": index, "NOTATKA": f"Mazovia memo {index}: żółw, książka, śliwka."})
     memo_table.close()
-    return {"flat": flat, "memo": memo}
+
+    # A REAL Mazovia-bytes fixture for the explicit-encoding correctness
+    # check.  Built in the OUTER harness with the project's canonical
+    # Mazovia table (never hard-coded bytes), so the fresh venv proves the
+    # installed wheel decodes genuine Mazovia bytes to the exact text.
+    # The expected text is passed to the fresh venv through a UTF-8 JSON
+    # sidecar (never embedded in the -c code, which must stay pure ASCII).
+    expected_text = "Żółw ąęłóńśćźż Książka"
+    mazovia_dbf = work / "fixtures" / "mazovia_real.dbf"
+    mazovia_payload = _encode_with_canonical_mazovia(expected_text)
+    _write_minimal_mazovia_dbf(mazovia_dbf, "TEKST", mazovia_payload, 1)
+    sidecar = work / "fixtures" / "mazovia_expected.json"
+    sidecar.write_text(
+        json.dumps({"expected": expected_text}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return {
+        "flat": flat,
+        "memo": memo,
+        "mazovia_real": mazovia_dbf,
+        "mazovia_sidecar": sidecar,
+    }
+
+
+def _encode_with_canonical_mazovia(text: str) -> bytes:
+    """Encode *text* with the canonical Mazovia table from core.codecs
+    (outer-harness only — the fresh venv never sees this code path)."""
+    from dbf_bridge.core.codecs import _MAZOVIA_TABLE, TableCodec
+
+    codec = TableCodec("mazovia", _MAZOVIA_TABLE)
+    encoded, _consumed = codec.encode(text)
+    return encoded
+
+
+def _write_minimal_mazovia_dbf(
+    path: Path, field_name: str, payload: bytes, record_count: int
+) -> None:
+    """Hand-write a minimal dBase III DBF storing *payload* (already encoded
+    in the target codepage) — stdlib only, no `dbf` writer needed."""
+    import struct
+
+    field_length = len(payload)
+    header_length = 32 + 32 + 1
+    record_length = 1 + field_length
+    header = struct.pack(
+        "<BBBBLHH20x",
+        0x03,  # dBase III (no memo, no VFP 263-byte backlink extension)
+        126,
+        9,
+        1,
+        record_count,
+        header_length,
+        record_length,
+    )
+    descriptor = (
+        field_name.encode("ascii").ljust(11, b"\x00")
+        + b"C"
+        + b"\x00\x00\x00\x00"
+        + bytes([field_length, 0])
+        + b"\x00" * 14
+    )
+    records = (b" " + payload) * record_count
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header + descriptor + b"\x0d" + records + b"\x1a")
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +258,24 @@ def assert_base_contract(venv_dir: Path, wheel: Path, expected_version: str) -> 
 
 
 def direct_read_smoke(venv_dir: Path, fixture: Path, work: Path) -> None:
+    direct_read_contract_smoke(venv_dir, fixture, work)
+
+
+def direct_read_contract_smoke(
+    venv_dir: Path,
+    fixture: Path,
+    work: Path,
+    *,
+    mazovia_fixture: Path | None = None,
+    mazovia_sidecar: Path | None = None,
+) -> None:
+    """Direct Read contract smoke (progress/cancellation/explicit encoding).
+
+    With ``mazovia_fixture``/``mazovia_sidecar`` the smoke additionally
+    decodes REAL Mazovia bytes with the installed wheel and asserts the
+    EXACT expected Polish text — proving correctness, not merely codec
+    registration.
+    """
     fixture_posix = str(fixture).replace("\\", "/")
     code = f"""
 import json, sys
@@ -251,8 +337,55 @@ assert len(page.records) == 100 and page.next_offset == 100
 raw_total = sum(1 for _ in iter_raw_records(source))
 assert raw_total == 200, raw_total
 
+# --- explicit Polish encoding overrides (fresh base venv proves the
+# codecs are registered at operation time, not by import order) ---
+from dbfbridge import EncodingUnknownError as _EncUnknown
+
+# The historical module-level codec registrar must not run at import time:
+# the codec must be UNREGISTERED after `import dbfbridge` and become
+# available only through the operation (registration lifecycle proof).
+try:
+    b"x".decode("mazovia")
+    raise SystemExit("mazovia codec must not be registered by import dbfbridge")
+except LookupError:
+    pass
+
+explicit = list(iter_records(source, encoding="mazovia"))
+assert len(explicit) == 200, len(explicit)
+assert isinstance(explicit[0].values["NAME"], str)
+
+# After the operation the codec IS available (process-wide, on demand).
+b"\\x8c".decode("mazovia")
+
+try:
+    list(iter_records(source, encoding="definitely-not-a-real-codec"))
+except _EncUnknown as unknown:
+    unknown_payload = unknown.to_dict()
+    assert unknown_payload["code"] == "ENCODING_UNKNOWN", unknown_payload
+    json.dumps(unknown_payload)  # JSON-safe
+else:
+    raise SystemExit("unknown codec must raise EncodingUnknownError")
+
 assert not list(Path(r"{work.as_posix()}").glob("**/*.partial"))
 print("direct-read OK")
+"""
+    if mazovia_fixture is not None:
+        # REAL Mazovia bytes decoded by the installed wheel to the EXACT
+        # expected Polish text — correctness, not just registration.  The
+        # expected text comes from the UTF-8 JSON sidecar written by the
+        # outer harness (the -c code stays pure ASCII).
+        code += f"""
+
+# --- REAL Mazovia bytes decoded by the installed wheel ---
+mazovia_source = r"{mazovia_fixture.as_posix()}"
+mazovia_sidecar = r"{mazovia_sidecar.as_posix()}"
+mazovia_expected = json.loads(Path(mazovia_sidecar).read_text(encoding="utf-8"))["expected"]
+
+mazovia_records = list(iter_records(mazovia_source, encoding="mazovia"))
+assert len(mazovia_records) == 1, len(mazovia_records)
+mazovia_text = mazovia_records[0].values["TEKST"].rstrip()
+assert mazovia_text == mazovia_expected, (mazovia_text, mazovia_expected)
+print("mazovia-real-bytes OK")
 """
     snippet(venv_dir, code, cwd=work)
 
@@ -444,15 +577,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wheel: {wheel}")
         print(f"expected version: {expected_version}")
         fixtures = prepare_fixtures(work_root)
-        print(f"fixtures: {sorted(p.name for p in fixtures.values())}")
+        print(f"fixtures: {sorted(str(value) for value in fixtures.values())}")
 
         # 1) base install contract
         base = build_fresh_venv(work_root, "venv-base")
         install_base(base, wheel)
         assert_base_contract(base, wheel, expected_version)
 
-        # 2) Direct Read on the base install
-        direct_read_smoke(base, fixtures["flat"], work_root)
+        # 2) Direct Read on the base install (incl. REAL Mazovia bytes +
+        # exact-text verification with the installed wheel)
+        direct_read_contract_smoke(
+            base,
+            fixtures["flat"],
+            work_root,
+            mazovia_fixture=fixtures["mazovia_real"],
+            mazovia_sidecar=fixtures["mazovia_sidecar"],
+        )
 
         # 3) base migration (JSONL/JSON/CSV with fallbacks)
         migration_smoke(base, fixtures["flat"], work_root)
