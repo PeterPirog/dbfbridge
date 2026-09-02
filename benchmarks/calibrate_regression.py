@@ -180,6 +180,21 @@ def _validate_inputs(inputs: dict[str, Any]) -> list[str]:
             )
         elif len(set(ids)) != len(ids):
             problems.append(f"duplicate calibration IDs in {label}")
+    # Workflow run IDs must be POSITIVE digit strings (a GitHub workflow run
+    # ID is always a positive integer; "0", negatives and non-numeric values
+    # are rejected — not just any isdigit() string).
+    if isinstance(workflow_run_ids, list):
+        for workflow_run_id in workflow_run_ids:
+            if (
+                not isinstance(workflow_run_id, str)
+                or not workflow_run_id.isdigit()
+                or not workflow_run_id.isascii()
+                or workflow_run_id == "0"
+                or (len(workflow_run_id) > 1 and workflow_run_id[0] == "0")
+            ):
+                problems.append(
+                    f"workflow_run_ids entries must be positive digit strings: {workflow_run_id!r}"
+                )
     if isinstance(workflow_run_ids, list) and isinstance(benchmark_run_ids, list):
         if len(workflow_run_ids) != len(benchmark_run_ids):
             problems.append("workflow_run_ids and benchmark_run_ids must pair one-to-one")
@@ -217,6 +232,7 @@ def _validate_inputs(inputs: dict[str, Any]) -> list[str]:
     # Per-run consistency: exact scenario set, finite positive medians,
     # complete provenance, one source commit, one runtime recipe.
     reference = provenance[benchmark_run_ids[0]] if benchmark_run_ids else {}
+    provenance_workflow_ids = set()
     for rid in benchmark_run_ids or []:
         run_medians = medians.get(rid)
         if not isinstance(run_medians, dict) or sorted(run_medians) != sorted(
@@ -258,6 +274,21 @@ def _validate_inputs(inputs: dict[str, Any]) -> list[str]:
             problems.append(
                 f"calibration run {rid!r} provenance.benchmark_run_id does not match its key"
             )
+        # Workflow run IDs must be POSITIVE digit strings (see the top-level
+        # workflow_run_ids validation above).
+        prov_workflow_id = prov.get("workflow_run_id")
+        if (
+            not isinstance(prov_workflow_id, str)
+            or not prov_workflow_id.isdigit()
+            or prov_workflow_id == "0"
+            or (len(prov_workflow_id) > 1 and prov_workflow_id[0] == "0")
+        ):
+            problems.append(
+                f"calibration run {rid!r} provenance.workflow_run_id must be a "
+                f"positive digit string, got {prov_workflow_id!r}"
+            )
+        else:
+            provenance_workflow_ids.add(prov_workflow_id)
         if prov.get("git_commit") != reference_commit:
             problems.append(f"calibration run {rid!r} comes from a different source commit")
         report_sha = prov.get("report_sha256")
@@ -280,6 +311,22 @@ def _validate_inputs(inputs: dict[str, Any]) -> list[str]:
                 problems.append(f"calibration run {rid!r} {label} differs from the reference run")
         if not isinstance(prov.get("packages"), dict):
             problems.append(f"calibration run {rid!r} provenance lacks packages")
+
+    # Duplicate provenance workflow IDs are a pairing integrity failure.
+    if len(provenance_workflow_ids) != len(benchmark_run_ids):
+        problems.append("duplicate workflow_run_id in provenance records")
+
+    # The top-level workflow_run_ids list must be EXACTLY the set of workflow
+    # IDs recorded in the provenance (same count, same membership) - it can
+    # never be decorative metadata.
+    if isinstance(workflow_run_ids, list) and len(set(workflow_run_ids)) == len(workflow_run_ids):
+        top_level_set = set(workflow_run_ids)
+        if top_level_set != set(provenance_workflow_ids):
+            problems.append(
+                "workflow_run_ids must exactly match the provenance workflow IDs "
+                f"(top-level {sorted(top_level_set)!r} vs provenance "
+                f"{sorted(provenance_workflow_ids)!r})"
+            )
     return problems
 
 
@@ -289,7 +336,10 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
     if problems:
         raise ValueError("invalid calibration inputs: " + "; ".join(problems))
 
-    sorted(inputs["workflow_run_ids"])
+    # Benchmark run IDs are DERIVED from the paired provenance records
+    # (sorted by workflow_run_id) — never from an independently sorted
+    # field list, so the workflow/benchmark pairing always comes from the
+    # provenance records themselves.
     benchmark_run_ids: list[str] = sorted(inputs["benchmark_run_ids"])
     medians: dict[str, dict[str, float]] = inputs["per_run_median_wall_seconds"]
     scenarios: list[str] = sorted(inputs["scenarios"])

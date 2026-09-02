@@ -162,6 +162,19 @@ def validate_regression_policy(policy: Any) -> list[str]:
     if not isinstance(policy_parameters, dict):
         problems.append("policy_parameters must be an object")
     else:
+        # Exactly the canonical POLICY_PARAMETERS key set - unknown extra
+        # parameters are INVALID_POLICY (no hidden thresholds).
+        for unknown_name in sorted(set(policy_parameters) - set(POLICY_PARAMETERS)):
+            problems.append(f"policy_parameters has unknown parameter: {unknown_name!r}")
+        # Policy-v1 VALUE integrity: the semantic constants cannot be changed
+        # without changing the canonical POLICY_PARAMETERS model.
+        for name in sorted(set(policy_parameters) & set(POLICY_PARAMETERS)):
+            if policy_parameters[name].get("value") != POLICY_PARAMETERS[name].get("value"):
+                problems.append(
+                    f"policy_parameters.{name}.value must match the canonical "
+                    f"POLICY_PARAMETERS value {POLICY_PARAMETERS[name].get('value')!r} "
+                    "for policy-v1"
+                )
         # Exactly the canonical policy-parameter model from benchmarks.contract.
         for name in sorted(POLICY_PARAMETERS):
             param_entry = policy_parameters.get(name)
