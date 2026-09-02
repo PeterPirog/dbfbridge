@@ -65,6 +65,8 @@ from .contract import (
 )
 from .contract import (
     PHASE3_SCENARIO_NAMES,
+    POLICY_PARAMETERS,
+    RATIO_DEFINITIONS,
     RUN_ID_RE,
     validate_saved_phase3_report,
 )
@@ -73,32 +75,17 @@ POLICY_VERSION = 1
 MIN_CALIBRATION_RUNS = 5
 REQUIRED_CALIBRATION_KIND = "phase-3-regression-calibration-inputs"
 
-#: Ratios computed WITHIN one run (drift-immune): label -> (numerator, denominator).
-RATIO_DEFINITIONS: dict[str, tuple[str, str]] = {
-    "projection_selected_over_all": (
-        "direct_read_projection_selected",
-        "direct_read_projection_all",
-    ),
-    "read_1m_over_190k": ("direct_read_1m", "direct_read_190k"),
-    "memo_skip_over_lazy": ("direct_read_memo_skip", "direct_read_memo_lazy"),
-    "memo_lazy_over_inline": ("direct_read_memo_lazy", "direct_read_memo_inline"),
-    "migration_validate_on_over_off": ("migration_validate_on", "migration_validate_off"),
-}
-
 #: A relative ratio may be a hard gate when its calibrated envelope is tight
-#: enough to be discriminating (envelope_upper / center <= this bound).
-HARD_GATE_MAX_ENVELOPE_RATIO = 1.5
+#: enough to be discriminating (envelope_upper / center <= this bound); the
+#: value lives in the canonical POLICY_PARAMETERS model (contract.py).
+HARD_GATE_MAX_ENVELOPE_RATIO = POLICY_PARAMETERS["hard_gate_discrimination_bound"]["value"]
 
-#: Small-sample safety factor applied on top of the worst observed
-#: calibration value.  Five calibration runs under-estimate the tail of the
-#: inter-run distribution, so the envelope must exceed the worst observation
-#: by this documented factor (otherwise an identical-code candidate run can
-#: false-positive, as measured during the first workflow self-test).
-OBSERVED_MAX_SAFETY_FACTOR = 1.15
+#: Small-sample guard band applied on top of the worst observed calibration
+#: value; the value lives in the canonical POLICY_PARAMETERS model.
+OBSERVED_MAX_SAFETY_FACTOR = POLICY_PARAMETERS["small_sample_guard_band"]["value"]
 
 __all__ = [
     "POLICY_VERSION",
-    "RATIO_DEFINITIONS",
     "build_policy",
     "main",
 ]
@@ -300,7 +287,7 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
     if problems:
         raise ValueError("invalid calibration inputs: " + "; ".join(problems))
 
-    workflow_run_ids: list[str] = sorted(inputs["workflow_run_ids"])
+    sorted(inputs["workflow_run_ids"])
     benchmark_run_ids: list[str] = sorted(inputs["benchmark_run_ids"])
     medians: dict[str, dict[str, float]] = inputs["per_run_median_wall_seconds"]
     scenarios: list[str] = sorted(inputs["scenarios"])
@@ -361,13 +348,33 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
     )
     reference = provenance[benchmark_run_ids[0]]
 
+    # Calibration provenance as PAIRED records: each entry is one concrete
+    # measurement artifact.  This is the source of truth; the flat
+    # generated_from_* lists are derived from it below and validated for
+    # exact consistency.
+    calibration_sources = sorted(
+        (
+            {
+                "workflow_run_id": provenance[rid]["workflow_run_id"],
+                "benchmark_run_id": rid,
+                "report_sha256": provenance[rid]["report_sha256"],
+                "git_commit": provenance[rid]["git_commit"],
+            }
+            for rid in benchmark_run_ids
+        ),
+        key=lambda record: record["workflow_run_id"],
+    )
+    derived_workflow_ids = [record["workflow_run_id"] for record in calibration_sources]
+    derived_benchmark_ids = [record["benchmark_run_id"] for record in calibration_sources]
+
     return {
         "policy_version": POLICY_VERSION,
         "benchmark_contract": BENCHMARK_CONTRACT,
         "reference_commit": inputs["reference_commit"],
-        "generated_from_workflow_run_ids": workflow_run_ids,
-        "generated_from_benchmark_run_ids": benchmark_run_ids,
-        "calibration_count": len(workflow_run_ids),
+        "calibration_sources": calibration_sources,
+        "generated_from_workflow_run_ids": derived_workflow_ids,
+        "generated_from_benchmark_run_ids": derived_benchmark_ids,
+        "calibration_count": len(calibration_sources),
         "hardware_pool": {
             "observed_processor_signatures": observed_processors,
             "observed_cpu_counts": observed_cpu_counts,
@@ -430,8 +437,21 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
                 "scenario wall is advisory_only; unstable ratios are advisory_only"
             ),
             "policy_parameters": {
+                "hard_gate_discrimination_bound": {
+                    "rationale": (
+                        "a ratio qualifies as a hard gate only when its envelope "
+                        "stays under a 1.5x shift of the calibration center; "
+                        "looser envelopes cannot discriminate a real regression "
+                        "from observed noise and are advisory_only"
+                    ),
+                    "validation_evidence": (
+                        "memo_skip_over_lazy observed a 2x inter-run outlier "
+                        "(1.510 vs 0.77) - its envelope reaches 2.23x center, so "
+                        "it is honestly classified advisory_only"
+                    ),
+                    "value": 1.5,
+                },
                 "mad_multiplier": {
-                    "value": 3,
                     "rationale": (
                         "envelope floor: three MADs above the calibration median; "
                         "a robust guard that covers the observed spread of stable "
@@ -441,9 +461,9 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
                         "5-run calibration: no stable ratio exceeded 3 MADs "
                         "within the observed range"
                     ),
+                    "value": 3,
                 },
                 "small_sample_guard_band": {
-                    "value": 1.15,
                     "rationale": (
                         "envelope must exceed the WORST observed calibration value "
                         "by 15%: five runs under-estimate the inter-run tail; the "
@@ -455,20 +475,7 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
                         "0.6655 vs the pre-fix envelope 0.6363; the widened "
                         "envelope 0.7317 passed all subsequent same-source runs"
                     ),
-                },
-                "hard_gate_discrimination_bound": {
-                    "value": 1.5,
-                    "rationale": (
-                        "a ratio qualifies as a hard gate only when its envelope "
-                        "stays under a 1.5x shift of the calibration center; "
-                        "looser envelopes cannot discriminate a real regression "
-                        "from observed noise and are advisory_only"
-                    ),
-                    "validation_evidence": (
-                        "memo_skip_over_lazy observed a 2x inter-run outlier "
-                        "(1.510 vs 0.77) — its envelope reaches 2.23x center, so "
-                        "it is honestly classified advisory_only"
-                    ),
+                    "value": 1.15,
                 },
             },
         },

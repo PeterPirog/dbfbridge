@@ -42,6 +42,8 @@ from typing import Any
 from .contract import (
     CONTRACT_PHASE_3,
     PHASE3_SCENARIO_NAMES,
+    POLICY_PARAMETERS,
+    RATIO_DEFINITIONS,
     RUN_ID_RE,
     validate_phase3_regression_smoke_report,
     validate_saved_phase3_report,
@@ -62,6 +64,24 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # finite-value helpers
 # ---------------------------------------------------------------------------
+
+
+def _finite_at_least_one(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 1
+    )
+
+
+def _finite_above_one(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 1
+    )
 
 
 def _finite_positive(value: Any) -> bool:
@@ -131,6 +151,7 @@ def validate_regression_policy(policy: Any) -> list[str]:
     ):
         problems.append(f"reference_commit must be a full 40-hex commit: {reference_commit!r}")
     derivation = policy.get("derivation")
+    policy_parameters = (derivation or {}).get("policy_parameters")
     if not isinstance(derivation, dict) or not all(
         key in derivation for key in ("center", "dispersion", "envelope_upper", "policy_parameters")
     ):
@@ -138,6 +159,36 @@ def validate_regression_policy(policy: Any) -> list[str]:
             "policy is missing derivation metadata "
             "(center/dispersion/envelope_upper/policy_parameters)"
         )
+    if not isinstance(policy_parameters, dict):
+        problems.append("policy_parameters must be an object")
+    else:
+        # Exactly the canonical policy-parameter model from benchmarks.contract.
+        for name in sorted(POLICY_PARAMETERS):
+            param_entry = policy_parameters.get(name)
+            if not isinstance(param_entry, dict):
+                problems.append(f"policy_parameters.{name} is missing")
+                continue
+            if name == "mad_multiplier" and not _finite_positive(param_entry.get("value")):
+                problems.append(
+                    f"policy_parameters.mad_multiplier must be finite > 0, got {param_entry.get('value')!r}"
+                )
+            if name == "small_sample_guard_band" and not _finite_at_least_one(
+                param_entry.get("value")
+            ):
+                problems.append(
+                    "policy_parameters.small_sample_guard_band must be finite >= 1, "
+                    f"got {param_entry.get('value')!r}"
+                )
+            if name == "hard_gate_discrimination_bound" and not _finite_above_one(
+                param_entry.get("value")
+            ):
+                problems.append(
+                    "policy_parameters.hard_gate_discrimination_bound must be finite > 1, "
+                    f"got {param_entry.get('value')!r}"
+                )
+            for field in ("rationale", "validation_evidence"):
+                if not isinstance(param_entry.get(field), str) or not param_entry.get(field):
+                    problems.append(f"policy_parameters.{name}.{field} must be a non-empty string")
 
     scenario_calibration = policy.get("scenario_calibration")
     full_scenarios = policy.get("full_scheduled_scenarios")
@@ -166,6 +217,12 @@ def validate_regression_policy(policy: Any) -> list[str]:
             problems.append(f"scenario {name!r} has invalid max_observed_deviation")
         if entry.get("classification") not in ("hard_gate", "advisory_only"):
             problems.append(f"scenario {name!r} has unknown classification")
+        if entry.get("classification") != "advisory_only":
+            problems.append(
+                f"scenario {name!r} classification must be 'advisory_only' "
+                "(absolute wall times never hard-fail), got "
+                f"{entry.get('classification')!r}"
+            )
         values = entry.get("values")
         if not isinstance(values, list) or len(values) != calibration_count:
             problems.append(
@@ -184,11 +241,57 @@ def validate_regression_policy(policy: Any) -> list[str]:
         problems.append(
             "pr_smoke_scenarios must be a non-empty unique subset of PHASE3_SCENARIO_NAMES"
         )
+    else:
+        # PR smoke must actually exercise at least one active hard gate: the
+        # selected subset must cover the numerator AND denominator of at
+        # least one hard_gate ratio.
+        discriminating_bound = (
+            (policy.get("derivation") or {})
+            .get("policy_parameters", {})
+            .get("hard_gate_discrimination_bound", {})
+            .get("value", 1.5)
+        )
+        active_hard_gates = [
+            ratio_entry
+            for ratio_entry in (policy.get("ratio_calibration") or {}).values()
+            if isinstance(ratio_entry, dict)
+            and ratio_entry.get("classification") == "hard_gate"
+            and (ratio_entry.get("envelope_upper") or 0)
+            <= (ratio_entry.get("center") or 0) * discriminating_bound
+        ]
+        covered = any(
+            ratio_entry["numerator"] in pr_smoke_scenarios
+            and ratio_entry["denominator"] in pr_smoke_scenarios
+            for ratio_entry in active_hard_gates
+        )
+        if active_hard_gates and not covered:
+            problems.append(
+                "pr_smoke_scenarios must cover the numerator and denominator of "
+                "at least one active hard_gate ratio"
+            )
 
     ratio_calibration = policy.get("ratio_calibration")
     if not isinstance(ratio_calibration, dict):
         problems.append("ratio_calibration missing")
         return problems
+    if sorted(ratio_calibration) != sorted(RATIO_DEFINITIONS):
+        problems.append(
+            "ratio_calibration must cover exactly RATIO_DEFINITIONS "
+            f"({sorted(set(RATIO_DEFINITIONS) - set(ratio_calibration))} missing, "
+            f"{sorted(set(ratio_calibration) - set(RATIO_DEFINITIONS))} unknown); "
+            "an empty or partial ratio set would silently disable regression gates"
+        )
+        return problems
+    for label, (ratio_numerator, ratio_denominator) in sorted(RATIO_DEFINITIONS.items()):
+        entry = ratio_calibration[label]
+        if (
+            entry.get("numerator") != ratio_numerator
+            or entry.get("denominator") != ratio_denominator
+        ):
+            problems.append(
+                f"ratio {label!r} must pair {ratio_numerator!r}/{ratio_denominator!r}, "
+                f"got {entry.get('numerator')!r}/{entry.get('denominator')!r}"
+            )
     for label, entry in ratio_calibration.items():
         if not isinstance(entry, dict):
             problems.append(f"ratio {label!r} entry is malformed")
@@ -214,6 +317,188 @@ def validate_regression_policy(policy: Any) -> list[str]:
             problems.append(f"ratio {label!r} needs exactly {calibration_count} calibration values")
         elif any(not _finite_positive(value) for value in values):
             problems.append(f"ratio {label!r} has non-finite/non-positive values")
+
+    # Classification integrity: hard_gate iff the calibrated envelope stays
+    # under center * hard_gate_discrimination_bound.  A policy cannot
+    # silently disable (or enable) a hard gate without changing data or
+    # policy parameters.
+    bound = (
+        ((policy.get("derivation") or {}).get("policy_parameters") or {})
+        .get("hard_gate_discrimination_bound", {})
+        .get("value", 1.5)
+    )
+    for label, entry in ratio_calibration.items():
+        center = entry.get("center")
+        envelope = entry.get("envelope_upper")
+        if not _finite_positive(center) or not _finite_positive(envelope):
+            continue
+        expected_classification = "hard_gate" if envelope <= center * bound else "advisory_only"
+        if entry.get("classification") != expected_classification:
+            problems.append(
+                f"ratio {label!r} classification {entry.get('classification')!r} "
+                f"violates the canonical rule (envelope_upper {envelope!r} vs "
+                f"center * {bound!r} => {expected_classification!r})"
+            )
+
+    # Absolute scenario wall times are advisory_only by design — the policy
+    # cannot secretly promote them to hard gates.
+    for name, entry in scenario_calibration.items():
+        if entry.get("classification") != "advisory_only":
+            problems.append(
+                f"scenario {name!r} classification must be 'advisory_only' "
+                f"(absolute wall times never hard-fail), got "
+                f"{entry.get('classification')!r}"
+            )
+    # Calibration provenance as PAIRED records - the source of truth for
+    # workflow/benchmark run identity, report hashes and the source commit.
+    calibration_sources = policy.get("calibration_sources")
+    if not isinstance(calibration_sources, list) or len(calibration_sources) != calibration_count:
+        problems.append(
+            f"calibration_sources must be a list of exactly {calibration_count} paired records"
+        )
+        return problems
+    if not all(isinstance(record, dict) for record in calibration_sources):
+        problems.append("calibration_sources entries must be objects")
+        return problems
+    seen_workflow = set()
+    seen_benchmark = set()
+    for record in calibration_sources:
+        workflow_id = record.get("workflow_run_id")
+        benchmark_run_id = record.get("benchmark_run_id")
+        report_sha256 = record.get("report_sha256")
+        git_commit = record.get("git_commit")
+        if not isinstance(workflow_id, str) or not workflow_id.isdigit():
+            problems.append(
+                f"calibration_sources workflow_run_id must be positive digits: {workflow_id!r}"
+            )
+        else:
+            seen_workflow.add(workflow_id)
+        if not isinstance(benchmark_run_id, str) or not RUN_ID_RE.match(benchmark_run_id):
+            problems.append(
+                f"calibration_sources has invalid benchmark_run_id: {benchmark_run_id!r}"
+            )
+        else:
+            seen_benchmark.add(benchmark_run_id)
+        if (
+            not isinstance(report_sha256, str)
+            or len(report_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in report_sha256)
+        ):
+            problems.append(f"calibration_sources has invalid report_sha256: {report_sha256!r}")
+        if (
+            not isinstance(git_commit, str)
+            or len(git_commit) != 40
+            or any(character not in "0123456789abcdef" for character in git_commit)
+        ):
+            problems.append(f"calibration_sources has invalid git_commit: {git_commit!r}")
+        elif git_commit != reference_commit:
+            problems.append("calibration_sources git_commit differs from reference_commit")
+    if len(seen_workflow) != calibration_count:
+        problems.append("calibration_sources workflow_run_ids must be unique")
+    if len(seen_benchmark) != calibration_count:
+        problems.append("calibration_sources benchmark_run_ids must be unique")
+    # generated_from_* lists are DERIVED data and must stay exactly consistent.
+    derived_workflow = [record["workflow_run_id"] for record in calibration_sources]
+    derived_benchmark = [record["benchmark_run_id"] for record in calibration_sources]
+    if (
+        list(workflow_run_ids or []) != derived_workflow
+        or list(benchmark_run_ids or []) != derived_benchmark
+    ):
+        problems.append(
+            "generated_from_workflow_run_ids / generated_from_benchmark_run_ids "
+            "must be derived from calibration_sources"
+        )
+
+    # package_under_test: name must be dbfbridge; reference_version must match
+    # the calibrated environment; the comparator reads the NAME from here.
+    package_under_test = policy.get("package_under_test")
+    if not isinstance(package_under_test, dict):
+        problems.append("package_under_test must be an object")
+    else:
+        if package_under_test.get("name") != "dbfbridge":
+            problems.append(
+                "package_under_test.name must be 'dbfbridge', got "
+                f"{package_under_test.get('name')!r}"
+            )
+        for field in ("reference_version", "note"):
+            if not isinstance(package_under_test.get(field), str) or not package_under_test.get(
+                field
+            ):
+                problems.append(f"package_under_test.{field} must be a non-empty string")
+        policy_packages = (policy.get("environment") or {}).get("packages") or {}
+        if package_under_test.get("name") and package_under_test.get("name") not in policy_packages:
+            problems.append("package_under_test.name must be present in environment.packages")
+        elif package_under_test.get("name") and policy_packages.get(
+            package_under_test.get("name")
+        ) != package_under_test.get("reference_version"):
+            problems.append("package_under_test.reference_version must match environment.packages")
+
+    # hardware_pool: strict shape - malformed pools must not silently change
+    # comparability.
+    hardware_pool = policy.get("hardware_pool")
+    if not isinstance(hardware_pool, dict):
+        problems.append("hardware_pool must be an object")
+    else:
+        processors = hardware_pool.get("observed_processor_signatures")
+        cpu_counts = hardware_pool.get("observed_cpu_counts")
+        memory = hardware_pool.get("observed_physical_memory_bytes")
+        note = hardware_pool.get("note")
+        if (
+            not isinstance(processors, list)
+            or not processors
+            or len(set(processors)) != len(processors)
+            or not all(isinstance(processor, str) and processor for processor in processors)
+        ):
+            problems.append(
+                "hardware_pool.observed_processor_signatures must be non-empty unique strings"
+            )
+        if (
+            not isinstance(cpu_counts, list)
+            or not cpu_counts
+            or len(set(cpu_counts)) != len(cpu_counts)
+            or not all(
+                isinstance(count, int) and not isinstance(count, bool) and count > 0
+                for count in cpu_counts
+            )
+        ):
+            problems.append(
+                "hardware_pool.observed_cpu_counts must be non-empty unique positive ints"
+            )
+        if (
+            not isinstance(memory, list)
+            or not memory
+            or not all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in memory
+            )
+        ):
+            problems.append(
+                "hardware_pool.observed_physical_memory_bytes must be non-empty positive ints"
+            )
+        if not isinstance(note, str) or not note:
+            problems.append("hardware_pool.note must be a non-empty string")
+
+    # environment metadata must be complete and non-empty
+    policy_environment = policy.get("environment")
+    if not isinstance(policy_environment, dict):
+        problems.append("environment must be an object")
+    else:
+        for field in ("python", "os", "arch", "storage_label", "runner_image"):
+            if not isinstance(policy_environment.get(field), str) or not policy_environment.get(
+                field
+            ):
+                problems.append(f"environment.{field} must be a non-empty string")
+        env_packages = policy_environment.get("packages")
+        if (
+            not isinstance(env_packages, dict)
+            or not env_packages
+            or not all(
+                isinstance(name, str) and name and isinstance(version, str) and version
+                for name, version in env_packages.items()
+            )
+        ):
+            problems.append("environment.packages must be a non-empty mapping of non-empty strings")
+
     return problems
 
 
