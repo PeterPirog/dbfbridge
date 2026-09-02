@@ -267,8 +267,8 @@ for record in iter_records("data/customer.dbf", memo="lazy"):
     value = record.values.get("NOTES")
 
     if isinstance(value, LazyMemoValue):
-        print(value.to_dict())  # metadata only: table, field, memo block
-        text = value.load()  # explicit FPT read, per value
+        print(value.to_dict())   # metadata only: table, field, memo block
+        text = value.load()      # explicit FPT read, per value
 ```
 
 `load()` is explicit and reads the memo block on demand. It is **not** a
@@ -420,8 +420,8 @@ from dbfbridge import DirectReadError
 try:
     ...
 except DirectReadError as exc:
-    print(exc.code)  # e.g. DBF_TRUNCATED, FPT_REQUIRED_MISSING
-    print(exc.to_dict())  # JSON-safe: code, message, path, context
+    print(exc.code)      # e.g. DBF_TRUNCATED, FPT_REQUIRED_MISSING
+    print(exc.to_dict()) # JSON-safe: code, message, path, context
 ```
 
 Missing optional dependencies (never for `[fast]`) raise:
@@ -432,10 +432,10 @@ from dbfbridge import OptionalDependencyMissingError
 try:
     ...
 except OptionalDependencyMissingError as error:
-    print(error.code)  # OPTIONAL_DEPENDENCY_MISSING
-    print(error.dependency)  # e.g. dbf
-    print(error.extra)  # e.g. write
-    print(error.operation)  # e.g. reconstruct_dbf
+    print(error.code)             # OPTIONAL_DEPENDENCY_MISSING
+    print(error.dependency)       # e.g. dbf
+    print(error.extra)            # e.g. write
+    print(error.operation)        # e.g. reconstruct_dbf
     print(error.install_command)  # python -m pip install "dbfbridge[write]"
 ```
 
@@ -525,7 +525,7 @@ try:
         if some_condition():
             state["stop"] = True
 except ReadCancelledError as exc:
-    print(exc.code)  # READ_CANCELLED
+    print(exc.code)       # READ_CANCELLED
     print(exc.to_dict())  # JSON-safe progress context
 ```
 
@@ -553,7 +553,7 @@ Semantics:
     "code": "READ_CANCELLED",
     "path": "data/customer.dbf",
     "context": {
-        "offset": 0,  # physical start index of this call
+        "offset": 0,                # physical start index of this call
         "next_physical_index": 10000,
         "scanned": 10000,
         "yielded": 10000,
