@@ -1,0 +1,633 @@
+{
+  "benchmark_contract": "phase-3-performance-v1",
+  "calibration_count": 5,
+  "calibration_sources": [
+    {
+      "benchmark_run_id": "run-7b565ca935c32bc9c2d4c33566789e9e",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "49870811e70b83f9b815b5997e83a4e3d5d5c58bfdb42949d2cab34d6e0681b4",
+      "workflow_run_id": "33546526573"
+    },
+    {
+      "benchmark_run_id": "run-10372b9d3b8dd26080979c6f29161004",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "fccbfb819387ec03290fa6a74dc96be6c4831c2036691117678075a6ef5cddd1",
+      "workflow_run_id": "33546534607"
+    },
+    {
+      "benchmark_run_id": "run-c21e6709cec53372e4d881b5fd609e0c",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "6c5dc595ca6e291a9c621824b68d67d5fbc3dc23e990f9b40da06ac8298c89b2",
+      "workflow_run_id": "33546542658"
+    },
+    {
+      "benchmark_run_id": "run-1b84e5312f25847fc791fb09341348c5",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "3423fa42eca96fec41d20bb4c0030cabe697fa8888168febdbf92609e397ed76",
+      "workflow_run_id": "33546551328"
+    },
+    {
+      "benchmark_run_id": "run-8a6289eb63fb465bfbf7c127eaa983b3",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "44af55e73d10a39b742a5db9617853abce3184dfb8034f89eff3f546522a3311",
+      "workflow_run_id": "33546559054"
+    }
+  ],
+  "derivation": {
+    "absolute_wall_policy": "advisory_only — GitHub-hosted runner instances drift by tens of percent across all scenarios (measured: per-run median wall ratios 0.67x-1.00x in this calibration), so absolute wall time can never hard-fail a merge",
+    "center": "median of per-run aggregated.median_wall_seconds over >= 5 calibration runs",
+    "classification_rule": "ratio hard_gate iff envelope_upper <= center * 1.5; every absolute scenario wall is advisory_only; unstable ratios are advisory_only",
+    "dispersion": "MAD (median absolute deviation) of those run medians",
+    "envelope_upper": "max(center + max(3 * mad, max_observed_deviation), max_observed_value * 1.15) — covers the observed spread AND a documented small-sample guard band over the worst observation",
+    "policy_parameters": {
+      "hard_gate_discrimination_bound": {
+        "rationale": "a ratio qualifies as a hard gate only when its envelope stays under a 1.5x shift of the calibration center; looser envelopes cannot discriminate a real regression from observed noise and are advisory_only",
+        "validation_evidence": "memo_skip_over_lazy observed a 2x inter-run outlier (1.510 vs 0.77) - its envelope reaches 2.23x center, so it is honestly classified advisory_only",
+        "value": 1.5
+      },
+      "mad_multiplier": {
+        "rationale": "envelope floor: three MADs above the calibration median; a robust guard that covers the observed spread of stable ratios (relMAD 0.9-6.7%) several times over",
+        "validation_evidence": "5-run calibration: no stable ratio exceeded 3 MADs within the observed range",
+        "value": 3
+      },
+      "small_sample_guard_band": {
+        "rationale": "envelope must exceed the WORST observed calibration value by 15%: five runs under-estimate the inter-run tail; the first self-test run on identical source landed beyond the too-tight 5-sample envelope, proving the guard is needed",
+        "validation_evidence": "self-test run 33553669363 (identical src) produced ratio 0.6655 vs the pre-fix envelope 0.6363; the widened envelope 0.7317 passed all subsequent same-source runs",
+        "value": 1.15
+      }
+    },
+    "ratio_hard_gate_rule": "a same-run ratio is a hard regression signal when it exceeds envelope_upper on a comparable candidate; a ratio qualifies as a hard gate only when envelope_upper <= center * 1.5"
+  },
+  "environment": {
+    "arch": "AMD64",
+    "os": "Windows 2025Server 10.0.26100",
+    "packages": {
+      "dbf": "0.99.11",
+      "dbfbridge": "0.2.0",
+      "dbfread": "2.0.7",
+      "openpyxl": "3.1.5",
+      "orjson": "3.12.0",
+      "polars": "1.44.1",
+      "psutil": "7.2.2",
+      "xlsxwriter": "3.2.9"
+    },
+    "python": "3.12.10",
+    "runner_image": "github-actions-windows-x64-win25-vs202620260824.214.3",
+    "storage_label": "github-actions-windows-runner-temp"
+  },
+  "full_scheduled_scenarios": [
+    "cold_import",
+    "direct_read_190k",
+    "direct_read_1m",
+    "direct_read_cp1250",
+    "direct_read_cp852",
+    "direct_read_deleted_include",
+    "direct_read_deleted_skip",
+    "direct_read_mazovia",
+    "direct_read_memo_heavy",
+    "direct_read_memo_inline",
+    "direct_read_memo_lazy",
+    "direct_read_memo_skip",
+    "direct_read_projection_all",
+    "direct_read_projection_selected",
+    "direct_read_raw_full",
+    "direct_read_raw_none",
+    "inspect_schema_1",
+    "inspect_schema_100",
+    "inspect_schema_1000",
+    "migration_dbf_to_jsonl",
+    "migration_jsonl_to_dbf_fpt",
+    "migration_validate_off",
+    "migration_validate_on"
+  ],
+  "generated_from_benchmark_run_ids": [
+    "run-7b565ca935c32bc9c2d4c33566789e9e",
+    "run-10372b9d3b8dd26080979c6f29161004",
+    "run-c21e6709cec53372e4d881b5fd609e0c",
+    "run-1b84e5312f25847fc791fb09341348c5",
+    "run-8a6289eb63fb465bfbf7c127eaa983b3"
+  ],
+  "generated_from_workflow_run_ids": [
+    "33546526573",
+    "33546534607",
+    "33546542658",
+    "33546551328",
+    "33546559054"
+  ],
+  "hardware_pool": {
+    "note": "the same hosted runner image may land on different CPU families; a candidate outside this pool is PARTIALLY_COMPARABLE (correctness stays hard, performance ratios advisory)",
+    "observed_cpu_counts": [
+      4
+    ],
+    "observed_physical_memory_bytes": [
+      17174360064
+    ],
+    "observed_processor_signatures": [
+      "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel"
+    ]
+  },
+  "package_under_test": {
+    "name": "dbfbridge",
+    "note": "the version of the package under test is PROVENANCE, not a comparability requirement: different dbfbridge versions are exactly what the regression CI compares.  Only external measurement dependencies gate comparability.",
+    "reference_version": "0.2.0"
+  },
+  "policy_version": 1,
+  "pr_smoke_scenarios": [
+    "inspect_schema_1000",
+    "direct_read_190k",
+    "direct_read_projection_selected",
+    "direct_read_projection_all"
+  ],
+  "ratio_calibration": {
+    "memo_lazy_over_inline": {
+      "center": 0.45735681597559286,
+      "classification": "hard_gate",
+      "denominator": "direct_read_memo_inline",
+      "envelope_upper": 0.5816350220669364,
+      "mad": 0.02789143391466431,
+      "max": 0.5057695844060317,
+      "max_observed_deviation": 0.10217722067566737,
+      "min": 0.3551795952999255,
+      "numerator": "direct_read_memo_lazy",
+      "relative_mad": 0.06098396905962533,
+      "values": [
+        0.4503217756763856,
+        0.45735681597559286,
+        0.48524824989025717,
+        0.5057695844060317,
+        0.3551795952999255
+      ]
+    },
+    "memo_skip_over_lazy": {
+      "center": 0.7798409750987955,
+      "classification": "advisory_only",
+      "denominator": "direct_read_memo_lazy",
+      "envelope_upper": 1.7362385985232374,
+      "mad": 0.011263654868393758,
+      "max": 1.5097726943680325,
+      "max_observed_deviation": 0.7299317192692371,
+      "min": 0.7200836249602327,
+      "numerator": "direct_read_memo_skip",
+      "relative_mad": 0.014443527883318522,
+      "values": [
+        0.7911046299671892,
+        0.7743581968870022,
+        0.7798409750987955,
+        0.7200836249602327,
+        1.5097726943680325
+      ]
+    },
+    "migration_validate_on_over_off": {
+      "center": 1.1550496374338863,
+      "classification": "hard_gate",
+      "denominator": "migration_validate_off",
+      "envelope_upper": 1.4610528737788995,
+      "mad": 0.04580746750413156,
+      "max": 1.2704807598077388,
+      "max_observed_deviation": 0.11543112237385245,
+      "min": 1.1092421699297548,
+      "numerator": "migration_validate_on",
+      "relative_mad": 0.03965844065879249,
+      "values": [
+        1.2704807598077388,
+        1.1092421699297548,
+        1.1550496374338863,
+        1.1542052332123582,
+        1.2317706437276161
+      ]
+    },
+    "projection_selected_over_all": {
+      "center": 0.6000247841595424,
+      "classification": "hard_gate",
+      "denominator": "direct_read_projection_all",
+      "envelope_upper": 0.7317320469132017,
+      "mad": 0.005351921730854192,
+      "max": 0.6362887364462624,
+      "max_observed_deviation": 0.03626395228671997,
+      "min": 0.5850033334532085,
+      "numerator": "direct_read_projection_selected",
+      "relative_mad": 0.008919501114192565,
+      "values": [
+        0.6362887364462624,
+        0.6000247841595424,
+        0.5850033334532085,
+        0.5946728624286882,
+        0.6006821641810184
+      ]
+    },
+    "read_1m_over_190k": {
+      "center": 5.1992819674800375,
+      "classification": "hard_gate",
+      "denominator": "direct_read_190k",
+      "envelope_upper": 6.09153789490612,
+      "mad": 0.09770750635137126,
+      "max": 5.296989473831409,
+      "max_observed_deviation": 0.21932025954113765,
+      "min": 4.9799617079389,
+      "numerator": "direct_read_1m",
+      "relative_mad": 0.018792499995672993,
+      "values": [
+        4.9799617079389,
+        5.065767060395955,
+        5.244093159817833,
+        5.1992819674800375,
+        5.296989473831409
+      ]
+    }
+  },
+  "reference_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+  "scenario_calibration": {
+    "cold_import": {
+      "center": 0.042066,
+      "classification": "advisory_only",
+      "mad": 0.0034469999999999987,
+      "max": 0.045513,
+      "max_min_ratio": 1.364339458616865,
+      "max_observed_deviation": 0.008707,
+      "min": 0.033359,
+      "relative_mad": 0.08194266153187844,
+      "values": [
+        0.033359,
+        0.044951,
+        0.045513,
+        0.042066,
+        0.035067
+      ]
+    },
+    "direct_read_190k": {
+      "center": 3.698805,
+      "classification": "advisory_only",
+      "mad": 0.12294099999999997,
+      "max": 3.821746,
+      "max_min_ratio": 1.5718494395544238,
+      "max_observed_deviation": 1.267436,
+      "min": 2.431369,
+      "relative_mad": 0.03323803228339963,
+      "values": [
+        2.513837,
+        3.821746,
+        3.698805,
+        3.721837,
+        2.431369
+      ]
+    },
+    "direct_read_1m": {
+      "center": 19.35088,
+      "classification": "advisory_only",
+      "mad": 0.04599800000000087,
+      "max": 19.396878,
+      "max_min_ratio": 1.5494184272437352,
+      "max_observed_deviation": 6.832068,
+      "min": 12.518812,
+      "relative_mad": 0.0023770495191950377,
+      "values": [
+        12.518812,
+        19.360075,
+        19.396878,
+        19.35088,
+        12.878936
+      ]
+    },
+    "direct_read_cp1250": {
+      "center": 0.000513,
+      "classification": "advisory_only",
+      "mad": 0.00012100000000000001,
+      "max": 0.000683,
+      "max_min_ratio": 1.764857881136951,
+      "max_observed_deviation": 0.00017,
+      "min": 0.000387,
+      "relative_mad": 0.2358674463937622,
+      "values": [
+        0.000392,
+        0.000563,
+        0.000513,
+        0.000683,
+        0.000387
+      ]
+    },
+    "direct_read_cp852": {
+      "center": 0.000563,
+      "classification": "advisory_only",
+      "mad": 2.3000000000000017e-05,
+      "max": 0.000586,
+      "max_min_ratio": 1.422330097087379,
+      "max_observed_deviation": 0.00015100000000000004,
+      "min": 0.000412,
+      "relative_mad": 0.04085257548845474,
+      "values": [
+        0.000446,
+        0.000577,
+        0.000563,
+        0.000586,
+        0.000412
+      ]
+    },
+    "direct_read_deleted_include": {
+      "center": 0.019784,
+      "classification": "advisory_only",
+      "mad": 0.0005679999999999991,
+      "max": 0.020352,
+      "max_min_ratio": 1.5880149812734081,
+      "max_observed_deviation": 0.006968,
+      "min": 0.012816,
+      "relative_mad": 0.02871006874241807,
+      "values": [
+        0.018626,
+        0.019784,
+        0.020352,
+        0.020341,
+        0.012816
+      ]
+    },
+    "direct_read_deleted_skip": {
+      "center": 0.018735,
+      "classification": "advisory_only",
+      "mad": 0.00025099999999999775,
+      "max": 0.018986,
+      "max_min_ratio": 1.62537453985104,
+      "max_observed_deviation": 0.007054000000000001,
+      "min": 0.011681,
+      "relative_mad": 0.013397384574326007,
+      "values": [
+        0.011681,
+        0.018986,
+        0.018804,
+        0.018735,
+        0.011836
+      ]
+    },
+    "direct_read_mazovia": {
+      "center": 0.000595,
+      "classification": "advisory_only",
+      "mad": 4.999999999999905e-06,
+      "max": 0.0006,
+      "max_min_ratio": 1.3888888888888888,
+      "max_observed_deviation": 0.00016300000000000006,
+      "min": 0.000432,
+      "relative_mad": 0.008403361344537655,
+      "values": [
+        0.000449,
+        0.0006,
+        0.000595,
+        0.000598,
+        0.000432
+      ]
+    },
+    "direct_read_memo_heavy": {
+      "center": 3.796638,
+      "classification": "advisory_only",
+      "mad": 0.11171199999999981,
+      "max": 3.90835,
+      "max_min_ratio": 1.3787915135009277,
+      "max_observed_deviation": 0.962018,
+      "min": 2.83462,
+      "relative_mad": 0.02942392716924811,
+      "values": [
+        2.83462,
+        3.878235,
+        3.90835,
+        3.796638,
+        2.971186
+      ]
+    },
+    "direct_read_memo_inline": {
+      "center": 0.043266,
+      "classification": "advisory_only",
+      "mad": 0.0002380000000000021,
+      "max": 0.043504,
+      "max_min_ratio": 1.428421329130549,
+      "max_observed_deviation": 0.012809999999999998,
+      "min": 0.030456,
+      "relative_mad": 0.0055008551749642235,
+      "values": [
+        0.030456,
+        0.043266,
+        0.043283,
+        0.043504,
+        0.038893
+      ]
+    },
+    "direct_read_memo_lazy": {
+      "center": 0.019788,
+      "classification": "advisory_only",
+      "mad": 0.0022150000000000017,
+      "max": 0.022003,
+      "max_min_ratio": 1.6043018592781628,
+      "max_observed_deviation": 0.006073,
+      "min": 0.013715,
+      "relative_mad": 0.11193652718819495,
+      "values": [
+        0.013715,
+        0.019788,
+        0.021003,
+        0.022003,
+        0.013814
+      ]
+    },
+    "direct_read_memo_skip": {
+      "center": 0.015844,
+      "classification": "advisory_only",
+      "mad": 0.0005350000000000008,
+      "max": 0.020856,
+      "max_min_ratio": 1.9222119815668202,
+      "max_observed_deviation": 0.005011999999999999,
+      "min": 0.01085,
+      "relative_mad": 0.03376672557434996,
+      "values": [
+        0.01085,
+        0.015323,
+        0.016379,
+        0.015844,
+        0.020856
+      ]
+    },
+    "direct_read_projection_all": {
+      "center": 3.550655,
+      "classification": "advisory_only",
+      "mad": 0.06421499999999991,
+      "max": 3.61487,
+      "max_min_ratio": 1.4898889982475143,
+      "max_observed_deviation": 1.124387,
+      "min": 2.426268,
+      "relative_mad": 0.018085395511532355,
+      "values": [
+        2.426268,
+        3.550655,
+        3.61487,
+        3.591272,
+        2.573574
+      ]
+    },
+    "direct_read_projection_selected": {
+      "center": 2.114711,
+      "classification": "advisory_only",
+      "mad": 0.02092100000000041,
+      "max": 2.135632,
+      "max_min_ratio": 1.3833542664335634,
+      "max_observed_deviation": 0.5709039999999999,
+      "min": 1.543807,
+      "relative_mad": 0.009893077588379885,
+      "values": [
+        1.543807,
+        2.130481,
+        2.114711,
+        2.135632,
+        1.5459
+      ]
+    },
+    "direct_read_raw_full": {
+      "center": 3.585624,
+      "classification": "advisory_only",
+      "mad": 0.13053800000000004,
+      "max": 3.716162,
+      "max_min_ratio": 1.5374408022145465,
+      "max_observed_deviation": 1.1685150000000002,
+      "min": 2.417109,
+      "relative_mad": 0.036405936595694376,
+      "values": [
+        2.417109,
+        3.716162,
+        3.585624,
+        3.639548,
+        2.494645
+      ]
+    },
+    "direct_read_raw_none": {
+      "center": 3.501197,
+      "classification": "advisory_only",
+      "mad": 0.18157099999999993,
+      "max": 3.682768,
+      "max_min_ratio": 1.5211028628521461,
+      "max_observed_deviation": 1.0800799999999997,
+      "min": 2.421117,
+      "relative_mad": 0.0518596925565742,
+      "values": [
+        2.421117,
+        3.682768,
+        3.539427,
+        3.501197,
+        2.447708
+      ]
+    },
+    "inspect_schema_1": {
+      "center": 0.00074,
+      "classification": "advisory_only",
+      "mad": 1.6000000000000064e-05,
+      "max": 0.001009,
+      "max_min_ratio": 1.9219047619047618,
+      "max_observed_deviation": 0.0002689999999999999,
+      "min": 0.000525,
+      "relative_mad": 0.02162162162162171,
+      "values": [
+        0.000525,
+        0.000756,
+        0.00074,
+        0.000727,
+        0.001009
+      ]
+    },
+    "inspect_schema_100": {
+      "center": 0.069372,
+      "classification": "advisory_only",
+      "mad": 0.006761000000000003,
+      "max": 0.076133,
+      "max_min_ratio": 2.0376575756764717,
+      "max_observed_deviation": 0.032009,
+      "min": 0.037363,
+      "relative_mad": 0.09746007034538434,
+      "values": [
+        0.037363,
+        0.076133,
+        0.070065,
+        0.069372,
+        0.038809
+      ]
+    },
+    "inspect_schema_1000": {
+      "center": 0.684016,
+      "classification": "advisory_only",
+      "mad": 0.011063000000000045,
+      "max": 0.695079,
+      "max_min_ratio": 1.8878935946569178,
+      "max_observed_deviation": 0.315839,
+      "min": 0.368177,
+      "relative_mad": 0.016173598278402913,
+      "values": [
+        0.368177,
+        0.684016,
+        0.695079,
+        0.69166,
+        0.377082
+      ]
+    },
+    "migration_dbf_to_jsonl": {
+      "center": 10.228897,
+      "classification": "advisory_only",
+      "mad": 0.39773699999999934,
+      "max": 10.626634,
+      "max_min_ratio": 1.7293310804224418,
+      "max_observed_deviation": 4.083958,
+      "min": 6.144939,
+      "relative_mad": 0.03888366458279904,
+      "values": [
+        6.26393,
+        10.228897,
+        10.242465,
+        10.626634,
+        6.144939
+      ]
+    },
+    "migration_jsonl_to_dbf_fpt": {
+      "center": 65.711269,
+      "classification": "advisory_only",
+      "mad": 0.8366649999999964,
+      "max": 66.547934,
+      "max_min_ratio": 1.5105354207379187,
+      "max_observed_deviation": 21.655411,
+      "min": 44.055858,
+      "relative_mad": 0.012732443197832573,
+      "values": [
+        44.055858,
+        66.480653,
+        66.547934,
+        65.711269,
+        45.460977
+      ]
+    },
+    "migration_validate_off": {
+      "center": 8.933681,
+      "classification": "advisory_only",
+      "mad": 0.27533599999999936,
+      "max": 9.209017,
+      "max_min_ratio": 1.7644620862651565,
+      "max_observed_deviation": 3.714517,
+      "min": 5.219164,
+      "relative_mad": 0.030819994580061606,
+      "values": [
+        5.265332,
+        9.209017,
+        8.933681,
+        9.089484,
+        5.219164
+      ]
+    },
+    "migration_validate_on": {
+      "center": 10.21503,
+      "classification": "advisory_only",
+      "mad": 0.27609999999999957,
+      "max": 10.49113,
+      "max_min_ratio": 1.631892232671879,
+      "max_observed_deviation": 3.7862170000000006,
+      "min": 6.428813,
+      "relative_mad": 0.02702879971962878,
+      "values": [
+        6.689503,
+        10.21503,
+        10.318845,
+        10.49113,
+        6.428813
+      ]
+    }
+  }
+}
