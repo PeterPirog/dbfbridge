@@ -1,34 +1,16 @@
 {
   "benchmark_contract": "phase-3-performance-v1",
+  "benchmark_run_ids": [
+    "run-10372b9d3b8dd26080979c6f29161004",
+    "run-1b84e5312f25847fc791fb09341348c5",
+    "run-7b565ca935c32bc9c2d4c33566789e9e",
+    "run-8a6289eb63fb465bfbf7c127eaa983b3",
+    "run-c21e6709cec53372e4d881b5fd609e0c"
+  ],
   "calibration_count": 5,
   "calibration_kind": "phase-3-regression-calibration-inputs",
   "per_run_median_wall_seconds": {
-    "33546526573": {
-      "cold_import": 0.045513,
-      "direct_read_190k": 3.698805,
-      "direct_read_1m": 19.396878,
-      "direct_read_cp1250": 0.000513,
-      "direct_read_cp852": 0.000563,
-      "direct_read_deleted_include": 0.020352,
-      "direct_read_deleted_skip": 0.018804,
-      "direct_read_mazovia": 0.000595,
-      "direct_read_memo_heavy": 3.90835,
-      "direct_read_memo_inline": 0.043283,
-      "direct_read_memo_lazy": 0.021003,
-      "direct_read_memo_skip": 0.016379,
-      "direct_read_projection_all": 3.61487,
-      "direct_read_projection_selected": 2.114711,
-      "direct_read_raw_full": 3.585624,
-      "direct_read_raw_none": 3.539427,
-      "inspect_schema_1": 0.00074,
-      "inspect_schema_100": 0.070065,
-      "inspect_schema_1000": 0.695079,
-      "migration_dbf_to_jsonl": 10.242465,
-      "migration_jsonl_to_dbf_fpt": 66.547934,
-      "migration_validate_off": 8.933681,
-      "migration_validate_on": 10.318845
-    },
-    "33546534607": {
+    "run-10372b9d3b8dd26080979c6f29161004": {
       "cold_import": 0.033359,
       "direct_read_190k": 2.513837,
       "direct_read_1m": 12.518812,
@@ -53,32 +35,7 @@
       "migration_validate_off": 5.265332,
       "migration_validate_on": 6.689503
     },
-    "33546542658": {
-      "cold_import": 0.035067,
-      "direct_read_190k": 2.431369,
-      "direct_read_1m": 12.878936,
-      "direct_read_cp1250": 0.000387,
-      "direct_read_cp852": 0.000412,
-      "direct_read_deleted_include": 0.012816,
-      "direct_read_deleted_skip": 0.011836,
-      "direct_read_mazovia": 0.000432,
-      "direct_read_memo_heavy": 2.971186,
-      "direct_read_memo_inline": 0.038893,
-      "direct_read_memo_lazy": 0.013814,
-      "direct_read_memo_skip": 0.020856,
-      "direct_read_projection_all": 2.573574,
-      "direct_read_projection_selected": 1.5459,
-      "direct_read_raw_full": 2.494645,
-      "direct_read_raw_none": 2.447708,
-      "inspect_schema_1": 0.001009,
-      "inspect_schema_100": 0.038809,
-      "inspect_schema_1000": 0.377082,
-      "migration_dbf_to_jsonl": 6.144939,
-      "migration_jsonl_to_dbf_fpt": 45.460977,
-      "migration_validate_off": 5.219164,
-      "migration_validate_on": 6.428813
-    },
-    "33546551328": {
+    "run-1b84e5312f25847fc791fb09341348c5": {
       "cold_import": 0.044951,
       "direct_read_190k": 3.821746,
       "direct_read_1m": 19.360075,
@@ -103,7 +60,32 @@
       "migration_validate_off": 9.209017,
       "migration_validate_on": 10.21503
     },
-    "33546559054": {
+    "run-7b565ca935c32bc9c2d4c33566789e9e": {
+      "cold_import": 0.045513,
+      "direct_read_190k": 3.698805,
+      "direct_read_1m": 19.396878,
+      "direct_read_cp1250": 0.000513,
+      "direct_read_cp852": 0.000563,
+      "direct_read_deleted_include": 0.020352,
+      "direct_read_deleted_skip": 0.018804,
+      "direct_read_mazovia": 0.000595,
+      "direct_read_memo_heavy": 3.90835,
+      "direct_read_memo_inline": 0.043283,
+      "direct_read_memo_lazy": 0.021003,
+      "direct_read_memo_skip": 0.016379,
+      "direct_read_projection_all": 3.61487,
+      "direct_read_projection_selected": 2.114711,
+      "direct_read_raw_full": 3.585624,
+      "direct_read_raw_none": 3.539427,
+      "inspect_schema_1": 0.00074,
+      "inspect_schema_100": 0.070065,
+      "inspect_schema_1000": 0.695079,
+      "migration_dbf_to_jsonl": 10.242465,
+      "migration_jsonl_to_dbf_fpt": 66.547934,
+      "migration_validate_off": 8.933681,
+      "migration_validate_on": 10.318845
+    },
+    "run-8a6289eb63fb465bfbf7c127eaa983b3": {
       "cold_import": 0.042066,
       "direct_read_190k": 3.721837,
       "direct_read_1m": 19.35088,
@@ -127,37 +109,38 @@
       "migration_jsonl_to_dbf_fpt": 65.711269,
       "migration_validate_off": 9.089484,
       "migration_validate_on": 10.49113
+    },
+    "run-c21e6709cec53372e4d881b5fd609e0c": {
+      "cold_import": 0.035067,
+      "direct_read_190k": 2.431369,
+      "direct_read_1m": 12.878936,
+      "direct_read_cp1250": 0.000387,
+      "direct_read_cp852": 0.000412,
+      "direct_read_deleted_include": 0.012816,
+      "direct_read_deleted_skip": 0.011836,
+      "direct_read_mazovia": 0.000432,
+      "direct_read_memo_heavy": 2.971186,
+      "direct_read_memo_inline": 0.038893,
+      "direct_read_memo_lazy": 0.013814,
+      "direct_read_memo_skip": 0.020856,
+      "direct_read_projection_all": 2.573574,
+      "direct_read_projection_selected": 1.5459,
+      "direct_read_raw_full": 2.494645,
+      "direct_read_raw_none": 2.447708,
+      "inspect_schema_1": 0.001009,
+      "inspect_schema_100": 0.038809,
+      "inspect_schema_1000": 0.377082,
+      "migration_dbf_to_jsonl": 6.144939,
+      "migration_jsonl_to_dbf_fpt": 45.460977,
+      "migration_validate_off": 5.219164,
+      "migration_validate_on": 6.428813
     }
   },
   "provenance": {
-    "33546526573": {
+    "run-10372b9d3b8dd26080979c6f29161004": {
       "arch": "AMD64",
+      "benchmark_run_id": "run-10372b9d3b8dd26080979c6f29161004",
       "cpu_count": 4,
-      "git_branch": "main",
-      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
-      "os": "Windows 2025Server 10.0.26100",
-      "packages": {
-        "dbf": "0.99.11",
-        "dbfbridge": "0.2.0",
-        "dbfread": "2.0.7",
-        "openpyxl": "3.1.5",
-        "orjson": "3.12.0",
-        "polars": "1.44.1",
-        "psutil": "7.2.2",
-        "xlsxwriter": "3.2.9"
-      },
-      "physical_memory_bytes": 17174360064,
-      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
-      "python": "3.12.10",
-      "run_id": "run-7b565ca935c32bc9c2d4c33566789e9e",
-      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
-      "storage": "github-actions-windows-runner-temp",
-      "workflow_run_id": "33546526573"
-    },
-    "33546534607": {
-      "arch": "AMD64",
-      "cpu_count": 4,
-      "git_branch": "main",
       "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
       "os": "Windows 2025Server 10.0.26100",
       "packages": {
@@ -173,15 +156,87 @@
       "physical_memory_bytes": 17174360064,
       "processor": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
       "python": "3.12.10",
-      "run_id": "run-10372b9d3b8dd26080979c6f29161004",
+      "report_sha256": "fccbfb819387ec03290fa6a74dc96be6c4831c2036691117678075a6ef5cddd1",
       "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
       "storage": "github-actions-windows-runner-temp",
       "workflow_run_id": "33546534607"
     },
-    "33546542658": {
+    "run-1b84e5312f25847fc791fb09341348c5": {
       "arch": "AMD64",
+      "benchmark_run_id": "run-1b84e5312f25847fc791fb09341348c5",
       "cpu_count": 4,
-      "git_branch": "main",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "os": "Windows 2025Server 10.0.26100",
+      "packages": {
+        "dbf": "0.99.11",
+        "dbfbridge": "0.2.0",
+        "dbfread": "2.0.7",
+        "openpyxl": "3.1.5",
+        "orjson": "3.12.0",
+        "polars": "1.44.1",
+        "psutil": "7.2.2",
+        "xlsxwriter": "3.2.9"
+      },
+      "physical_memory_bytes": 17174360064,
+      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "python": "3.12.10",
+      "report_sha256": "3423fa42eca96fec41d20bb4c0030cabe697fa8888168febdbf92609e397ed76",
+      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
+      "storage": "github-actions-windows-runner-temp",
+      "workflow_run_id": "33546551328"
+    },
+    "run-7b565ca935c32bc9c2d4c33566789e9e": {
+      "arch": "AMD64",
+      "benchmark_run_id": "run-7b565ca935c32bc9c2d4c33566789e9e",
+      "cpu_count": 4,
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "os": "Windows 2025Server 10.0.26100",
+      "packages": {
+        "dbf": "0.99.11",
+        "dbfbridge": "0.2.0",
+        "dbfread": "2.0.7",
+        "openpyxl": "3.1.5",
+        "orjson": "3.12.0",
+        "polars": "1.44.1",
+        "psutil": "7.2.2",
+        "xlsxwriter": "3.2.9"
+      },
+      "physical_memory_bytes": 17174360064,
+      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "python": "3.12.10",
+      "report_sha256": "49870811e70b83f9b815b5997e83a4e3d5d5c58bfdb42949d2cab34d6e0681b4",
+      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
+      "storage": "github-actions-windows-runner-temp",
+      "workflow_run_id": "33546526573"
+    },
+    "run-8a6289eb63fb465bfbf7c127eaa983b3": {
+      "arch": "AMD64",
+      "benchmark_run_id": "run-8a6289eb63fb465bfbf7c127eaa983b3",
+      "cpu_count": 4,
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "os": "Windows 2025Server 10.0.26100",
+      "packages": {
+        "dbf": "0.99.11",
+        "dbfbridge": "0.2.0",
+        "dbfread": "2.0.7",
+        "openpyxl": "3.1.5",
+        "orjson": "3.12.0",
+        "polars": "1.44.1",
+        "psutil": "7.2.2",
+        "xlsxwriter": "3.2.9"
+      },
+      "physical_memory_bytes": 17174360064,
+      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "python": "3.12.10",
+      "report_sha256": "44af55e73d10a39b742a5db9617853abce3184dfb8034f89eff3f546522a3311",
+      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
+      "storage": "github-actions-windows-runner-temp",
+      "workflow_run_id": "33546559054"
+    },
+    "run-c21e6709cec53372e4d881b5fd609e0c": {
+      "arch": "AMD64",
+      "benchmark_run_id": "run-c21e6709cec53372e4d881b5fd609e0c",
+      "cpu_count": 4,
       "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
       "os": "Windows 2025Server 10.0.26100",
       "packages": {
@@ -197,68 +252,13 @@
       "physical_memory_bytes": 17174360064,
       "processor": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
       "python": "3.12.10",
-      "run_id": "run-c21e6709cec53372e4d881b5fd609e0c",
+      "report_sha256": "6c5dc595ca6e291a9c621824b68d67d5fbc3dc23e990f9b40da06ac8298c89b2",
       "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
       "storage": "github-actions-windows-runner-temp",
       "workflow_run_id": "33546542658"
-    },
-    "33546551328": {
-      "arch": "AMD64",
-      "cpu_count": 4,
-      "git_branch": "main",
-      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
-      "os": "Windows 2025Server 10.0.26100",
-      "packages": {
-        "dbf": "0.99.11",
-        "dbfbridge": "0.2.0",
-        "dbfread": "2.0.7",
-        "openpyxl": "3.1.5",
-        "orjson": "3.12.0",
-        "polars": "1.44.1",
-        "psutil": "7.2.2",
-        "xlsxwriter": "3.2.9"
-      },
-      "physical_memory_bytes": 17174360064,
-      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
-      "python": "3.12.10",
-      "run_id": "run-1b84e5312f25847fc791fb09341348c5",
-      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
-      "storage": "github-actions-windows-runner-temp",
-      "workflow_run_id": "33546551328"
-    },
-    "33546559054": {
-      "arch": "AMD64",
-      "cpu_count": 4,
-      "git_branch": "main",
-      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
-      "os": "Windows 2025Server 10.0.26100",
-      "packages": {
-        "dbf": "0.99.11",
-        "dbfbridge": "0.2.0",
-        "dbfread": "2.0.7",
-        "openpyxl": "3.1.5",
-        "orjson": "3.12.0",
-        "polars": "1.44.1",
-        "psutil": "7.2.2",
-        "xlsxwriter": "3.2.9"
-      },
-      "physical_memory_bytes": 17174360064,
-      "processor": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
-      "python": "3.12.10",
-      "run_id": "run-8a6289eb63fb465bfbf7c127eaa983b3",
-      "runner": "github-actions-windows-x64-win25-vs202620260824.214.3",
-      "storage": "github-actions-windows-runner-temp",
-      "workflow_run_id": "33546559054"
     }
   },
   "reference_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
-  "run_ids": [
-    "33546526573",
-    "33546534607",
-    "33546542658",
-    "33546551328",
-    "33546559054"
-  ],
   "scenarios": [
     "cold_import",
     "direct_read_190k",
@@ -283,5 +283,12 @@
     "migration_jsonl_to_dbf_fpt",
     "migration_validate_off",
     "migration_validate_on"
+  ],
+  "workflow_run_ids": [
+    "33546534607",
+    "33546551328",
+    "33546526573",
+    "33546559054",
+    "33546542658"
   ]
 }

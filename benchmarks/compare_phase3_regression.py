@@ -35,11 +35,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
+from .contract import (
+    CONTRACT_PHASE_3,
+    PHASE3_SCENARIO_NAMES,
+    RUN_ID_RE,
+    validate_phase3_regression_smoke_report,
+    validate_saved_phase3_report,
+)
+
 POLICY_VERSION = 1
-BENCHMARK_CONTRACT = "phase-3-performance-v1"
+BENCHMARK_CONTRACT = CONTRACT_PHASE_3
 MIN_CALIBRATION_RUNS = 5
 
 __all__ = [
@@ -48,6 +57,29 @@ __all__ = [
     "regression_comparability",
     "validate_regression_policy",
 ]
+
+
+# ---------------------------------------------------------------------------
+# finite-value helpers
+# ---------------------------------------------------------------------------
+
+
+def _finite_positive(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _finite_non_negative(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -64,53 +96,122 @@ def validate_regression_policy(policy: Any) -> list[str]:
         problems.append(f"unknown policy_version: {policy.get('policy_version')!r}")
     if policy.get("benchmark_contract") != BENCHMARK_CONTRACT:
         problems.append(f"benchmark_contract must be {BENCHMARK_CONTRACT!r}")
-    run_ids = policy.get("generated_from_run_ids")
-    if not isinstance(run_ids, list) or len(run_ids) < MIN_CALIBRATION_RUNS:
-        problems.append(f"policy requires at least {MIN_CALIBRATION_RUNS} calibration runs")
-    elif len(set(run_ids)) != len(run_ids):
-        problems.append("duplicate calibration run_ids in the policy")
-    if not policy.get("reference_commit"):
-        problems.append("policy is missing reference_commit")
+
+    workflow_run_ids = policy.get("generated_from_workflow_run_ids")
+    benchmark_run_ids = policy.get("generated_from_benchmark_run_ids")
+    calibration_count = policy.get("calibration_count")
+    for label, run_ids in (
+        ("generated_from_workflow_run_ids", workflow_run_ids),
+        ("generated_from_benchmark_run_ids", benchmark_run_ids),
+    ):
+        if not isinstance(run_ids, list) or len(run_ids) < MIN_CALIBRATION_RUNS:
+            problems.append(
+                f"policy requires at least {MIN_CALIBRATION_RUNS} calibration runs ({label})"
+            )
+        elif len(set(run_ids)) != len(run_ids):
+            problems.append(f"duplicate calibration IDs in {label}")
+    if isinstance(workflow_run_ids, list) and isinstance(benchmark_run_ids, list):
+        if len(workflow_run_ids) != len(benchmark_run_ids):
+            problems.append(
+                "generated_from_workflow_run_ids and generated_from_benchmark_run_ids "
+                "must pair one-to-one"
+            )
+        for benchmark_run_id in benchmark_run_ids:
+            if not isinstance(benchmark_run_id, str) or not RUN_ID_RE.match(benchmark_run_id):
+                problems.append(f"invalid benchmark run_id: {benchmark_run_id!r}")
+    if calibration_count != len(workflow_run_ids or []) or calibration_count != len(
+        benchmark_run_ids or []
+    ):
+        problems.append("calibration_count does not match the generated_from_* run-ID lists")
+    reference_commit = policy.get("reference_commit")
+    if (
+        not isinstance(reference_commit, str)
+        or len(reference_commit) != 40
+        or any(character not in "0123456789abcdef" for character in reference_commit)
+    ):
+        problems.append(f"reference_commit must be a full 40-hex commit: {reference_commit!r}")
     derivation = policy.get("derivation")
     if not isinstance(derivation, dict) or not all(
-        key in derivation for key in ("center", "dispersion", "envelope_upper")
+        key in derivation for key in ("center", "dispersion", "envelope_upper", "policy_parameters")
     ):
-        problems.append("policy is missing derivation metadata (center/dispersion/envelope)")
+        problems.append(
+            "policy is missing derivation metadata "
+            "(center/dispersion/envelope_upper/policy_parameters)"
+        )
 
     scenario_calibration = policy.get("scenario_calibration")
     full_scenarios = policy.get("full_scheduled_scenarios")
     if not isinstance(scenario_calibration, dict) or not isinstance(full_scenarios, list):
         problems.append("policy is missing scenario calibration / scheduled scenario list")
         return problems
-    if sorted(scenario_calibration) != sorted(full_scenarios):
-        problems.append("scenario_calibration does not match full_scheduled_scenarios")
+    if sorted(scenario_calibration) != sorted(PHASE3_SCENARIO_NAMES):
+        problems.append(
+            "scenario_calibration must cover exactly PHASE3_SCENARIO_NAMES "
+            f"({sorted(set(PHASE3_SCENARIO_NAMES) - set(scenario_calibration))} missing, "
+            f"{sorted(set(scenario_calibration) - set(PHASE3_SCENARIO_NAMES))} unknown)"
+        )
+        return problems
+    if sorted(full_scenarios) != sorted(PHASE3_SCENARIO_NAMES):
+        problems.append("full_scheduled_scenarios must be exactly PHASE3_SCENARIO_NAMES")
     for name, entry in scenario_calibration.items():
         if not isinstance(entry, dict):
             problems.append(f"scenario {name!r} calibration entry is malformed")
             continue
-        for key in ("center", "mad", "min", "max", "max_min_ratio"):
-            value = entry.get(key)
-            if not isinstance(value, (int, float)) or not value > 0:
-                problems.append(f"scenario {name!r} has invalid {key}: {value!r}")
+        for key in ("center", "mad", "min", "max"):
+            if not _finite_positive(entry.get(key)):
+                problems.append(f"scenario {name!r} has invalid {key}: {entry.get(key)!r}")
+        if not _finite_non_negative(entry.get("max_observed_deviation")):
+            problems.append(f"scenario {name!r} has invalid max_observed_deviation")
         if entry.get("classification") not in ("hard_gate", "advisory_only"):
             problems.append(f"scenario {name!r} has unknown classification")
+        values = entry.get("values")
+        if not isinstance(values, list) or len(values) != calibration_count:
+            problems.append(
+                f"scenario {name!r} needs exactly {calibration_count} calibration values"
+            )
+        elif any(not _finite_positive(value) for value in values):
+            problems.append(f"scenario {name!r} has non-finite/non-positive timings")
+
+    pr_smoke_scenarios = policy.get("pr_smoke_scenarios")
+    if (
+        not isinstance(pr_smoke_scenarios, list)
+        or not pr_smoke_scenarios
+        or len(set(pr_smoke_scenarios)) != len(pr_smoke_scenarios)
+        or not set(pr_smoke_scenarios).issubset(PHASE3_SCENARIO_NAMES)
+    ):
+        problems.append(
+            "pr_smoke_scenarios must be a non-empty unique subset of PHASE3_SCENARIO_NAMES"
+        )
 
     ratio_calibration = policy.get("ratio_calibration")
     if not isinstance(ratio_calibration, dict):
         problems.append("ratio_calibration missing")
-    else:
-        for label, entry in ratio_calibration.items():
-            if not isinstance(entry, dict):
-                problems.append(f"ratio {label!r} entry is malformed")
-                continue
-            if entry.get("classification") not in ("hard_gate", "advisory_only"):
-                problems.append(f"ratio {label!r} has unknown classification")
-            envelope = entry.get("envelope_upper")
-            if not isinstance(envelope, (int, float)) or not envelope > 0:
-                problems.append(f"ratio {label!r} has invalid envelope_upper")
-            values = entry.get("values")
-            if not isinstance(values, list) or len(values) < MIN_CALIBRATION_RUNS:
-                problems.append(f"ratio {label!r} needs {MIN_CALIBRATION_RUNS} calibration values")
+        return problems
+    for label, entry in ratio_calibration.items():
+        if not isinstance(entry, dict):
+            problems.append(f"ratio {label!r} entry is malformed")
+            continue
+        numerator = entry.get("numerator")
+        denominator = entry.get("denominator")
+        if numerator not in PHASE3_SCENARIO_NAMES:
+            problems.append(f"ratio {label!r} has unknown numerator {numerator!r}")
+        if denominator not in PHASE3_SCENARIO_NAMES:
+            problems.append(f"ratio {label!r} has unknown denominator {denominator!r}")
+        if numerator == denominator:
+            problems.append(f"ratio {label!r} has identical numerator and denominator")
+        if entry.get("classification") not in ("hard_gate", "advisory_only"):
+            problems.append(f"ratio {label!r} has unknown classification")
+        for key in ("center", "min", "max", "envelope_upper"):
+            if not _finite_positive(entry.get(key)):
+                problems.append(f"ratio {label!r} has invalid {key}: {entry.get(key)!r}")
+        for key in ("mad", "max_observed_deviation", "relative_mad"):
+            if not _finite_non_negative(entry.get(key)):
+                problems.append(f"ratio {label!r} has invalid {key}: {entry.get(key)!r}")
+        values = entry.get("values")
+        if not isinstance(values, list) or len(values) != calibration_count:
+            problems.append(f"ratio {label!r} needs exactly {calibration_count} calibration values")
+        elif any(not _finite_positive(value) for value in values):
+            problems.append(f"ratio {label!r} has non-finite/non-positive values")
     return problems
 
 
@@ -131,10 +232,12 @@ def regression_comparability(
     - ``NOT_COMPARABLE`` — Python, OS, architecture, or a measurement
       dependency version differs from the calibrated environment: no
       performance claim may be made at all;
-    - ``PARTIALLY_COMPARABLE`` — runtime matches but the runner image or the
-      storage label differs from calibration (hosted-runner images move):
-      correctness is still hard, performance numbers are advisory-only;
-    - ``COMPARABLE`` — everything required matches (hard ratio gates apply).
+    - ``PARTIALLY_COMPARABLE`` — the runtime matches but the candidate
+      hardware is OUTSIDE the calibrated processor pool, or the runner
+      image/storage label differs from calibration: correctness stays hard,
+      performance numbers become advisory-only;
+    - ``COMPARABLE`` — runtime matches AND the candidate hardware is inside
+      the calibrated processor pool (hard ratio gates apply).
     """
     problems: list[str] = []
     required = policy.get("environment") or {}
@@ -153,6 +256,21 @@ def regression_comparability(
         return "NOT_COMPARABLE", problems
 
     partial: list[str] = []
+    # Hardware-pool applicability: the hosted runner image may land on
+    # different CPU families between calibration and the candidate run; a
+    # candidate outside the calibrated pool keeps correctness hard but its
+    # performance numbers become advisory.
+    hardware_pool = policy.get("hardware_pool") or {}
+    observed_processors = hardware_pool.get("observed_processor_signatures") or []
+    if observed_processors:
+        candidate_processor = candidate_system.get("processor")
+        if candidate_processor not in observed_processors:
+            partial.append(f"processor outside the calibrated pool: {candidate_processor!r}")
+    observed_cpu_counts = hardware_pool.get("observed_cpu_counts") or []
+    if observed_cpu_counts:
+        candidate_cpu = candidate_system.get("cpu_count")
+        if candidate_cpu not in observed_cpu_counts:
+            partial.append(f"cpu_count outside the calibrated pool: {candidate_cpu!r}")
     candidate_storage = candidate_environment.get("storage")
     if candidate_storage != required.get("storage_label"):
         partial.append(
@@ -171,13 +289,16 @@ def regression_comparability(
 # ---------------------------------------------------------------------------
 
 
-def _candidate_scenarios(candidate: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    scenarios: dict[str, dict[str, Any]] = {}
+def _raw_scenario_names(candidate: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Scan the RAW scenario list (before any dict collapse)."""
+    names: list[str] = []
+    problems: list[str] = []
     for entry in candidate.get("scenarios", []):
-        name = entry.get("scenario")
-        if isinstance(name, str) and name not in scenarios:
-            scenarios[name] = entry
-    return scenarios
+        if not isinstance(entry, dict) or not isinstance(entry.get("scenario"), str):
+            problems.append("a scenario entry is malformed (missing scenario name)")
+            continue
+        names.append(entry["scenario"])
+    return names, problems
 
 
 def compare_report(
@@ -189,47 +310,92 @@ def compare_report(
 ) -> dict[str, Any]:
     """Pure comparison: returns the machine-readable regression result.
 
-    ``mode``: ``"full"`` requires the complete calibrated scenario set
-    MEASURED; ``"smoke"`` requires only the selected subset.
+    The result separates the three gates explicitly:
+
+    - ``correctness_status`` — ``PASS``/``FAIL`` (frozen Phase 3 contract
+      implementation: full mode uses :func:`validate_saved_phase3_report`,
+      smoke mode :func:`validate_phase3_regression_smoke_report`);
+    - ``comparability`` — ``COMPARABLE``/``PARTIALLY_COMPARABLE``/
+      ``NOT_COMPARABLE``;
+    - ``performance_status`` — ``PASS``/``ADVISORY_ONLY``/``REGRESSION``/
+      ``NOT_EVALUATED``;
+    - ``overall_status`` — ``PASS``/``FAIL`` (a correctness failure, a
+      confirmed hard regression, or an INVALID timing row fails).
+
+    ``mode``: ``"full"`` requires the complete 23-scenario contract;
+    ``"smoke"`` requires only the selected subset (strictly validated).
     """
     problems = validate_regression_policy(policy)
     if problems:
-        return {"status": "INVALID_POLICY", "problems": problems}
+        return {
+            "status": "INVALID_POLICY",
+            "correctness_status": "FAIL",
+            "comparability": "NOT_COMPARABLE",
+            "performance_status": "NOT_EVALUATED",
+            "overall_status": "FAIL",
+            "problems": problems,
+        }
 
     env = candidate.get("environment") or {}
     if env.get("benchmark_contract") != BENCHMARK_CONTRACT:
         return {
             "status": "INVALID_REPORT",
+            "correctness_status": "FAIL",
+            "comparability": "NOT_EVALUATED",
+            "performance_status": "NOT_EVALUATED",
+            "overall_status": "FAIL",
             "problems": [f"candidate benchmark_contract must be {BENCHMARK_CONTRACT!r}"],
         }
-    scenarios = _candidate_scenarios(candidate)
-    if not scenarios:
-        return {"status": "INVALID_REPORT", "problems": ["candidate has no scenarios"]}
 
+    # Duplicate and malformed scenario entries on the RAW list — detected
+    # BEFORE any dict-based access can silently collapse them.
+    raw_names, raw_problems = _raw_scenario_names(candidate)
+    if raw_problems:
+        return {
+            "status": "INVALID_REPORT",
+            "correctness_status": "FAIL",
+            "comparability": "NOT_EVALUATED",
+            "performance_status": "NOT_EVALUATED",
+            "overall_status": "FAIL",
+            "problems": raw_problems,
+        }
+    duplicates = sorted({name for name in raw_names if raw_names.count(name) > 1})
+    if duplicates:
+        return {
+            "status": "INVALID_REPORT",
+            "correctness_status": "FAIL",
+            "comparability": "NOT_EVALUATED",
+            "performance_status": "NOT_EVALUATED",
+            "overall_status": "FAIL",
+            "problems": [f"duplicate scenario name {name!r}" for name in duplicates],
+        }
+
+    # Frozen Phase 3 contract implementation (correctness hard gate).
+    if mode == "full":
+        contract_problems = validate_saved_phase3_report(candidate)
+    else:
+        selected = frozenset(selected_scenarios or policy["pr_smoke_scenarios"])
+        contract_problems = validate_phase3_regression_smoke_report(candidate, selected)
+    if contract_problems:
+        summarized = contract_problems[:12]
+        suffix = (
+            [f"... and {len(contract_problems) - 12} more"] if len(contract_problems) > 12 else []
+        )
+        return {
+            "status": "CORRECTNESS_FAILURE",
+            "correctness_status": "FAIL",
+            "comparability": "NOT_EVALUATED",
+            "performance_status": "NOT_EVALUATED",
+            "overall_status": "FAIL",
+            "problems": summarized + suffix,
+        }
+
+    scenarios = {entry["scenario"]: entry for entry in candidate["scenarios"]}
     required = (
         sorted(policy["full_scheduled_scenarios"])
         if mode == "full"
         else sorted(selected_scenarios or policy["pr_smoke_scenarios"])
     )
-    missing = [name for name in required if name not in scenarios]
-    failed = [name for name, entry in scenarios.items() if entry.get("status") == "FAILED"]
-    unknown = sorted(set(scenarios) - set(policy["scenario_calibration"]))
-    if failed:
-        return {
-            "status": "CORRECTNESS_FAILURE",
-            "problems": [f"scenario FAILED: {name}" for name in failed],
-            "failed_scenarios": failed,
-        }
-    if missing:
-        return {
-            "status": "INVALID_REPORT",
-            "problems": [f"missing or not MEASURED scenario: {name}" for name in missing],
-        }
-    if unknown:
-        return {
-            "status": "INVALID_REPORT",
-            "problems": [f"scenario outside the calibrated contract: {name}" for name in unknown],
-        }
 
     comparability, comparability_reasons = regression_comparability(
         policy, env if isinstance(env, dict) else {}
@@ -237,13 +403,26 @@ def compare_report(
 
     hard_regressions: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
+    invalid_rows: list[dict[str, Any]] = []
 
-    # per-scenario absolute walls: always advisory (runner-wide drift proven)
+    # per-scenario absolute walls: always advisory, but the recorded value
+    # must still be finite and positive (a malformed metric is an integrity
+    # failure, never an advisory).
     for name in required:
         entry = scenarios[name]
         calibration = policy["scenario_calibration"][name]
-        value = entry.get("aggregated", {}).get("median_wall_seconds")
-        classification = "ADVISORY"
+        value = (entry.get("aggregated") or {}).get("median_wall_seconds")
+        if not _finite_positive(value):
+            invalid_row = {
+                "scenario": name,
+                "candidate_value": value,
+                "policy_class": calibration["classification"],
+                "result": "INVALID",
+                "note": "median_wall_seconds must be finite and positive",
+            }
+            rows.append(invalid_row)
+            invalid_rows.append(invalid_row)
+            continue
         rows.append(
             {
                 "scenario": name,
@@ -251,7 +430,7 @@ def compare_report(
                 "calibration_center": calibration["center"],
                 "calibration_mad": calibration["mad"],
                 "policy_class": calibration["classification"],
-                "result": classification,
+                "result": "ADVISORY",
                 "note": "absolute wall time is advisory-only (runner-wide drift measured)",
             }
         )
@@ -261,26 +440,19 @@ def compare_report(
         numerator, denominator = entry["numerator"], entry["denominator"]
         if numerator not in scenarios or denominator not in scenarios:
             continue  # not part of this candidate's profile
-        if scenarios[numerator].get("status") != "MEASURED":
-            continue
-        if scenarios[denominator].get("status") != "MEASURED":
-            continue
-        candidate_n = scenarios[numerator]["aggregated"]["median_wall_seconds"]
-        candidate_d = scenarios[denominator]["aggregated"]["median_wall_seconds"]
-        if not (
-            isinstance(candidate_n, (int, float))
-            and isinstance(candidate_d, (int, float))
-            and candidate_n > 0
-            and candidate_d > 0
-        ):
-            rows.append(
-                {
-                    "ratio": label,
-                    "policy_class": entry["classification"],
-                    "result": "INVALID",
-                    "note": "non-positive or missing timing value",
-                }
-            )
+        candidate_n = (scenarios[numerator].get("aggregated") or {}).get("median_wall_seconds")
+        candidate_d = (scenarios[denominator].get("aggregated") or {}).get("median_wall_seconds")
+        if not (_finite_positive(candidate_n) and _finite_positive(candidate_d)):
+            invalid_row = {
+                "ratio": label,
+                "candidate_value": None,
+                "envelope_upper": entry["envelope_upper"],
+                "policy_class": entry["classification"],
+                "result": "INVALID",
+                "note": "ratio timing must be finite and positive (NaN/Infinity/zero/negative rejected)",
+            }
+            rows.append(invalid_row)
+            invalid_rows.append(invalid_row)
             continue
         ratio = candidate_n / candidate_d
         if comparability != "COMPARABLE" or entry["classification"] != "hard_gate":
@@ -331,10 +503,22 @@ def compare_report(
                 continue
             entry = scenarios[name]
             calibration = policy["scenario_calibration"][name]
+            value = (entry.get("aggregated") or {}).get("median_wall_seconds")
+            if not _finite_positive(value):
+                invalid_row = {
+                    "scenario": name,
+                    "candidate_value": value,
+                    "policy_class": "advisory_only",
+                    "result": "INVALID",
+                    "note": "median_wall_seconds must be finite and positive",
+                }
+                rows.append(invalid_row)
+                invalid_rows.append(invalid_row)
+                continue
             rows.append(
                 {
                     "scenario": name,
-                    "candidate_value": entry.get("aggregated", {}).get("median_wall_seconds"),
+                    "candidate_value": value,
                     "calibration_center": calibration["center"],
                     "policy_class": "advisory_only",
                     "result": "ADVISORY",
@@ -342,14 +526,33 @@ def compare_report(
                 }
             )
 
-    status = "REGRESSION" if hard_regressions else "PASS"
+    if invalid_rows:
+        status = "INVALID_REPORT"
+        overall = "FAIL"
+        performance_status = "NOT_EVALUATED"
+    elif hard_regressions:
+        status = "REGRESSION"
+        overall = "FAIL"
+        performance_status = "REGRESSION"
+    else:
+        status = "PASS"
+        overall = "PASS"
+        performance_status = (
+            "ADVISORY_ONLY"
+            if comparability != "COMPARABLE" or any(row.get("result") == "ADVISORY" for row in rows)
+            else "PASS"
+        )
+
     return {
         "status": status,
-        "mode": mode,
+        "correctness_status": "PASS",
         "comparability": comparability,
         "comparability_reasons": comparability_reasons,
+        "performance_status": performance_status,
+        "overall_status": overall,
         "policy_reference_commit": policy["reference_commit"],
         "hard_regressions": hard_regressions,
+        "invalid_rows": invalid_rows,
         "advisories": [row for row in rows if row.get("result") == "ADVISORY"],
         "rows": rows,
     }

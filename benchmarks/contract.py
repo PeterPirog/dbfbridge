@@ -196,9 +196,11 @@ __all__ = [
     "build_manifest",
     "environment_comparability",
     "manifest_problems",
+    "validate_phase3_regression_smoke_report",
     "validate_saved_phase0_before",
     "validate_saved_phase1_after",
     "validate_saved_phase3_before",
+    "validate_saved_phase3_report",
 ]
 
 
@@ -505,7 +507,7 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
 
 
 def validate_saved_phase3_before(payload: Any) -> list[str]:
-    """Validate a Phase 3 BEFORE baseline payload against the full contract.
+    """Validate a Phase 3 report against the full contract.
 
     The Phase 3 contract (``phase-3-performance-v1``) covers the canonical
     performance BEFORE matrix (profile ``phase3``): every scenario of
@@ -516,6 +518,12 @@ def validate_saved_phase3_before(payload: Any) -> list[str]:
     the raw-image pair, the projection pair, the memo-policy triplet and the
     cold-import cost.  The JSONL→DBF+FPT rebuild scenario must additionally
     carry the per-sample DBF/FPT extras.
+
+    This validator applies to ANY saved full Phase 3 report: the canonical
+    BEFORE baseline, AFTER runs, and performance-regression candidates.
+    :func:`validate_saved_phase3_report` is a neutral alias for regression
+    candidates; :func:`validate_phase3_regression_smoke_report` is the
+    strict subset validator for smoke regression candidates.
     """
     problems: list[str] = []
     if not isinstance(payload, dict) or not isinstance(payload.get("scenarios"), list):
@@ -551,6 +559,95 @@ def validate_saved_phase3_before(payload: Any) -> list[str]:
                     warmup,
                     repetitions,
                     memo_extras_scenario=PHASE3_MEMO_RECONSTRUCTION_SCENARIO,
+                )
+            )
+    problems.extend(_repo_identity_problems(payload))
+    return problems
+
+
+def validate_saved_phase3_report(payload: Any) -> list[str]:
+    """Neutral alias of :func:`validate_saved_phase3_before`.
+
+    Same contract implementation (full 23-scenario ``phase-3-performance-v1``
+    shape, per-sample metrics, peak RSS, zero residue, run identity,
+    provenance, memo extras).  The alias exists so performance-regression
+    candidate reports can be validated by a semantically neutral name while
+    the historical BEFORE-baseline name keeps working unchanged.
+    """
+    return validate_saved_phase3_before(payload)
+
+
+def validate_phase3_regression_smoke_report(
+    payload: Any, selected_scenarios: set[str] | frozenset[str]
+) -> list[str]:
+    """Strict validation for a Phase 3 regression SMOKE candidate report.
+
+    A smoke report deliberately covers only a subset of the canonical 23
+    scenarios, so the full contract validator rejects it by design; THIS
+    validator instead enforces the same per-scenario contract implementation
+    on the selected subset — never a weaker shape:
+
+    - ``benchmark_contract`` must be exactly ``phase-3-performance-v1`` and
+      ``environment.profile`` exactly ``phase3``;
+    - the RAW scenario list must contain no duplicate or malformed entries
+      (duplicates are detected BEFORE any dict collapse);
+    - the scenario set must be EXACTLY the selected subset — every selected
+      scenario present and ``MEASURED``, no unknown scenarios;
+    - run identity (``run_id``, ``generated_at``), repo identity,
+      warm-up/measured sample counts, every required per-sample metric,
+      available peak RSS, zero temporary residue, ``valid_baseline`` and —
+      when a selected scenario rebuilds a memo table — the DBF/FPT extras
+      are validated exactly as in the full contract.
+    """
+    problems: list[str] = []
+    if not isinstance(payload, dict) or not isinstance(payload.get("scenarios"), list):
+        return ["payload is not a benchmark report (needs a 'scenarios' list)"]
+    if _env_of(payload).get("benchmark_contract") != CONTRACT_PHASE_3:
+        problems.append(
+            f"benchmark_contract is {_env_of(payload).get('benchmark_contract')!r}; "
+            f"the Phase 3 regression candidate requires exactly {CONTRACT_PHASE_3!r}"
+        )
+    problems.extend(_run_id_problems(payload))
+    problems.extend(_generated_at_problems(payload))
+    profile = _env_of(payload).get("profile")
+    if profile != "phase3":
+        problems.append(f"environment.profile must be 'phase3', got {profile!r}")
+    warmup, repetitions, shape = _shape_problems(payload)
+    problems.extend(shape)
+
+    # Detect duplicate and malformed scenario entries on the RAW list —
+    # before any dict-based access can silently collapse them.
+    raw_names: list[str] = []
+    for entry in payload["scenarios"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("scenario"), str):
+            problems.append("a scenario entry is malformed (missing scenario name)")
+            continue
+        raw_names.append(entry["scenario"])
+    for name in sorted({name for name in raw_names if raw_names.count(name) > 1}):
+        problems.append(f"duplicate scenario name {name!r}")
+
+    selected = frozenset(selected_scenarios)
+    scenarios, map_problems = _scenario_map_problems(payload, frozenset({"MEASURED"}), selected)
+    problems.extend(map_problems)
+    measured_now = {name for name, entry in scenarios.items() if entry.get("status") == "MEASURED"}
+    if measured_now != selected:
+        for name in sorted(selected - measured_now):
+            problems.append(f"selected scenario {name!r} must be MEASURED")
+    if warmup >= 1 and repetitions >= 3:
+        for name in sorted(measured_now):
+            entry = scenarios[name]
+            assert isinstance(entry, dict)
+            problems.extend(
+                _measured_scenario_problems(
+                    name,
+                    entry,
+                    warmup,
+                    repetitions,
+                    memo_extras_scenario=(
+                        PHASE3_MEMO_RECONSTRUCTION_SCENARIO
+                        if name == PHASE3_MEMO_RECONSTRUCTION_SCENARIO
+                        else MEMO_RECONSTRUCTION_SCENARIO
+                    ),
                 )
             )
     problems.extend(_repo_identity_problems(payload))

@@ -6,7 +6,24 @@
     "center": "median of per-run aggregated.median_wall_seconds over >= 5 calibration runs",
     "classification_rule": "ratio hard_gate iff envelope_upper <= center * 1.5; every absolute scenario wall is advisory_only; unstable ratios are advisory_only",
     "dispersion": "MAD (median absolute deviation) of those run medians",
-    "envelope_upper": "max(center + max(3 * mad, max_observed_deviation), max_observed_value * 1.15) — covers the observed spread AND a documented small-sample safety factor over the worst observation",
+    "envelope_upper": "max(center + max(3 * mad, max_observed_deviation), max_observed_value * 1.15) — covers the observed spread AND a documented small-sample guard band over the worst observation",
+    "policy_parameters": {
+      "hard_gate_discrimination_bound": {
+        "rationale": "a ratio qualifies as a hard gate only when its envelope stays under a 1.5x shift of the calibration center; looser envelopes cannot discriminate a real regression from observed noise and are advisory_only",
+        "validation_evidence": "memo_skip_over_lazy observed a 2x inter-run outlier (1.510 vs 0.77) — its envelope reaches 2.23x center, so it is honestly classified advisory_only",
+        "value": 1.5
+      },
+      "mad_multiplier": {
+        "rationale": "envelope floor: three MADs above the calibration median; a robust guard that covers the observed spread of stable ratios (relMAD 0.9-6.7%) several times over",
+        "validation_evidence": "5-run calibration: no stable ratio exceeded 3 MADs within the observed range",
+        "value": 3
+      },
+      "small_sample_guard_band": {
+        "rationale": "envelope must exceed the WORST observed calibration value by 15%: five runs under-estimate the inter-run tail; the first self-test run on identical source landed beyond the too-tight 5-sample envelope, proving the guard is needed",
+        "validation_evidence": "self-test run 33553669363 (identical src) produced ratio 0.6655 vs the pre-fix envelope 0.6363; the widened envelope 0.7317 passed all subsequent same-source runs",
+        "value": 1.15
+      }
+    },
     "ratio_hard_gate_rule": "a same-run ratio is a hard regression signal when it exceeds envelope_upper on a comparable candidate; a ratio qualifies as a hard gate only when envelope_upper <= center * 1.5"
   },
   "environment": {
@@ -51,13 +68,33 @@
     "migration_validate_off",
     "migration_validate_on"
   ],
-  "generated_from_run_ids": [
+  "generated_from_benchmark_run_ids": [
+    "run-10372b9d3b8dd26080979c6f29161004",
+    "run-1b84e5312f25847fc791fb09341348c5",
+    "run-7b565ca935c32bc9c2d4c33566789e9e",
+    "run-8a6289eb63fb465bfbf7c127eaa983b3",
+    "run-c21e6709cec53372e4d881b5fd609e0c"
+  ],
+  "generated_from_workflow_run_ids": [
     "33546526573",
     "33546534607",
     "33546542658",
     "33546551328",
     "33546559054"
   ],
+  "hardware_pool": {
+    "note": "the same hosted runner image may land on different CPU families; a candidate outside this pool is PARTIALLY_COMPARABLE (correctness stays hard, performance ratios advisory)",
+    "observed_cpu_counts": [
+      4
+    ],
+    "observed_physical_memory_bytes": [
+      17174360064
+    ],
+    "observed_processor_signatures": [
+      "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel"
+    ]
+  },
   "policy_version": 1,
   "pr_smoke_scenarios": [
     "inspect_schema_1000",
@@ -78,11 +115,11 @@
       "numerator": "direct_read_memo_lazy",
       "relative_mad": 0.06098396905962533,
       "values": [
-        0.48524824989025717,
         0.4503217756763856,
-        0.3551795952999255,
         0.45735681597559286,
-        0.5057695844060317
+        0.48524824989025717,
+        0.5057695844060317,
+        0.3551795952999255
       ]
     },
     "memo_skip_over_lazy": {
@@ -97,11 +134,11 @@
       "numerator": "direct_read_memo_skip",
       "relative_mad": 0.014443527883318522,
       "values": [
-        0.7798409750987955,
         0.7911046299671892,
-        1.5097726943680325,
         0.7743581968870022,
-        0.7200836249602327
+        0.7798409750987955,
+        0.7200836249602327,
+        1.5097726943680325
       ]
     },
     "migration_validate_on_over_off": {
@@ -116,11 +153,11 @@
       "numerator": "migration_validate_on",
       "relative_mad": 0.03965844065879249,
       "values": [
-        1.1550496374338863,
         1.2704807598077388,
-        1.2317706437276161,
         1.1092421699297548,
-        1.1542052332123582
+        1.1550496374338863,
+        1.1542052332123582,
+        1.2317706437276161
       ]
     },
     "projection_selected_over_all": {
@@ -135,11 +172,11 @@
       "numerator": "direct_read_projection_selected",
       "relative_mad": 0.008919501114192565,
       "values": [
-        0.5850033334532085,
         0.6362887364462624,
-        0.6006821641810184,
         0.6000247841595424,
-        0.5946728624286882
+        0.5850033334532085,
+        0.5946728624286882,
+        0.6006821641810184
       ]
     },
     "read_1m_over_190k": {
@@ -154,11 +191,11 @@
       "numerator": "direct_read_1m",
       "relative_mad": 0.018792499995672993,
       "values": [
-        5.244093159817833,
         4.9799617079389,
-        5.296989473831409,
         5.065767060395955,
-        5.1992819674800375
+        5.244093159817833,
+        5.1992819674800375,
+        5.296989473831409
       ]
     }
   },
@@ -174,11 +211,11 @@
       "min": 0.033359,
       "relative_mad": 0.08194266153187844,
       "values": [
-        0.045513,
         0.033359,
-        0.035067,
         0.044951,
-        0.042066
+        0.045513,
+        0.042066,
+        0.035067
       ]
     },
     "direct_read_190k": {
@@ -191,11 +228,11 @@
       "min": 2.431369,
       "relative_mad": 0.03323803228339963,
       "values": [
-        3.698805,
         2.513837,
-        2.431369,
         3.821746,
-        3.721837
+        3.698805,
+        3.721837,
+        2.431369
       ]
     },
     "direct_read_1m": {
@@ -208,11 +245,11 @@
       "min": 12.518812,
       "relative_mad": 0.0023770495191950377,
       "values": [
-        19.396878,
         12.518812,
-        12.878936,
         19.360075,
-        19.35088
+        19.396878,
+        19.35088,
+        12.878936
       ]
     },
     "direct_read_cp1250": {
@@ -225,11 +262,11 @@
       "min": 0.000387,
       "relative_mad": 0.2358674463937622,
       "values": [
-        0.000513,
         0.000392,
-        0.000387,
         0.000563,
-        0.000683
+        0.000513,
+        0.000683,
+        0.000387
       ]
     },
     "direct_read_cp852": {
@@ -242,11 +279,11 @@
       "min": 0.000412,
       "relative_mad": 0.04085257548845474,
       "values": [
-        0.000563,
         0.000446,
-        0.000412,
         0.000577,
-        0.000586
+        0.000563,
+        0.000586,
+        0.000412
       ]
     },
     "direct_read_deleted_include": {
@@ -259,11 +296,11 @@
       "min": 0.012816,
       "relative_mad": 0.02871006874241807,
       "values": [
-        0.020352,
         0.018626,
-        0.012816,
         0.019784,
-        0.020341
+        0.020352,
+        0.020341,
+        0.012816
       ]
     },
     "direct_read_deleted_skip": {
@@ -276,11 +313,11 @@
       "min": 0.011681,
       "relative_mad": 0.013397384574326007,
       "values": [
-        0.018804,
         0.011681,
-        0.011836,
         0.018986,
-        0.018735
+        0.018804,
+        0.018735,
+        0.011836
       ]
     },
     "direct_read_mazovia": {
@@ -293,11 +330,11 @@
       "min": 0.000432,
       "relative_mad": 0.008403361344537655,
       "values": [
-        0.000595,
         0.000449,
-        0.000432,
         0.0006,
-        0.000598
+        0.000595,
+        0.000598,
+        0.000432
       ]
     },
     "direct_read_memo_heavy": {
@@ -310,11 +347,11 @@
       "min": 2.83462,
       "relative_mad": 0.02942392716924811,
       "values": [
-        3.90835,
         2.83462,
-        2.971186,
         3.878235,
-        3.796638
+        3.90835,
+        3.796638,
+        2.971186
       ]
     },
     "direct_read_memo_inline": {
@@ -327,11 +364,11 @@
       "min": 0.030456,
       "relative_mad": 0.0055008551749642235,
       "values": [
-        0.043283,
         0.030456,
-        0.038893,
         0.043266,
-        0.043504
+        0.043283,
+        0.043504,
+        0.038893
       ]
     },
     "direct_read_memo_lazy": {
@@ -344,11 +381,11 @@
       "min": 0.013715,
       "relative_mad": 0.11193652718819495,
       "values": [
-        0.021003,
         0.013715,
-        0.013814,
         0.019788,
-        0.022003
+        0.021003,
+        0.022003,
+        0.013814
       ]
     },
     "direct_read_memo_skip": {
@@ -361,11 +398,11 @@
       "min": 0.01085,
       "relative_mad": 0.03376672557434996,
       "values": [
-        0.016379,
         0.01085,
-        0.020856,
         0.015323,
-        0.015844
+        0.016379,
+        0.015844,
+        0.020856
       ]
     },
     "direct_read_projection_all": {
@@ -378,11 +415,11 @@
       "min": 2.426268,
       "relative_mad": 0.018085395511532355,
       "values": [
-        3.61487,
         2.426268,
-        2.573574,
         3.550655,
-        3.591272
+        3.61487,
+        3.591272,
+        2.573574
       ]
     },
     "direct_read_projection_selected": {
@@ -395,11 +432,11 @@
       "min": 1.543807,
       "relative_mad": 0.009893077588379885,
       "values": [
-        2.114711,
         1.543807,
-        1.5459,
         2.130481,
-        2.135632
+        2.114711,
+        2.135632,
+        1.5459
       ]
     },
     "direct_read_raw_full": {
@@ -412,11 +449,11 @@
       "min": 2.417109,
       "relative_mad": 0.036405936595694376,
       "values": [
-        3.585624,
         2.417109,
-        2.494645,
         3.716162,
-        3.639548
+        3.585624,
+        3.639548,
+        2.494645
       ]
     },
     "direct_read_raw_none": {
@@ -429,11 +466,11 @@
       "min": 2.421117,
       "relative_mad": 0.0518596925565742,
       "values": [
-        3.539427,
         2.421117,
-        2.447708,
         3.682768,
-        3.501197
+        3.539427,
+        3.501197,
+        2.447708
       ]
     },
     "inspect_schema_1": {
@@ -446,11 +483,11 @@
       "min": 0.000525,
       "relative_mad": 0.02162162162162171,
       "values": [
-        0.00074,
         0.000525,
-        0.001009,
         0.000756,
-        0.000727
+        0.00074,
+        0.000727,
+        0.001009
       ]
     },
     "inspect_schema_100": {
@@ -463,11 +500,11 @@
       "min": 0.037363,
       "relative_mad": 0.09746007034538434,
       "values": [
-        0.070065,
         0.037363,
-        0.038809,
         0.076133,
-        0.069372
+        0.070065,
+        0.069372,
+        0.038809
       ]
     },
     "inspect_schema_1000": {
@@ -480,11 +517,11 @@
       "min": 0.368177,
       "relative_mad": 0.016173598278402913,
       "values": [
-        0.695079,
         0.368177,
-        0.377082,
         0.684016,
-        0.69166
+        0.695079,
+        0.69166,
+        0.377082
       ]
     },
     "migration_dbf_to_jsonl": {
@@ -497,11 +534,11 @@
       "min": 6.144939,
       "relative_mad": 0.03888366458279904,
       "values": [
-        10.242465,
         6.26393,
-        6.144939,
         10.228897,
-        10.626634
+        10.242465,
+        10.626634,
+        6.144939
       ]
     },
     "migration_jsonl_to_dbf_fpt": {
@@ -514,11 +551,11 @@
       "min": 44.055858,
       "relative_mad": 0.012732443197832573,
       "values": [
-        66.547934,
         44.055858,
-        45.460977,
         66.480653,
-        65.711269
+        66.547934,
+        65.711269,
+        45.460977
       ]
     },
     "migration_validate_off": {
@@ -531,11 +568,11 @@
       "min": 5.219164,
       "relative_mad": 0.030819994580061606,
       "values": [
-        8.933681,
         5.265332,
-        5.219164,
         9.209017,
-        9.089484
+        8.933681,
+        9.089484,
+        5.219164
       ]
     },
     "migration_validate_on": {
@@ -548,11 +585,11 @@
       "min": 6.428813,
       "relative_mad": 0.02702879971962878,
       "values": [
-        10.318845,
         6.689503,
-        6.428813,
         10.21503,
-        10.49113
+        10.318845,
+        10.49113,
+        6.428813
       ]
     }
   }
