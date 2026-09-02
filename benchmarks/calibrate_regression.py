@@ -584,10 +584,7 @@ def main(argv: list[str] | None = None) -> int:
                 and prov["packages"] != provenance[benchmark_run_ids[0]]["packages"]
             ):
                 raise SystemExit("calibration reports must share one dependency set")
-            if (
-                benchmark_run_ids
-                and prov["python"] != provenance[benchmark_run_ids[0]]["python"]
-            ):
+            if benchmark_run_ids and prov["python"] != provenance[benchmark_run_ids[0]]["python"]:
                 raise SystemExit("calibration reports must share one Python version")
             medians[benchmark_run_id] = med
             prov["workflow_run_id"] = workflow_run_id
