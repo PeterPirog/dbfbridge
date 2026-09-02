@@ -6,8 +6,10 @@ checkout.  stdlib-only, no source-tree imports, no silent fallbacks.
 
 Usage:
     python scripts/release_wheel_smoke.py \
-        --wheel dist/dbfbridge-0.2.0-py3-none-any.whl \
-        --expected-version 0.2.0
+        --wheel dist/dbfbridge-<version>-py3-none-any.whl
+
+The expected version is read from pyproject.toml; pass --expected-version
+only when the checkout root is unavailable.
 """
 
 from __future__ import annotations

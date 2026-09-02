@@ -9,7 +9,7 @@
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
-> Status: **0.2.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
+> Status: **0.3.0 (alpha)** — release candidate in preparation (not yet published to PyPI). Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed. Upgrading from 0.2? Read the [0.2 → 0.3 migration guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-0.3.md).
 
 ## Requirements
 
@@ -65,13 +65,15 @@ dbf-bridge --help
 | `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
-> **Availability note:** the GitHub release **v0.2.0** exists, but the PyPI
-> publication of 0.2.0 is currently **pending** (external account recovery /
-> Trusted Publisher setup).  The install-profile extras documented here are
-> the upcoming **0.3** contract; once the corresponding release is on PyPI,
-> `pip install dbfbridge` installs the minimal base profile and the extras
-> below become opt-in.  Until that publication, installation from PyPI is
-> not yet possible.
+> **Availability note (release preparation):** the **0.3.0 release
+> candidate** is prepared in this repository, but the **PyPI publication
+> has not happened yet** — publishing is a separate step after the tagged
+> release (including Trusted Publisher verification). The install-profile
+> extras documented here are the **0.3.0 installed-distribution contract**:
+> the commands below describe exactly how installation works once 0.3.0 is
+> the published release. Until then, `pip install dbfbridge` resolves to
+> the previous published PyPI version. See the
+> [0.2 → 0.3 migration guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-0.3.md).
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
 stdlib `json` module; without `polars`, CSV conversion uses the Python

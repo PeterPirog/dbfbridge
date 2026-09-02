@@ -34,7 +34,14 @@ def test_pypi_metadata_is_complete_and_version_is_released() -> None:
 
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     version = re.escape(project["version"])
-    assert re.search(rf"^## \[{version}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.MULTILINE)
+    # A dated heading is required for a published release; during release
+    # preparation the section may carry an explicit "Unreleased" placeholder
+    # instead of a fabricated date.
+    assert re.search(
+        rf"^## \[{version}\] - (\d{{4}}-\d{{2}}-\d{{2}}|Unreleased)$",
+        changelog,
+        re.MULTILINE,
+    )
 
 
 def test_release_files_and_workflows_stay_synchronized() -> None:
@@ -46,7 +53,10 @@ def test_release_files_and_workflows_stay_synchronized() -> None:
     assert "include PUBLISHING.md" in manifest
     assert "recursive-include .github/workflows *.yml" in manifest
     assert "Workflow | `publish.yml`" in publishing
-    assert f"dbfbridge=={dbfbridge.__version__}" in publishing
+    # The post-publication checklist must reference the released version
+    # generically (a single RELEASE_VERSION variable), never a hardcoded
+    # historical version that would go stale.
+    assert 'pip install "dbfbridge==$RELEASE_VERSION"' in publishing
     assert "name: pypi" in publish_workflow
     assert "pypa/gh-action-pypi-publish@release/v1" in publish_workflow
     for version in ("3.10", "3.11", "3.12", "3.13", "3.14"):

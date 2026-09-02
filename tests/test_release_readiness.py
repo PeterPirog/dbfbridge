@@ -1,0 +1,216 @@
+"""Release-readiness guards for the 0.3.0 preparation.
+
+These tests protect the release contract that pure unit tests cannot see:
+version synchronization across `pyproject.toml`, the package `__version__`,
+and the built wheel METADATA; reusable (version-agnostic) release
+workflows; and truthfulness of the user-facing release documentation.
+"""
+
+from __future__ import annotations
+
+import email.parser
+import re
+import zipfile
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
+
+import dbf_bridge
+
+ROOT = Path(__file__).parents[1]
+DIST = ROOT / "dist"
+
+
+def _pyproject_version() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(data["project"]["version"])
+
+
+def _changelog() -> str:
+    return (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# version synchronization
+# ---------------------------------------------------------------------------
+
+
+def test_version_is_synchronized_across_pyproject_and_both_namespaces() -> None:
+    version = _pyproject_version()
+    assert version == dbf_bridge.__version__
+    import dbfbridge
+
+    assert version == dbfbridge.__version__
+
+
+def _built_wheel() -> Path | None:
+    wheels = sorted(DIST.glob("dbfbridge-*.whl"))
+    return wheels[0] if wheels else None
+
+
+def test_built_wheel_metadata_matches_project_contract() -> None:
+    """When a built wheel exists (local `python -m build` or release CI),
+    its METADATA must agree with pyproject.toml and carry the typing and
+    optional-dependency contract. The publish workflow performs the same
+    check on its exact artifact."""
+    wheel = _built_wheel()
+    if wheel is None:
+        import pytest
+
+        pytest.skip("no built wheel in dist/ (run `python -m build` to exercise this test)")
+        raise AssertionError("unreachable")  # pragma: no cover - skip() above
+
+    version = _pyproject_version()
+    with zipfile.ZipFile(wheel) as archive:
+        names = set(archive.namelist())
+        metadata_path = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_path))
+
+    assert metadata["Name"] == "dbfbridge"
+    assert metadata["Version"] == version, "wheel METADATA version drifted from pyproject.toml"
+    assert "Typing :: Typed" in metadata.get_all("Classifier", [])
+    for marker in ("dbf_bridge/py.typed", "dbfbridge/py.typed"):
+        assert marker in names, f"{marker} missing from the built wheel"
+
+    requires_dist = metadata.get_all("Requires-Dist") or []
+    base_requirements = [line for line in requires_dist if "extra ==" not in line]
+    assert base_requirements == ["dbfread>=2.0.7"], base_requirements
+
+    extras = set(metadata.get_all("Provides-Extra", []))
+    for documented_extra in ("write", "xlsx", "fast", "all", "import"):
+        assert documented_extra in extras, f"missing extra: {documented_extra}"
+
+
+# ---------------------------------------------------------------------------
+# reusable release workflows (no hardcoded historical expected version)
+# ---------------------------------------------------------------------------
+
+
+def test_release_workflows_do_not_hardcode_expected_version() -> None:
+    """The wheel smokes read the expected version from pyproject.toml; the
+    workflows must stay reusable for future versions."""
+    pattern = re.compile(r'--expected-version[ ="]*\d')
+    for workflow in ("publish.yml", "ci.yml"):
+        text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        match = pattern.search(text)
+        assert match is None, f"{workflow} hardcodes an expected version: {match!r}"
+
+
+def test_publish_workflow_smokes_and_publishes_the_same_artifact() -> None:
+    """Build-once contract: both smokes run in the build job on dist/, the
+    artifact is uploaded once, and the publish job only downloads and
+    uploads those exact files."""
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    build_section = publish.split("publish:", 1)[0]
+
+    assert "python -m build" in build_section
+    assert "python -m twine check dist/*" in build_section
+    assert "scripts/release_wheel_smoke.py --wheel" in build_section
+    assert "scripts/pypi_install_smoke.py --wheel" in build_section
+    assert "actions/upload-artifact" in build_section
+
+    publish_section = "publish:" + publish.split("publish:", 1)[1]
+    assert "download-artifact" in publish_section
+    assert "python -m build" not in publish_section, "publish job must not rebuild"
+    assert "pypa/gh-action-pypi-publish@release/v1" in publish_section
+    # Trusted Publishing only: no token/password-based upload.
+    assert "PYPI_TOKEN" not in publish
+    assert "password:" not in publish
+
+
+# ---------------------------------------------------------------------------
+# release documentation truthfulness
+# ---------------------------------------------------------------------------
+
+
+def _current_version_section_is_unreleased() -> bool:
+    version = re.escape(_pyproject_version())
+    return bool(re.search(rf"^## \[{version}\] - Unreleased$", _changelog(), re.MULTILINE))
+
+
+def test_readme_release_status_is_truthful() -> None:
+    version = _pyproject_version()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert f"**{version} (alpha)**" in readme
+    assert "docs/pypi-usage.md" in readme
+    assert "docs/migration-0.3.md" in readme
+
+    if _current_version_section_is_unreleased():
+        # While the release is only prepared, the README must not claim the
+        # version is already published.
+        assert "available on PyPI" not in readme
+        assert "release candidate" in readme
+
+
+def test_pypi_usage_guide_is_installed_distribution_only() -> None:
+    """The canonical PyPI guide must work for a user with only Python, pip,
+    and DBF/FPT files — no repository checkout, no editable install, no
+    PYTHONPATH, and no private-module imports."""
+    guide = (ROOT / "docs" / "pypi-usage.md").read_text(encoding="utf-8")
+
+    forbidden = [
+        "git clone",
+        "export PYTHONPATH",
+        "$env:PYTHONPATH",
+        "set PYTHONPATH",
+        "pip install -e",
+        "python -m pip install -e",
+        "from dbf_bridge.core",
+        "from dbf_bridge.importer",
+        "from dbf_bridge.exporter",
+    ]
+    present = [marker for marker in forbidden if marker in guide]
+    assert not present, f"repository-only content in the PyPI guide: {present}"
+    # The guide must explicitly state the no-checkout contract.
+    assert "no repository checkout" in guide
+
+    for extra in ("[write]", "[xlsx]", "[write,xlsx]", "[fast]", "[all]", "[import]"):
+        assert f"dbfbridge{extra}" in guide or f'dbfbridge{extra}"' in guide, (
+            f"install profile {extra} missing from the PyPI guide"
+        )
+
+
+def test_migration_guide_exists_and_covers_the_0_3_contract() -> None:
+    guide_path = ROOT / "docs" / "migration-0.3.md"
+    assert guide_path.is_file()
+    guide = guide_path.read_text(encoding="utf-8")
+
+    for extra in ("[write]", "[xlsx]", "[write,xlsx]", "[fast]", "[all]", "[import]"):
+        assert extra in guide, f"migration guide does not cover {extra}"
+    assert "OptionalDependencyMissingError" in guide
+    assert "cancel_check" in guide
+    assert 'encoding="mazovia"' in guide
+    assert "dbf_bridge" in guide
+    # CDX expectations must be explicit, not overpromised.
+    assert "reports structural CDX presence" in guide
+    assert "not parse or reconstruct" in guide
+
+
+def test_changelog_current_version_section_documents_the_release() -> None:
+    version = _pyproject_version()
+    changelog = _changelog()
+    match = re.search(
+        rf"^## \[{re.escape(version)}\] - .*$(.*?)(?=^## \[|\Z)",
+        changelog,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"no changelog section for {version}"
+
+    section = match.group(0)
+    for entry in (
+        "`[write]`",
+        "`[xlsx]`",
+        "`[fast]`",
+        "`[all]`",
+        "`[import]`",
+        "READ_CANCELLED",
+        "docs/migration-0.3.md",
+        "native DBF reader",  # explicit non-goal: no native reader introduced
+        "writer rewrite",  # explicit non-goal: no writer rewrite introduced
+    ):
+        assert entry in section, f"changelog {version} section lacks: {entry}"
+    assert f"[{version}]: https://github.com/PeterPirog/dbfbridge/compare/" in changelog

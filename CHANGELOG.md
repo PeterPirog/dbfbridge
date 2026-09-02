@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - Unreleased
+
+> Release preparation: this date is set in the final release commit at
+> publication time. The section below already documents the complete 0.3.0
+> change set.
+>
+> Explicit non-goals for 0.3 (decided by the Phase 3 benchmark policy): a
+> native DBF reader was NOT introduced, because the measured dbfread-backed
+> iterator showed no real bottleneck; and a writer rewrite was NOT
+> introduced — direct-write research stays preserved on a deferred branch,
+> outside this release.
+
+### Added
+
+User-visible:
+
+- Optional dependency split: the base wheel installs with exactly one
+  mandatory runtime dependency (`dbfread`) and covers `import dbfbridge`,
+  the complete read-only Direct Read surface, and DBF → JSONL/JSON/CSV
+  migration. Heavy capabilities became opt-in extras:
+  - `[write]` — DBF/FPT reconstruction (`reconstruct_dbf`,
+    `check_conversion_quality`);
+  - `[xlsx]` — XLSX export and XLSX input reading;
+  - `[fast]` — optional `orjson`/`polars` accelerators (pure speed:
+    identical logical results, absence never raises);
+  - `[all]` — the complete user-facing feature set;
+  - `[import]` — historical compatibility alias resolving to `[write]`.
+- Direct Read progress and cooperative cancellation: optional keyword-only
+  `progress=` and `cancel_check=` parameters on `iter_records()`,
+  `read_records()`, and `iter_raw_records()`; existing calls stay valid.
+- `READ_CANCELLED` structured error (`ReadCancelledError`) carrying a
+  JSON-safe progress context, with guaranteed DBF/FPT handle cleanup.
+- Shared canonical progress contract: `ProgressEvent`, `ProgressCallback`,
+  and `CancellationCheck` are public exports shared by Direct Read and
+  migration operations.
+- Explicit Polish encoding hardening: `mazovia`, `piast`, and `pki`
+  overrides (plus `cp1250`/`cp852`) are handled at operation time — no
+  manual codec registration and no private-module import; an unknown codec
+  raises the typed `EncodingUnknownError` (`ENCODING_UNKNOWN`).
+- Missing optional extras fail typed and early:
+  `OptionalDependencyMissingError` (`OPTIONAL_DEPENDENCY_MISSING`) is raised
+  before any output is created, never auto-installs, and never accesses the
+  Internet.
+- 0.2 → 0.3 migration guide: `docs/migration-0.3.md`.
+
+Developer/infrastructure:
+
+- Performance regression CI: canonical Phase 3 BEFORE baseline, measured
+  regression policy with calibration provenance, strict workflow-ID and
+  policy-parameter integrity validation.
+- Windows Server 2025 / Python 3.12.10 performance recipe recorded as the
+  canonical benchmark environment provenance.
+- PyPI install-profile wheel smokes: fresh-venv verification of every
+  install profile (base, `[write]`, `[xlsx]`, `[write,xlsx]`, `[fast]`,
+  `[all]`, `[import]`) outside the repository checkout.
+- Release workflow hardening: wheel smokes read the expected version from
+  `pyproject.toml` (no hardcoded historical version), the publish build job
+  runs both wheel smokes on the exact artifact, and the same artifact is
+  uploaded and published (build once → smoke → publish the same files).
+
+### Changed
+
+- Base-wheel dependency contract: installing `dbfbridge` no longer pulls
+  `dbf`, `openpyxl`, `xlsxwriter`, `orjson`, or `polars`. Reconstruction
+  requires `pip install "dbfbridge[write]"`, XLSX support requires `[xlsx]`,
+  and `pip install "dbfbridge[all]"` restores the full pre-0.3 capability
+  set. Missing extras fail with the typed error above — they never change
+  the read/export behavior.
+- Base-wheel explicit Polish encoding correctness: cp1250 → cp852 → Mazovia
+  decoding works in the minimal base install; explicit overrides no longer
+  depend on caller-side codec registration order.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added
@@ -34,5 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development Status: Alpha (Direct Read Core stable, broader API stabilization continues)
 - Python 3.14 CI support added
 
+[0.3.0]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PeterPirog/dbfbridge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.1.0

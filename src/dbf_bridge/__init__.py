@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from .optional_deps import OptionalDependencyMissingError
     from .progress import CancellationCheck
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 #: Lazily resolved public symbols, mapped to the module that defines them.
 _LAZY_SYMBOLS: dict[str, str] = {

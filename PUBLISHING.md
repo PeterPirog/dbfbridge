@@ -51,33 +51,82 @@ settings instead of creating a pending publisher.
 
 ## Publish
 
-1. Create a Git tag exactly matching `v<project.version>`, for example `v0.2.0`.
-2. Create and publish a GitHub Release from that tag, using the matching changelog section
+1. Create a Git tag exactly matching `v<project.version>`; a release of
+   version `X.Y.Z` is tagged `vX.Y.Z`.
+2. Set the release date in the matching `CHANGELOG.md` section (replace the
+   `Unreleased` placeholder from release preparation with the publication
+   date).
+3. Create and publish a GitHub Release from that tag, using the matching changelog section
    as its notes.
-3. Approve the protected `pypi` environment deployment.
-4. The `Publish to PyPI` workflow validates the tag, builds wheel and sdist once, runs
-   `twine check`, and publishes those exact artifacts through Trusted Publishing.
+4. Approve the protected `pypi` environment deployment.
+5. The `Publish to PyPI` workflow validates the tag, builds wheel and sdist once, runs
+   `twine check`, smoke-tests both wheels on the exact artifacts, and publishes those
+   exact artifacts through Trusted Publishing.
 
 Never rebuild and manually upload different files for the same version.
 
 ## Verify after publication
 
-Create a new environment outside the repository checkout. Replace `0.2.0` below with the
-version just published:
+Create a fresh environment **outside the repository checkout** and set the
+published version once — never edit this checklist per release:
 
 ```bash
+RELEASE_VERSION=<the version just published>   # e.g. 0.3.0
 python -m venv .venv-pypi-check
 .venv-pypi-check/bin/python -m pip install --upgrade pip
-.venv-pypi-check/bin/python -m pip install dbfbridge==0.2.0
-.venv-pypi-check/bin/python -c "from dbfbridge import export_dbf; print(export_dbf)"
-.venv-pypi-check/bin/dbf-bridge --help
+.venv-pypi-check/bin/python -m pip install "dbfbridge==$RELEASE_VERSION"
 ```
 
-On Windows, use `.venv-pypi-check\Scripts\python.exe` and
-`.venv-pypi-check\Scripts\dbf-bridge.exe`. Run `--help` for the other three commands as
-well, then perform a small synthetic export and verification. Confirm the project
-description, license, Python requirement, dependency list, source links, wheel, sdist,
-and release provenance on PyPI. If a serious defect is discovered, publish a new patch
+(Windows PowerShell: use `.venv-pypi-check\Scripts\python.exe` and
+`.venv-pypi-check\Scripts\dbf-bridge.exe` below.)
+
+Then verify, in order:
+
+1. **Version is exact** and the import comes from the venv, never from a
+   source tree:
+
+   ```bash
+   .venv-pypi-check/bin/python -c "import dbfbridge; print(dbfbridge.__version__, dbfbridge.__file__)"
+   ```
+
+   The version must equal `$RELEASE_VERSION` and `__file__` must point
+   inside `.venv-pypi-check` (`site-packages`).
+2. **`pip show` metadata**: name, version, license, `Requires-Python`,
+   `Requires-Dist` (base: `dbfread` only), project URLs.
+
+   ```bash
+   .venv-pypi-check/bin/python -m pip show dbfbridge
+   ```
+3. **All four console commands** respond:
+
+   ```bash
+   .venv-pypi-check/bin/dbf-bridge --help
+   .venv-pypi-check/bin/dbf-bridge-import --help
+   .venv-pypi-check/bin/dbf-bridge-verify --help
+   .venv-pypi-check/bin/dbf-bridge-quality --help
+   ```
+4. **Base Direct Read smoke** on a synthetic DBF file: `inspect_table`,
+   `read_schema`, `iter_records` (including `progress=`/`cancel_check=`),
+   `read_records`, `iter_raw_records`.
+5. **Base JSONL migration smoke**: `export_dbf(..., formats=("jsonl",))`
+   produces `*.jsonl` + `<table>_schema.json` + `migration_report.jsonl`.
+6. **`[write]` smoke**: install `"dbfbridge[write]"` and reconstruct the
+   JSONL export back to DBF/FPT with `reconstruct_dbf`.
+7. **Optional extras as appropriate**: `[xlsx]` export, `[write,xlsx]`
+   XLSX → DBF reconstruction, `[fast]` accelerators, `[all]` complete
+   profile (or rely on the CI/Publish `pypi_install_smoke.py` run of the
+   exact artifact, which covers every profile).
+8. **No source-tree import**: the checks above run from a directory that is
+   not the repository checkout and with no `PYTHONPATH` set.
+9. **PyPI project page**: description, license, Python requirement,
+   dependency list, project URLs, and both a wheel and an sdist are visible
+   for the release.
+10. **Release provenance/attestations**: the GitHub Release points at the
+    tag, the publish workflow run built the exact artifacts, and the PyPI
+    upload provenance/attestation metadata (Trusted Publishing) is present
+    on the release files.
+
+If a serious defect is discovered, publish a new patch
 version; PyPI does not permit replacing an existing file.
 
 ## If publication fails

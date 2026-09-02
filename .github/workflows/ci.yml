@@ -73,8 +73,8 @@ jobs:
       - name: Fresh-wheel smoke (reusable helper)
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
-          python scripts/release_wheel_smoke.py --wheel "$wheel" --expected-version "0.2.0"
+          python scripts/release_wheel_smoke.py --wheel "$wheel"
       - name: PyPI install-profile smoke (reusable helper)
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
-          python scripts/pypi_install_smoke.py --wheel "$wheel" --expected-version "0.2.0"
+          python scripts/pypi_install_smoke.py --wheel "$wheel"

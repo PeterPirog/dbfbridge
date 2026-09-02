@@ -29,10 +29,36 @@ jobs:
       - run: python -m pytest
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Verify built distribution metadata (version, py.typed, typing classifier)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import email.parser, tomllib, zipfile
+          from pathlib import Path
+
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          wheels = sorted(Path("dist").glob("dbfbridge-*.whl"))
+          assert len(wheels) == 1, f"expected exactly one wheel, found {wheels}"
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = set(archive.namelist())
+              metadata_path = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_path))
+          assert metadata["Version"] == version, (metadata["Version"], version)
+          assert "Typing :: Typed" in metadata.get_all("Classifier", []), metadata.get_all("Classifier")
+          for typed_marker in ("dbf_bridge/py.typed", "dbfbridge/py.typed"):
+              assert typed_marker in names, f"{typed_marker} missing from the wheel"
+          print(f"wheel metadata OK: version={metadata['Version']}, py.typed present, Typing :: Typed")
+          PY
       - name: Fresh-wheel smoke (reusable helper)
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
-          python scripts/release_wheel_smoke.py --wheel "$wheel" --expected-version "0.2.0"
+          python scripts/release_wheel_smoke.py --wheel "$wheel"
+      - name: PyPI install-profile smoke (reusable helper)
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
+          python scripts/pypi_install_smoke.py --wheel "$wheel"
       - name: Store release distributions
         uses: actions/upload-artifact@v5
         with:

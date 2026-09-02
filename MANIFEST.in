@@ -2,6 +2,7 @@ include CHANGELOG.md
 include LICENSE
 include PUBLISHING.md
 include README.md
+recursive-include docs *.md
 recursive-include .github/workflows *.yml
 recursive-include benchmarks *.md *.py
 recursive-include examples *.md *.py *.txt
