@@ -948,8 +948,7 @@ def test_policy_parameters_exact_key_set() -> None:
     }
     problems = validate_regression_policy(policy)
     assert any(
-        "policy_parameters has unknown parameter" in problem
-        and "magic_extra_threshold" in problem
+        "policy_parameters has unknown parameter" in problem and "magic_extra_threshold" in problem
         for problem in problems
     )
 
@@ -958,7 +957,6 @@ def test_canonical_parameter_value_change_is_rejected() -> None:
     """Policy-v1 cannot change semantic constants without changing the
     canonical source - even if ratio classifications are adjusted to
     match mathematically."""
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     changed = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     changed["derivation"]["policy_parameters"]["hard_gate_discrimination_bound"]["value"] = 1.01
     # Adjust ratio classifications so they mathematically match the changed
