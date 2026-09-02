@@ -687,7 +687,6 @@ def test_raw_report_calibration_cli_end_to_end() -> None:
 def test_ratio_contract_violations() -> None:
     """Empty, partial, unknown or mispaired ratio sets are INVALID_POLICY -
     an empty or partial ratio set would silently disable regression gates."""
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     empty = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     empty["ratio_calibration"] = {}
@@ -723,7 +722,7 @@ def test_classification_integrity_is_enforced() -> None:
     """hard_gate iff envelope_upper <= center * discrimination_bound - a policy
     cannot silently disable a hard gate (or promote an advisory one)
     without changing data or policy parameters."""
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     demoted = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     demoted["ratio_calibration"]["projection_selected_over_all"]["classification"] = "advisory_only"
     problems = validate_regression_policy(demoted)
@@ -736,7 +735,7 @@ def test_classification_integrity_is_enforced() -> None:
 
 
 def test_absolute_scenarios_must_stay_advisory() -> None:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     promoted = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     promoted["scenario_calibration"]["direct_read_190k"]["classification"] = "hard_gate"
     problems = validate_regression_policy(promoted)
@@ -747,7 +746,7 @@ def test_absolute_scenarios_must_stay_advisory() -> None:
 
 
 def test_policy_parameters_strictly_validated() -> None:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     del missing["derivation"]["policy_parameters"]["mad_multiplier"]
@@ -770,7 +769,7 @@ def test_policy_parameters_strictly_validated() -> None:
 
 
 def test_calibration_sources_validation() -> None:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     del missing["calibration_sources"]
@@ -801,7 +800,7 @@ def test_calibration_sources_validation() -> None:
 
 
 def test_package_under_test_validation() -> None:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     del missing["package_under_test"]
@@ -815,7 +814,7 @@ def test_package_under_test_validation() -> None:
 
 
 def test_hardware_pool_and_environment_validation() -> None:
-    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    json.loads(POLICY_PATH.read_text(encoding="utf-8"))
 
     missing_pool = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     del missing_pool["hardware_pool"]
