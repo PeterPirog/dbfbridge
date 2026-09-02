@@ -620,6 +620,46 @@ def test_constraints_match_the_policy_measurement_dependencies() -> None:
     assert "dbfbridge" not in pinned, "the package under test must not be a constraint"
 
 
+def test_calibration_generation_is_order_independent(tmp_path: Path) -> None:
+    """The raw-report calibration CLI generates identical policies under
+    reordered inputs (A,B,C,D,E vs E,C,A,D,B) - calibration_sources records
+    are sorted by workflow_run_id inside build_policy; pairing is never
+    derived from independently sorted field lists."""
+    import subprocess
+    import sys
+
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    workflow_ids = [f"33580000{i:03d}" for i in range(5)]
+    reports = []
+    for index, workflow_id in enumerate(workflow_ids):
+        candidate = _full_valid_report(policy)
+        candidate["environment"]["run_id"] = f"run-{index:032x}"
+        report_path = tmp_path / f"report-{workflow_id}.json"
+        report_path.write_text(json.dumps(candidate), encoding="utf-8")
+        reports.append((workflow_id, report_path))
+
+    def run_cli(order):
+        output = tmp_path / f"policy-{'-'.join(order)}.json"
+        args = [sys.executable, "-m", "benchmarks.calibrate_regression"]
+        for workflow_id in order:
+            report_path = next(path for wid, path in reports if wid == workflow_id)
+            args.append(f"--report={workflow_id}={report_path}")
+        args += ["--output", str(output)]
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parents[1]),
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        return json.loads(output.read_text(encoding="utf-8"))
+
+    forward = run_cli(workflow_ids)
+    reversed_order = list(reversed(workflow_ids))
+    backward = run_cli(reversed_order)
+    assert forward == backward, "policy generation is order-dependent!"
+
+
 def test_raw_report_calibration_cli_end_to_end() -> None:
     """Five valid raw Phase 3 reports with explicit workflow IDs generate a
     valid policy; the CLI refuses missing/invalid workflow provenance."""
