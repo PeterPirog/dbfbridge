@@ -258,7 +258,6 @@ def test_policy_rejected_with_fewer_than_five_calibration_runs() -> None:
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     policy["generated_from_workflow_run_ids"] = policy["generated_from_workflow_run_ids"][:4]
     policy["calibration_count"] = 4
-    policy["calibration_count"] = 4
     problems = validate_regression_policy(policy)
     assert any("at least 5" in problem for problem in problems)
 

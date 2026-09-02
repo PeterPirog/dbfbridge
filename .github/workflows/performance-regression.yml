@@ -48,9 +48,11 @@ jobs:
       - name: Set up Python 3.12.10
         uses: actions/setup-python@v6
         with:
-          # Exact patch matches the calibrated environment; if a patch is not
-          # available setup-python falls back to the latest 3.12.x, which the
-          # comparability policy then classifies honestly.
+          # Exact patch matches the calibrated environment; setup-python
+          # installs exactly this version from the python-versions manifest
+          # and fails loudly if it is unavailable — there is NO silent
+          # fallback to a newer 3.12.x (that would have to be classified
+          # honestly by the comparability policy instead).
           python-version: "3.12.10"
 
       - name: Install project with benchmark extras (pinned measurement deps)
