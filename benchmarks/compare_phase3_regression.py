@@ -310,9 +310,7 @@ def _raw_scenario_names(candidate: dict[str, Any]) -> tuple[list[str], list[str]
     return names, problems
 
 
-def _failure_result(
-    status: str, failures: list[str], comparability: str
-) -> dict[str, Any]:
+def _failure_result(status: str, failures: list[str], comparability: str) -> dict[str, Any]:
     """Stable schema for early failures - renderer/JSON never KeyError."""
     return {
         "status": status,
@@ -388,9 +386,7 @@ def compare_report(
         suffix = (
             [f"... and {len(contract_problems) - 12} more"] if len(contract_problems) > 12 else []
         )
-        return _failure_result(
-            "CORRECTNESS_FAILURE", summarized + suffix, "NOT_EVALUATED"
-        )
+        return _failure_result("CORRECTNESS_FAILURE", summarized + suffix, "NOT_EVALUATED")
 
     scenarios = {entry["scenario"]: entry for entry in candidate["scenarios"]}
     required = (
