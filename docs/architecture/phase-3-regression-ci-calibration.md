@@ -81,17 +81,21 @@ the policy is `advisory_only`.
 
 ## Same-run relative ratios (drift-immune)
 
+Generated from the committed policy - do not edit values by hand.
+
 | ratio | center | MAD | rel MAD | envelope upper | envelope/center | classification |
 |---|---|---|---|---|---|---|
-| projection_selected_over_all | 0.6000 | 0.0054 | 0.9 % | 0.6363 | 1.060 | hard_gate |
-| read_1m_over_190k | 5.1993 | 0.0984 | 1.9 % | 5.4924 | 1.056 | hard_gate |
-| migration_validate_on_over_off | 1.1550 | 0.0771 | 6.7 % | 1.2925 | 1.119 | hard_gate |
-| memo_lazy_over_inline | 0.4574 | 0.0169 | 3.7 % | 0.5595 | 1.223 | hard_gate |
-| memo_skip_over_lazy | 0.7798 | 0.0108 | 1.4 % | 1.5098 | 1.936 | advisory_only |
+| memo_lazy_over_inline | 0.4574 | 0.0279 | 6.1 % | 0.5816 | 1.272 | hard_gate |
+| memo_skip_over_lazy | 0.7798 | 0.0113 | 1.4 % | 1.7362 | 2.226 | advisory_only |
+| migration_validate_on_over_off | 1.1550 | 0.0458 | 4.0 % | 1.4611 | 1.265 | hard_gate |
+| projection_selected_over_all | 0.6000 | 0.0054 | 0.9 % | 0.7317 | 1.220 | hard_gate |
+| read_1m_over_190k | 5.1993 | 0.0977 | 1.9 % | 6.0915 | 1.172 | hard_gate |
 
-`memo_skip_over_lazy` shows one outlier run (1.510 vs ~0.77) — its
-data-derived envelope is therefore non-discriminating (1.94 × center), so
-it is honestly classified `advisory_only` instead of inflating a threshold.
+`memo_skip_over_lazy` shows one outlier run (1.510 vs ~0.77) - its
+data-derived envelope is therefore non-discriminating (2.23 x center),
+so it is honestly classified `advisory_only` instead of inflating
+a threshold.
+
 
 ## Derivation algorithm
 
