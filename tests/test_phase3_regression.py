@@ -761,6 +761,46 @@ def test_ratio_contract_violations() -> None:
     assert any("must pair" in problem for problem in problems)
 
 
+def test_compact_workflow_ids_must_be_positive_digit_strings() -> None:
+    """Workflow run IDs must be POSITIVE digit strings - "0", non-numeric
+    values and zero-padded values are rejected (a GitHub workflow run ID
+    is always a positive integer)."""
+    for bad_id in ("0", "abc", "-1", "0123"):
+        inputs = _synthetic_inputs(run_count=5)
+        inputs["workflow_run_ids"][0] = bad_id
+        first_benchmark_id = next(iter(inputs["provenance"]))
+        inputs["provenance"][first_benchmark_id]["workflow_run_id"] = bad_id
+        with pytest.raises(ValueError, match="positive digit strings"):
+            build_policy(inputs)
+
+
+def test_compact_top_level_workflow_ids_must_match_provenance() -> None:
+    """The top-level workflow_run_ids list must be exactly the set of
+    workflow IDs recorded in the provenance - never decorative metadata."""
+    inputs = _synthetic_inputs(run_count=5)
+    # Replace the top-level list with an ID that is NOT in provenance.
+    inputs["workflow_run_ids"][0] = "3359999999"
+    with pytest.raises(ValueError, match="must exactly match the provenance"):
+        build_policy(inputs)
+    # An extra workflow ID in provenance but missing top-level.
+    inputs = _synthetic_inputs(run_count=5)
+    first_benchmark_id = next(iter(inputs["provenance"]))
+    inputs["provenance"][first_benchmark_id]["workflow_run_id"] = "3359999999"
+    with pytest.raises(ValueError, match="must exactly match the provenance"):
+        build_policy(inputs)
+
+
+def test_compact_provenance_duplicate_workflow_id_rejected() -> None:
+    inputs = _synthetic_inputs(run_count=5)
+    first_benchmark_id = inputs["benchmark_run_ids"][0]
+    second_benchmark_id = inputs["benchmark_run_ids"][1]
+    inputs["provenance"][second_benchmark_id]["workflow_run_id"] = inputs["provenance"][
+        first_benchmark_id
+    ]["workflow_run_id"]
+    with pytest.raises(ValueError, match="duplicate workflow_run_id"):
+        build_policy(inputs)
+
+
 def test_classification_integrity_is_enforced() -> None:
     """hard_gate iff envelope_upper <= center * discrimination_bound - a policy
     cannot silently disable a hard gate (or promote an advisory one)
@@ -894,3 +934,41 @@ def test_constraints_exact_set() -> None:
         if "==" in line and not line.strip().startswith("#")
     }
     assert pinned_names == external
+
+
+def test_policy_parameters_exact_key_set() -> None:
+    """The policy must carry EXACTLY the canonical POLICY_PARAMETERS -
+    an unknown extra parameter is INVALID_POLICY."""
+
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy["derivation"]["policy_parameters"]["magic_extra_threshold"] = {
+        "value": 42,
+        "rationale": "x",
+        "validation_evidence": "y",
+    }
+    problems = validate_regression_policy(policy)
+    assert any(
+        "policy_parameters has unknown parameter" in problem
+        and "magic_extra_threshold" in problem
+        for problem in problems
+    )
+
+
+def test_canonical_parameter_value_change_is_rejected() -> None:
+    """Policy-v1 cannot change semantic constants without changing the
+    canonical source - even if ratio classifications are adjusted to
+    match mathematically."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    changed = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    changed["derivation"]["policy_parameters"]["hard_gate_discrimination_bound"]["value"] = 1.01
+    # Adjust ratio classifications so they mathematically match the changed
+    # bound: only the value change itself must be rejected.
+    for entry in changed["ratio_calibration"].values():
+        entry["classification"] = (
+            "hard_gate" if entry["envelope_upper"] <= entry["center"] * 1.01 else "advisory_only"
+        )
+    problems = validate_regression_policy(changed)
+    assert any(
+        "must match the canonical" in problem and "hard_gate_discrimination_bound" in problem
+        for problem in problems
+    )
