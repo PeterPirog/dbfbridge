@@ -65,14 +65,12 @@ dbf-bridge --help
 | `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
-> **Availability note (release preparation):** the **0.3.0 release
-> candidate** is prepared in this repository, but the **PyPI publication
-> has not happened yet** — publishing is a separate step after the tagged
-> release (including Trusted Publisher verification). The install-profile
-> extras documented here are the **0.3.0 installed-distribution contract**:
-> the commands below describe exactly how installation works once 0.3.0 is
-> the published release. Until then, `pip install dbfbridge` resolves to
-> the previous published PyPI version. See the
+> **Availability note:** the **0.3.0 release is being prepared** and has not
+> yet been verified as available from PyPI. The install-profile extras
+> documented here are the **0.3.0 installed-distribution contract** — the
+> commands below define exactly how installation works for the 0.3.0
+> distribution. Check PyPI before relying on a specific published version.
+> See the
 > [0.2 → 0.3 migration guide](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-0.3.md).
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the

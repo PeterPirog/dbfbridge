@@ -43,12 +43,13 @@ the logical results are identical and its absence never raises.
 
 ## API compatibility
 
-- **Existing Direct Read calls remain valid.** `inspect_table`,
-  `read_schema`, `iter_records`, `read_records`, and `iter_raw_records`
-  keep their 0.2 signatures and defaults.
-- **`progress` and `cancel_check` are optional keyword-only additions** to
-  the three streaming entry points. Existing callers do not change; default
-  behaviour remains compatible (no progress callback, no cancellation).
+- **Existing 0.2 call forms remain valid.** Existing parameters and
+  defaults are unchanged.
+- **0.3 only adds optional keyword-only `progress=` and `cancel_check=`
+  parameters** to the streaming/read entry points (`iter_records`,
+  `read_records`, `iter_raw_records`). Existing callers do not change and
+  default behaviour remains compatible (no progress callback, no
+  cancellation).
 - **Explicit Polish encodings no longer require caller codec
   registration.** `encoding="mazovia"` (and `piast`, `pki`, `cp1250`,
   `cp852`) is handled at operation time by the library itself. Do not
@@ -69,7 +70,7 @@ If you call `reconstruct_dbf()` (or `check_conversion_quality()`) without
 by default:
 
 ```python
-from dbfbridge import OptionalDependencyMissingError
+from dbfbridge import OptionalDependencyMissingError, reconstruct_dbf
 
 try:
     reconstruct_dbf("output", "rebuilt", input_format="jsonl")

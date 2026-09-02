@@ -7,14 +7,10 @@ have a repository checkout, a `src/` directory, or any development tools.
 Everything here works with a normal `pip install`; nothing requires Git, an
 `examples/` folder, or `PYTHONPATH`.
 
-> **Availability note (release preparation):** the instructions below are
-> the **0.3.0 installed-distribution contract**. At release-preparation
-> time the 0.3.0 release candidate is ready in the GitHub repository, but
-> the actual **PyPI publication must be verified separately after the
-> tagged release**. Until that publication, `pip install dbfbridge`
-> resolves to the previous published PyPI version; the commands on this
-> page describe how installation works once 0.3.0 is the published
-> release.
+> **Availability note:** the 0.3.0 release is being prepared and has not yet
+> been verified as available from PyPI. The instructions below define the
+> **installed-distribution contract for 0.3.0**. Check PyPI before relying
+> on a specific published version.
 
 ## Contents
 

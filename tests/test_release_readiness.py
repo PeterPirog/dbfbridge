@@ -100,17 +100,27 @@ def test_release_workflows_do_not_hardcode_expected_version() -> None:
 
 
 def test_publish_workflow_smokes_and_publishes_the_same_artifact() -> None:
-    """Build-once contract: both smokes run in the build job on dist/, the
-    artifact is uploaded once, and the publish job only downloads and
-    uploads those exact files."""
+    """Build-once contract: the release-state gate runs before the build,
+    both smokes run in the build job on dist/, the artifact is uploaded
+    once, and the publish job only downloads and uploads those exact
+    files."""
     publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
     build_section = publish.split("publish:", 1)[0]
+
+    # Release-state gate: runs on the exact tag BEFORE anything is built.
+    gate_position = build_section.index("scripts/check_release_state.py")
+    build_position = build_section.index("python -m build")
+    assert gate_position < build_position, "release-state gate must run before the build"
+    assert 'check_release_state.py --tag "$GITHUB_REF_NAME"' in build_section
 
     assert "python -m build" in build_section
     assert "python -m twine check dist/*" in build_section
     assert "scripts/release_wheel_smoke.py --wheel" in build_section
     assert "scripts/pypi_install_smoke.py --wheel" in build_section
     assert "actions/upload-artifact" in build_section
+    # sdist is a first-class release artifact with its own sanity gate.
+    assert "dbfbridge-*.tar.gz" in build_section
+    assert "PKG-INFO" in build_section
 
     publish_section = "publish:" + publish.split("publish:", 1)[1]
     assert "download-artifact" in publish_section
@@ -138,12 +148,16 @@ def test_readme_release_status_is_truthful() -> None:
     assert f"**{version} (alpha)**" in readme
     assert "docs/pypi-usage.md" in readme
     assert "docs/migration-0.3.md" in readme
+    # The unsupported availability claim must never come back: repository
+    # evidence does not prove any "previous published PyPI version".
+    assert "resolves to the previous published" not in readme
 
     if _current_version_section_is_unreleased():
-        # While the release is only prepared, the README must not claim the
+        # While the release is only prepared, the README must carry an
+        # explicit release-preparation marker and must not claim the
         # version is already published.
         assert "available on PyPI" not in readme
-        assert "release candidate" in readme
+        assert "release is being prepared" in readme or "release candidate" in readme
 
 
 def test_pypi_usage_guide_is_installed_distribution_only() -> None:
@@ -214,3 +228,45 @@ def test_changelog_current_version_section_documents_the_release() -> None:
     ):
         assert entry in section, f"changelog {version} section lacks: {entry}"
     assert f"[{version}]: https://github.com/PeterPirog/dbfbridge/compare/" in changelog
+
+
+# ---------------------------------------------------------------------------
+# install-profile smoke contract ([import] alias included)
+# ---------------------------------------------------------------------------
+
+
+def _pypi_install_smoke_module():
+    import importlib.util
+
+    script = ROOT / "scripts" / "pypi_install_smoke.py"
+    spec = importlib.util.spec_from_file_location("pypi_install_smoke_test", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_install_profile_smoke_covers_every_documented_profile() -> None:
+    """The canonical INSTALL_PROFILES constant is the single source of truth
+    for the install profiles the wheel smoke verifies — including the
+    `[import]` compatibility alias."""
+    smoke = _pypi_install_smoke_module()
+    assert smoke.INSTALL_PROFILES == (
+        "base",
+        "write",
+        "xlsx",
+        "write,xlsx",
+        "fast",
+        "all",
+        "import",
+    )
+
+
+def test_install_profile_smoke_has_an_import_alias_venv() -> None:
+    """Guard against silently dropping the [import] fresh-venv smoke."""
+    source = (ROOT / "scripts" / "pypi_install_smoke.py").read_text(encoding="utf-8")
+    assert 'build_fresh_venv(work_root, "venv-import")' in source
+    assert 'install_extra(venv_import, wheel, "import", dist_dir)' in source
+    assert "import_extra_smoke" in source
+    # The orchestrator self-checks every canonical profile reported PASS.
+    assert "p not in profiles_passed" in source
