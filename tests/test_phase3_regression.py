@@ -224,7 +224,11 @@ def test_policy_generation_is_deterministic_from_committed_inputs() -> None:
 def test_policy_is_reproducible_from_measurements_and_versioned_policy_parameters() -> None:
     """MEASURED statistics (per-run medians, MAD, observed ranges) plus
     the versioned POLICY PARAMETERS (read from the policy itself, never
-    re-hard-coded here) fully determine every envelope."""
+    re-hard-coded here) fully determine every envelope.
+
+    This is a reproducibility check, not a claim that the policy parameters
+    themselves are measured values - they are explicit engineering policy
+    choices with recorded rationale and validation evidence."""
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
     params = policy["derivation"]["policy_parameters"]
     mad_multiplier = params["mad_multiplier"]["value"]

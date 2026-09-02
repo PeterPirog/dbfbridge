@@ -131,17 +131,19 @@ def _envelope_upper(
 ) -> float:
     """Data-derived upper envelope.
 
-    Two components — the first derived from calibration statistics, the
-    second an explicit policy parameter:
+    Two components - the first derived from calibration statistics, the
+    second an explicit policy parameter (from :data:`POLICY_PARAMETERS`):
 
-    1. ``center + max(3 * mad, max_observed_deviation)`` — covers the
-       observed spread and is never tighter than three MADs;
-    2. ``max_observed_value * OBSERVED_MAX_SAFETY_FACTOR`` — five calibration
+    1. ``center + max(mad_multiplier * mad, max_observed_deviation)`` -
+       covers the observed spread and is never tighter than three MADs;
+    2. ``max_observed_value * small_sample_guard_band`` - five calibration
        runs under-estimate the inter-run tail, so the envelope must exceed
-       the worst observed value by the documented safety factor.
+       the worst observed value by the documented guard band.
     """
-    spread_based = center + max(3.0 * mad, max_observed_deviation)
-    tail_based = max_observed * OBSERVED_MAX_SAFETY_FACTOR
+    spread_based = center + max(
+        POLICY_PARAMETERS["mad_multiplier"]["value"] * mad, max_observed_deviation
+    )
+    tail_based = max_observed * POLICY_PARAMETERS["small_sample_guard_band"]["value"]
     return max(spread_based, tail_based)
 
 
