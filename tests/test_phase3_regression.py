@@ -221,32 +221,33 @@ def test_policy_generation_is_deterministic_from_committed_inputs() -> None:
     assert regenerated == committed
 
 
-def test_policy_has_no_arbitrary_thresholds() -> None:
-    """Every envelope must be reproducible from the recorded calibration
-    values via the documented algorithm — no magic percentage table."""
+def test_policy_is_reproducible_from_measurements_and_versioned_policy_parameters() -> None:
+    """MEASURED statistics (per-run medians, MAD, observed ranges) plus
+    the versioned POLICY PARAMETERS (read from the policy itself, never
+    re-hard-coded here) fully determine every envelope."""
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    params = policy["derivation"]["policy_parameters"]
+    mad_multiplier = params["mad_multiplier"]["value"]
+    guard_band = params["small_sample_guard_band"]["value"]
+    discrimination_bound = params["hard_gate_discrimination_bound"]["value"]
     for label, entry in policy["ratio_calibration"].items():
         values = entry["values"]
         center = sorted(values)[len(values) // 2]
         deviations = [abs(value - center) for value in values]
         mad = sorted(deviations)[len(deviations) // 2]
         max_deviation = max(deviations)
-        expected_envelope = max(center + max(3.0 * mad, max_deviation), max(values) * 1.15)
+        expected_envelope = max(
+            center + max(mad_multiplier * mad, max_deviation),
+            max(values) * guard_band,
+        )
         assert abs(entry["envelope_upper"] - expected_envelope) < 1e-9, label
-    # hard-gate classification is data-derived too
-    for label, entry in policy["ratio_calibration"].items():
         if entry["classification"] == "hard_gate":
-            assert entry["envelope_upper"] <= entry["center"] * 1.5, label
+            assert entry["envelope_upper"] <= entry["center"] * discrimination_bound, label
         else:
-            assert entry["envelope_upper"] > entry["center"] * 1.5, label
+            assert entry["envelope_upper"] > entry["center"] * discrimination_bound, label
     # every absolute scenario wall stays advisory (runner drift measured)
     for entry in policy["scenario_calibration"].values():
         assert entry["classification"] == "advisory_only"
-
-
-# ---------------------------------------------------------------------------
-# policy validation
-# ---------------------------------------------------------------------------
 
 
 def test_policy_rejected_with_fewer_than_five_calibration_runs() -> None:
@@ -474,3 +475,210 @@ def test_pr_smoke_mode_requires_only_the_selected_subset() -> None:
     assert result["status"] == "PASS"
     ratios_in_rows = [row["ratio"] for row in result["rows"] if "ratio" in row]
     assert ratios_in_rows == ["projection_selected_over_all"]
+
+
+def test_invalid_policy_cli_writes_stable_result(tmp_path: Path) -> None:
+    """INVALID_POLICY results render cleanly (no traceback) and carry the
+    stable schema in JSON/ Markdown."""
+    import subprocess
+    import sys
+
+    bad_policy = tmp_path / "bad-policy.json"
+    bad_policy.write_text('{"policy_version": 99}', encoding="utf-8")
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps({"environment": {}, "scenarios": []}), encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks.compare_phase3_regression",
+            "--policy",
+            str(bad_policy),
+            "--candidate",
+            str(candidate_path),
+            "--mode",
+            "full",
+            "--output-json",
+            str(tmp_path / "out.json"),
+            "--output-md",
+            str(tmp_path / "out.md"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parents[1]),
+    )
+    assert completed.returncode == 1
+    assert "Traceback" not in completed.stdout and "Traceback" not in completed.stderr
+    assert (tmp_path / "out.json").is_file()
+    assert (tmp_path / "out.md").is_file()
+
+
+def test_correctness_failure_cli_writes_stable_result(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    candidate = _full_valid_report(policy)
+    candidate["scenarios"][0]["status"] = "FAILED"
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "benchmarks.compare_phase3_regression",
+            "--policy",
+            str(POLICY_PATH),
+            "--candidate",
+            str(candidate_path),
+            "--mode",
+            "full",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parents[1]),
+    )
+    assert completed.returncode == 1
+    assert "Traceback" not in completed.stderr
+    assert "CORRECTNESS_FAILURE" in completed.stdout
+
+
+def test_package_under_test_version_change_keeps_comparability() -> None:
+    """A dbfbridge version bump is PROVENANCE, not a comparability gate:
+    the whole point of the regression CI is comparing dbfbridge versions."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    candidate = _full_valid_report(policy)
+    candidate["environment"]["packages"]["dbfbridge"] = "0.3.0"
+    result = compare_report(policy, candidate, mode="full")
+    assert result["comparability"] == "COMPARABLE"
+    assert result["overall_status"] == "PASS"
+
+
+def test_external_dependency_drift_is_not_comparable() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    candidate = _full_valid_report(policy)
+    candidate["environment"]["packages"]["dbfread"] = "2.1.0"
+    result = compare_report(policy, candidate, mode="full")
+    assert result["comparability"] == "NOT_COMPARABLE"
+
+
+def test_unseen_processor_is_partially_comparable() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    candidate = _full_valid_report(policy)
+    candidate["environment"]["system"]["processor"] = "Intel64 Family 6 Model 999"
+    result = compare_report(policy, candidate, mode="full")
+    assert result["comparability"] == "PARTIALLY_COMPARABLE"
+    assert result["overall_status"] == "PASS"
+    for row in result["rows"]:
+        if "ratio" in row:
+            assert row["result"] == "ADVISORY"
+
+
+def test_workflow_uses_the_committed_constraints() -> None:
+    """The committed constraints file must actually be wired into the
+    performance-regression workflow install (reproducibility contract)."""
+    workflow = (
+        Path(__file__)
+        .parents[1]
+        .joinpath(".github/workflows/performance-regression.yml")
+        .read_text(encoding="utf-8")
+    )
+    assert "constraints-phase3-v1.txt" in workflow
+    assert "-c benchmarks/regression/constraints-phase3-v1.txt" in workflow
+
+
+def test_constraints_match_the_policy_measurement_dependencies() -> None:
+    """The committed constraints must match the calibrated external
+    measurement dependencies (xlsxwriter 3.2.3 vs calibrated 3.2.9 is
+    exactly the drift this test prevents)."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    external = {
+        name: version
+        for name, version in policy["environment"]["packages"].items()
+        if name != "dbfbridge"
+    }
+    constraints_text = (
+        Path(__file__)
+        .parents[1]
+        .joinpath("benchmarks/regression/constraints-phase3-v1.txt")
+        .read_text(encoding="utf-8")
+    )
+    pinned = {}
+    for line in constraints_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "==" not in line:
+            continue
+        name, version = line.split("==", 1)
+        pinned[name.strip()] = version.strip()
+    for name, version in external.items():
+        assert pinned.get(name) == version, (
+            f"constraint drift for {name}: {pinned.get(name)!r} != calibrated {version!r}"
+        )
+    assert "dbfbridge" not in pinned, "the package under test must not be a constraint"
+
+
+def test_raw_report_calibration_cli_end_to_end() -> None:
+    """Five valid raw Phase 3 reports with explicit workflow IDs generate a
+    valid policy; the CLI refuses missing/invalid workflow provenance."""
+    import subprocess
+    import sys
+
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    tmp_root = Path(__file__).parents[1] / "benchmarks" / "results" / "raw-cli-test"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    workflow_ids = [f"33590000{index:03d}" for index in range(5)]
+    report_args = []
+    try:
+        for index, workflow_id in enumerate(workflow_ids):
+            candidate = _full_valid_report(policy)
+            candidate["environment"]["run_id"] = f"run-{index:032x}"
+            report_path = tmp_root / f"report-{workflow_id}.json"
+            report_path.write_text(json.dumps(candidate), encoding="utf-8")
+            report_args.append(f"--report={workflow_id}={report_path}")
+        output_path = tmp_root / "policy.json"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "benchmarks.calibrate_regression",
+                *report_args,
+                "--output",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parents[1]),
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        generated = json.loads(output_path.read_text(encoding="utf-8"))
+        assert validate_regression_policy(generated) == []
+        assert generated["generated_from_workflow_run_ids"] == workflow_ids
+        # The workflow IDs pair one-to-one with unique valid benchmark run IDs
+        # (the policy does not carry the full provenance dict; that lives in
+        # the committed calibration inputs).
+        assert all(
+            benchmark_run_id.startswith("run-")
+            for benchmark_run_id in generated["generated_from_benchmark_run_ids"]
+        )
+        bad_args = list(report_args)
+        bad_args.append(f"--report=notanumber={tmp_root / 'report-bad.json'}")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "benchmarks.calibrate_regression",
+                *bad_args,
+                "--output",
+                str(tmp_root / "should-fail.json"),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parents[1]),
+        )
+        assert completed.returncode != 0
+        assert "Traceback" not in completed.stderr
+        assert "workflow ID" in (completed.stdout + completed.stderr)
+    finally:
+        for path in sorted(tmp_root.rglob("*"), reverse=True):
+            path.unlink()
+        tmp_root.rmdir()

@@ -157,9 +157,11 @@ def validate_regression_policy(policy: Any) -> list[str]:
         if not isinstance(entry, dict):
             problems.append(f"scenario {name!r} calibration entry is malformed")
             continue
-        for key in ("center", "mad", "min", "max"):
+        for key in ("center", "min", "max"):
             if not _finite_positive(entry.get(key)):
                 problems.append(f"scenario {name!r} has invalid {key}: {entry.get(key)!r}")
+        if not _finite_non_negative(entry.get("mad")):
+            problems.append(f"scenario {name!r} has invalid mad: {entry.get('mad')!r}")
         if not _finite_non_negative(entry.get("max_observed_deviation")):
             problems.append(f"scenario {name!r} has invalid max_observed_deviation")
         if entry.get("classification") not in ("hard_gate", "advisory_only"):
@@ -248,7 +250,14 @@ def regression_comparability(
         problems.append(f"os differs (calibrated {required.get('os')!r})")
     if candidate_environment.get("system", {}).get("arch") != required.get("arch"):
         problems.append(f"system.arch differs (calibrated {required.get('arch')!r})")
+    # The PACKAGE UNDER TEST (dbfbridge) is provenance, NOT a comparability
+    # requirement: different dbfbridge versions/commits are exactly what the
+    # regression CI compares.  Only EXTERNAL measurement dependencies gate
+    # comparability (a drift there invalidates the measured environment).
+    package_under_test = "dbfbridge"
     for dependency, version in (required.get("packages") or {}).items():
+        if dependency == package_under_test:
+            continue
         candidate_version = (candidate_environment.get("packages") or {}).get(dependency)
         if candidate_version != version:
             problems.append(f"packages.{dependency} differs ({candidate_version!r} != {version!r})")
@@ -301,6 +310,24 @@ def _raw_scenario_names(candidate: dict[str, Any]) -> tuple[list[str], list[str]
     return names, problems
 
 
+def _failure_result(
+    status: str, failures: list[str], comparability: str
+) -> dict[str, Any]:
+    """Stable schema for early failures - renderer/JSON never KeyError."""
+    return {
+        "status": status,
+        "correctness_status": "FAIL",
+        "comparability": comparability,
+        "performance_status": "NOT_EVALUATED",
+        "overall_status": "FAIL",
+        "problems": failures,
+        "hard_regressions": [],
+        "invalid_rows": [],
+        "advisories": [],
+        "rows": [],
+    }
+
+
 def compare_report(
     policy: dict[str, Any],
     candidate: dict[str, Any],
@@ -327,48 +354,28 @@ def compare_report(
     """
     problems = validate_regression_policy(policy)
     if problems:
-        return {
-            "status": "INVALID_POLICY",
-            "correctness_status": "FAIL",
-            "comparability": "NOT_COMPARABLE",
-            "performance_status": "NOT_EVALUATED",
-            "overall_status": "FAIL",
-            "problems": problems,
-        }
+        return _failure_result("INVALID_POLICY", problems, "NOT_COMPARABLE")
 
     env = candidate.get("environment") or {}
     if env.get("benchmark_contract") != BENCHMARK_CONTRACT:
-        return {
-            "status": "INVALID_REPORT",
-            "correctness_status": "FAIL",
-            "comparability": "NOT_EVALUATED",
-            "performance_status": "NOT_EVALUATED",
-            "overall_status": "FAIL",
-            "problems": [f"candidate benchmark_contract must be {BENCHMARK_CONTRACT!r}"],
-        }
+        return _failure_result(
+            "INVALID_REPORT",
+            [f"candidate benchmark_contract must be {BENCHMARK_CONTRACT!r}"],
+            "NOT_EVALUATED",
+        )
 
     # Duplicate and malformed scenario entries on the RAW list — detected
     # BEFORE any dict-based access can silently collapse them.
     raw_names, raw_problems = _raw_scenario_names(candidate)
     if raw_problems:
-        return {
-            "status": "INVALID_REPORT",
-            "correctness_status": "FAIL",
-            "comparability": "NOT_EVALUATED",
-            "performance_status": "NOT_EVALUATED",
-            "overall_status": "FAIL",
-            "problems": raw_problems,
-        }
+        return _failure_result("INVALID_REPORT", raw_problems, "NOT_EVALUATED")
     duplicates = sorted({name for name in raw_names if raw_names.count(name) > 1})
     if duplicates:
-        return {
-            "status": "INVALID_REPORT",
-            "correctness_status": "FAIL",
-            "comparability": "NOT_EVALUATED",
-            "performance_status": "NOT_EVALUATED",
-            "overall_status": "FAIL",
-            "problems": [f"duplicate scenario name {name!r}" for name in duplicates],
-        }
+        return _failure_result(
+            "INVALID_REPORT",
+            [f"duplicate scenario name {name!r}" for name in duplicates],
+            "NOT_EVALUATED",
+        )
 
     # Frozen Phase 3 contract implementation (correctness hard gate).
     if mode == "full":
@@ -381,14 +388,9 @@ def compare_report(
         suffix = (
             [f"... and {len(contract_problems) - 12} more"] if len(contract_problems) > 12 else []
         )
-        return {
-            "status": "CORRECTNESS_FAILURE",
-            "correctness_status": "FAIL",
-            "comparability": "NOT_EVALUATED",
-            "performance_status": "NOT_EVALUATED",
-            "overall_status": "FAIL",
-            "problems": summarized + suffix,
-        }
+        return _failure_result(
+            "CORRECTNESS_FAILURE", summarized + suffix, "NOT_EVALUATED"
+        )
 
     scenarios = {entry["scenario"]: entry for entry in candidate["scenarios"]}
     required = (
@@ -564,8 +566,8 @@ def _render_markdown(result: dict[str, Any]) -> str:
         "",
         f"- status: **{result['status']}**",
         f"- comparability: {result['comparability']}",
-        f"- hard regressions: {len(result['hard_regressions'])}",
-        f"- advisories: {len(result['advisories'])}",
+        f"- hard regressions: {len(result.get('hard_regressions', []))}",
+        f"- advisories: {len(result.get('advisories', []))}",
     ]
     for reason in result.get("comparability_reasons", []):
         lines.append(f"  - {reason}")

@@ -1,15 +1,22 @@
-"""Deterministic Phase 3 regression-policy generator (stdlib-only, offline).
+"""Deterministic Phase 3 regression-policy generator (offline).
 
 Reads saved Phase 3 benchmark reports (or the committed compact calibration
-inputs) and derives the versioned regression policy — the evidence behind
-every threshold.  This tool never benchmarks, never touches the network,
-never writes into ``benchmarks/baselines/``, and never changes thresholds by
-hand: every envelope is computed from the calibration measurements.
+inputs) and derives the versioned regression policy.  This tool never
+benchmarks and never touches the network.  Thresholds combine MEASURED
+statistics (per-run medians, MAD, observed ranges) with explicit versioned
+POLICY PARAMETERS (the MAD multiplier, the small-sample guard band and the
+hard-gate discrimination bound) — deliberate engineering choices recorded
+with rationale and validation evidence in the policy itself.
 
 Usage:
 
+    # raw reports with explicit GitHub workflow provenance:
     python -m benchmarks.calibrate_regression \\
-        report1.json report2.json report3.json report4.json report5.json \\
+        --report 33546526573=report1.json \\
+        --report 33546534607=report2.json \\
+        --report 33546542658=report3.json \\
+        --report 33546551328=report4.json \\
+        --report 33546559054=report5.json \\
         --output benchmarks/regression/phase-3-regression-policy-v1.json
 
     # or from the committed compact calibration inputs:
@@ -20,11 +27,14 @@ Usage:
 Requirements enforced here (a smaller dataset is rejected):
 
 - at least 5 calibration inputs (independent workflow runs);
-- unique run IDs;
+- unique workflow and benchmark run IDs;
 - a single reference commit (one source snapshot);
-- the ``phase-3-performance-v1`` contract with all 23 scenarios MEASURED.
+- the ``phase-3-performance-v1`` contract with all 23 scenarios MEASURED;
+- EXPLICIT GitHub workflow IDs (a versioned CI policy must never synthesize
+  workflow provenance from file paths).
 
-Derivation algorithm (fully deterministic, documented in the policy itself):
+Derivation algorithm (deterministic; combines MEASURED statistics with the
+versioned POLICY PARAMETERS, both recorded in the policy itself):
 
 - ``center``  = median over the calibration runs of the per-run
   ``aggregated.median_wall_seconds``;
@@ -35,7 +45,7 @@ Derivation algorithm (fully deterministic, documented in the policy itself):
 - a scenario wall is ALWAYS ``advisory_only`` — hosted-runner instances
   drift up to ±30 %+ across ALL scenarios (measured), so an absolute wall
   can never be a hard gate;
-- a RELATIVE same-run ratio is ``hard_gate`` when its data-derived envelope
+- a RELATIVE same-run ratio is ``hard_gate`` when its envelope
   is discriminating enough (``envelope_upper / center <= 1.5``); otherwise
   it is ``advisory_only``.
 """
@@ -134,7 +144,8 @@ def _envelope_upper(
 ) -> float:
     """Data-derived upper envelope.
 
-    Two data-derived components, no hand-written percentages:
+    Two components — the first derived from calibration statistics, the
+    second an explicit policy parameter:
 
     1. ``center + max(3 * mad, max_observed_deviation)`` — covers the
        observed spread and is never tighter than three MADs;
@@ -376,6 +387,16 @@ def build_policy(inputs: dict[str, Any]) -> dict[str, Any]:
             "storage_label": reference["storage"],
             "runner_image": reference["runner"],
         },
+        "package_under_test": {
+            "name": "dbfbridge",
+            "reference_version": reference["packages"].get("dbfbridge"),
+            "note": (
+                "the version of the package under test is PROVENANCE, not a "
+                "comparability requirement: different dbfbridge versions are "
+                "exactly what the regression CI compares.  Only external "
+                "measurement dependencies gate comparability."
+            ),
+        },
         "pr_smoke_scenarios": [
             "inspect_schema_1000",
             "direct_read_190k",
@@ -502,23 +523,19 @@ def _load_report_inputs(path: Path) -> tuple[dict[str, float], dict[str, Any]]:
     return medians, provenance
 
 
-def _load_report_medians(path: Path) -> dict[str, dict[str, float]]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    env = payload.get("environment") or {}
-    if env.get("benchmark_contract") != BENCHMARK_CONTRACT:
-        raise SystemExit(f"{path}: benchmark_contract must be {BENCHMARK_CONTRACT!r}")
-    statuses = {s["scenario"]: s["status"] for s in payload.get("scenarios", [])}
-    if not statuses or any(status != "MEASURED" for status in statuses.values()):
-        raise SystemExit(f"{path}: all scenarios must be MEASURED for calibration")
-    medians = {s["scenario"]: s["aggregated"]["median_wall_seconds"] for s in payload["scenarios"]}
-    if len(set(statuses)) != len(statuses):
-        raise SystemExit(f"{path}: duplicate scenario entries")
-    return medians
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("reports", nargs="*", type=Path, help="Phase 3 report JSON files")
+    parser.add_argument(
+        "--report",
+        action="append",
+        metavar="WORKFLOW_RUN_ID=REPORT_JSON",
+        default=[],
+        help=(
+            "a calibration candidate as WORKFLOW_RUN_ID=REPORT_JSON - the "
+            "EXPLICIT GitHub workflow provenance required for a versioned CI "
+            "policy (never synthesized from a file path)"
+        ),
+    )
     parser.add_argument("--calibration-inputs", type=Path, default=None)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -526,38 +543,57 @@ def main(argv: list[str] | None = None) -> int:
     if args.calibration_inputs is not None:
         inputs = json.loads(args.calibration_inputs.read_text(encoding="utf-8"))
     else:
-        if len(args.reports) < MIN_CALIBRATION_RUNS:
-            raise SystemExit(f"at least {MIN_CALIBRATION_RUNS} report files are required")
+        if len(args.report) < MIN_CALIBRATION_RUNS:
+            raise SystemExit(
+                f"at least {MIN_CALIBRATION_RUNS} --report WORKFLOW_RUN_ID=REPORT_JSON "
+                "entries are required"
+            )
         medians: dict[str, dict[str, float]] = {}
         provenance: dict[str, Any] = {}
         workflow_run_ids: list[str] = []
         benchmark_run_ids: list[str] = []
         reference_commit = None
-        for report_path in args.reports:
+        for spec in args.report:
+            separator = spec.find("=")
+            if separator <= 0:
+                raise SystemExit(
+                    f"invalid --report entry {spec!r}; expected WORKFLOW_RUN_ID=REPORT_JSON"
+                )
+            workflow_run_id = spec[:separator]
+            report_path = Path(spec[separator + 1 :])
+            if not workflow_run_id.isdigit():
+                raise SystemExit(
+                    f"invalid --report workflow ID {workflow_run_id!r}: a GitHub "
+                    "workflow run ID must be numeric - workflow provenance is "
+                    "never synthesized from a file path or the benchmark run_id"
+                )
             med, prov = _load_report_inputs(report_path)
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             env = payload["environment"]
             benchmark_run_id = env["run_id"]
             if benchmark_run_id in benchmark_run_ids:
                 raise SystemExit(f"duplicate calibration benchmark_run_id: {benchmark_run_id}")
+            if workflow_run_id in workflow_run_ids:
+                raise SystemExit(f"duplicate calibration workflow_run_id: {workflow_run_id}")
             commit = prov["git_commit"]
             reference_commit = reference_commit or commit
             if commit != reference_commit:
                 raise SystemExit("calibration reports must share one source commit")
-            # Runtime-recipe consistency across calibration reports.
             if (
                 benchmark_run_ids
                 and prov["packages"] != provenance[benchmark_run_ids[0]]["packages"]
             ):
                 raise SystemExit("calibration reports must share one dependency set")
-            if prov["python"] != provenance[benchmark_run_ids[0]]["python"]:
+            if (
+                benchmark_run_ids
+                and prov["python"] != provenance[benchmark_run_ids[0]]["python"]
+            ):
                 raise SystemExit("calibration reports must share one Python version")
             medians[benchmark_run_id] = med
+            prov["workflow_run_id"] = workflow_run_id
             provenance[benchmark_run_id] = prov
-            workflow_run_ids.append(env.get("workflow_run_id") or str(report_path))
+            workflow_run_ids.append(workflow_run_id)
             benchmark_run_ids.append(benchmark_run_id)
-        if len(set(workflow_run_ids)) != len(workflow_run_ids):
-            raise SystemExit("duplicate calibration workflow_run_ids")
         if len(benchmark_run_ids) < MIN_CALIBRATION_RUNS:
             raise SystemExit(f"at least {MIN_CALIBRATION_RUNS} unique runs are required")
         scenarios = sorted(next(iter(medians.values())).keys())
@@ -587,7 +623,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"policy written: {args.output}")
     print(f"  reference commit: {policy['reference_commit']}")
     print(f"  calibration runs: {policy['calibration_count']}")
-    print(f"  hard-gate ratios: {', '.join(sorted(hard)) or 'NONE'}")
+    hard_labels = ", ".join(sorted(hard)) or "NONE"
+    print(f"  hard-gate ratios: {hard_labels}")
     return 0
 
 

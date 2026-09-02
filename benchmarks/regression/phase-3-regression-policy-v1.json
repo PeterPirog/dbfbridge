@@ -95,6 +95,11 @@
       "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel"
     ]
   },
+  "package_under_test": {
+    "name": "dbfbridge",
+    "note": "the version of the package under test is PROVENANCE, not a comparability requirement: different dbfbridge versions are exactly what the regression CI compares.  Only external measurement dependencies gate comparability.",
+    "reference_version": "0.2.0"
+  },
   "policy_version": 1,
   "pr_smoke_scenarios": [
     "inspect_schema_1000",
