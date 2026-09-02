@@ -193,6 +193,8 @@ __all__ = [
     "PHASE0_PLACEHOLDER_NAMES",
     "PHASE3_MEMO_RECONSTRUCTION_SCENARIO",
     "PHASE3_SCENARIO_NAMES",
+    "POLICY_PARAMETERS",
+    "RATIO_DEFINITIONS",
     "build_manifest",
     "environment_comparability",
     "manifest_problems",
@@ -504,6 +506,68 @@ def validate_saved_phase1_after(payload: Any) -> list[str]:
             problems.extend(_measured_scenario_problems(name, entry, warmup, repetitions))
     problems.extend(_repo_identity_problems(payload))
     return problems
+
+
+# Canonical same-run ratio definitions for the Phase 3 regression policy
+# (single source of truth shared by calibrate_regression, the comparator,
+# the validator and the tests).  Each entry relates two calibrated
+# scenarios within ONE measurement run, making the ratio immune to
+# hosted-runner instance drift.
+RATIO_DEFINITIONS: dict[str, tuple[str, str]] = {
+    "projection_selected_over_all": (
+        "direct_read_projection_selected",
+        "direct_read_projection_all",
+    ),
+    "read_1m_over_190k": ("direct_read_1m", "direct_read_190k"),
+    "memo_skip_over_lazy": ("direct_read_memo_skip", "direct_read_memo_lazy"),
+    "memo_lazy_over_inline": ("direct_read_memo_lazy", "direct_read_memo_inline"),
+    "migration_validate_on_over_off": ("migration_validate_on", "migration_validate_off"),
+}
+
+#: Versioned engineering parameters for the regression policy.  These are
+#: deliberate POLICY choices (not measured statistics); each carries a
+#: rationale and validation evidence recorded in the generated policy.
+POLICY_PARAMETERS: dict[str, dict[str, Any]] = {
+    "mad_multiplier": {
+        "value": 3,
+        "rationale": (
+            "envelope floor: three MADs above the calibration median; a "
+            "robust guard that covers the observed spread of stable ratios "
+            "(relMAD 0.9-6.7%) several times over"
+        ),
+        "validation_evidence": (
+            "5-run calibration: no stable ratio exceeded 3 MADs within the observed range"
+        ),
+    },
+    "small_sample_guard_band": {
+        "value": 1.15,
+        "rationale": (
+            "envelope must exceed the WORST observed calibration value by "
+            "15%: five runs under-estimate the inter-run tail; the first "
+            "self-test run on identical source landed beyond the too-tight "
+            "5-sample envelope, proving the guard is needed"
+        ),
+        "validation_evidence": (
+            "self-test run 33553669363 (identical src) produced ratio 0.6655 "
+            "vs the pre-fix envelope 0.6363; the widened envelope 0.7317 "
+            "passed all subsequent same-source runs"
+        ),
+    },
+    "hard_gate_discrimination_bound": {
+        "value": 1.5,
+        "rationale": (
+            "a ratio qualifies as a hard gate only when its envelope stays "
+            "under a 1.5x shift of the calibration center; looser envelopes "
+            "cannot discriminate a real regression from observed noise and "
+            "are advisory_only"
+        ),
+        "validation_evidence": (
+            "memo_skip_over_lazy observed a 2x inter-run outlier (1.510 vs "
+            "0.77) - its envelope reaches 2.23x center, so it is honestly "
+            "classified advisory_only"
+        ),
+    },
+}
 
 
 def validate_saved_phase3_before(payload: Any) -> list[str]:

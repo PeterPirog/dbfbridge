@@ -682,3 +682,173 @@ def test_raw_report_calibration_cli_end_to_end() -> None:
         for path in sorted(tmp_root.rglob("*"), reverse=True):
             path.unlink()
         tmp_root.rmdir()
+
+
+def test_ratio_contract_violations() -> None:
+    """Empty, partial, unknown or mispaired ratio sets are INVALID_POLICY -
+    an empty or partial ratio set would silently disable regression gates."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    empty = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    empty["ratio_calibration"] = {}
+    problems = validate_regression_policy(empty)
+    assert any(
+        "ratio_calibration must cover exactly RATIO_DEFINITIONS" in problem for problem in problems
+    )
+
+    removed = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del removed["ratio_calibration"]["projection_selected_over_all"]
+    problems = validate_regression_policy(removed)
+    assert any("must cover exactly RATIO_DEFINITIONS" in problem for problem in problems)
+
+    made_up = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    made_up["ratio_calibration"]["made_up_ratio"] = made_up["ratio_calibration"][
+        "projection_selected_over_all"
+    ]
+    problems = validate_regression_policy(made_up)
+    assert any("must cover exactly RATIO_DEFINITIONS" in problem for problem in problems)
+
+    wrong_num = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    wrong_num["ratio_calibration"]["projection_selected_over_all"]["numerator"] = "cold_import"
+    problems = validate_regression_policy(wrong_num)
+    assert any("must pair" in problem for problem in problems)
+
+    wrong_den = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    wrong_den["ratio_calibration"]["projection_selected_over_all"]["denominator"] = "cold_import"
+    problems = validate_regression_policy(wrong_den)
+    assert any("must pair" in problem for problem in problems)
+
+
+def test_classification_integrity_is_enforced() -> None:
+    """hard_gate iff envelope_upper <= center * discrimination_bound - a policy
+    cannot silently disable a hard gate (or promote an advisory one)
+    without changing data or policy parameters."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    demoted = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    demoted["ratio_calibration"]["projection_selected_over_all"]["classification"] = "advisory_only"
+    problems = validate_regression_policy(demoted)
+    assert any("violates the canonical rule" in problem for problem in problems)
+
+    promoted = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    promoted["ratio_calibration"]["memo_skip_over_lazy"]["classification"] = "hard_gate"
+    problems = validate_regression_policy(promoted)
+    assert any("violates the canonical rule" in problem for problem in problems)
+
+
+def test_absolute_scenarios_must_stay_advisory() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    promoted = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    promoted["scenario_calibration"]["direct_read_190k"]["classification"] = "hard_gate"
+    problems = validate_regression_policy(promoted)
+    assert any(
+        "scenario 'direct_read_190k' classification must be 'advisory_only'" in problem
+        for problem in problems
+    )
+
+
+def test_policy_parameters_strictly_validated() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del missing["derivation"]["policy_parameters"]["mad_multiplier"]
+    assert any(
+        "mad_multiplier is missing" in problem for problem in validate_regression_policy(missing)
+    )
+
+    bad_value = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    bad_value["derivation"]["policy_parameters"]["mad_multiplier"]["value"] = float("nan")
+    problems = validate_regression_policy(bad_value)
+    assert any("mad_multiplier must be finite > 0" in problem for problem in problems)
+
+    empty_rationale = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    empty_rationale["derivation"]["policy_parameters"]["small_sample_guard_band"]["rationale"] = ""
+    problems = validate_regression_policy(empty_rationale)
+    assert any(
+        "small_sample_guard_band.rationale must be a non-empty string" in problem
+        for problem in problems
+    )
+
+
+def test_calibration_sources_validation() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del missing["calibration_sources"]
+    problems = validate_regression_policy(missing)
+    assert any("calibration_sources must be a list" in problem for problem in problems)
+
+    mismatched_count = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    mismatched_count["calibration_sources"] = mismatched_count["calibration_sources"][:3]
+    problems = validate_regression_policy(mismatched_count)
+    assert any("exactly 5" in problem for problem in problems)
+
+    bad_sha = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    bad_sha["calibration_sources"][0]["report_sha256"] = "not-hex"
+    problems = validate_regression_policy(bad_sha)
+    assert any("invalid report_sha256" in problem for problem in problems)
+
+    mixed_commit = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    mixed_commit["calibration_sources"][0]["git_commit"] = "b" * 40
+    problems = validate_regression_policy(mixed_commit)
+    assert any("differs from reference_commit" in problem for problem in problems)
+
+    inconsistent_derived = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    inconsistent_derived["generated_from_workflow_run_ids"] = list(
+        reversed(inconsistent_derived["generated_from_workflow_run_ids"])
+    )
+    problems = validate_regression_policy(inconsistent_derived)
+    assert any("must be derived from calibration_sources" in problem for problem in problems)
+
+
+def test_package_under_test_validation() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    missing = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del missing["package_under_test"]
+    problems = validate_regression_policy(missing)
+    assert any("package_under_test must be an object" in problem for problem in problems)
+
+    wrong_name = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    wrong_name["package_under_test"]["name"] = "something-else"
+    problems = validate_regression_policy(wrong_name)
+    assert any("package_under_test.name must be 'dbfbridge'" in problem for problem in problems)
+
+
+def test_hardware_pool_and_environment_validation() -> None:
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+    missing_pool = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del missing_pool["hardware_pool"]
+    problems = validate_regression_policy(missing_pool)
+    assert any("hardware_pool must be an object" in problem for problem in problems)
+
+    empty_processors = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    empty_processors["hardware_pool"]["observed_processor_signatures"] = []
+    problems = validate_regression_policy(empty_processors)
+    assert any("non-empty unique strings" in problem for problem in problems)
+
+    missing_env = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    del missing_env["environment"]["runner_image"]
+    problems = validate_regression_policy(missing_env)
+    assert any(
+        "environment.runner_image must be a non-empty string" in problem for problem in problems
+    )
+
+
+def test_constraints_exact_set() -> None:
+    """An accidental extra pin in the constraints file (or a removed one) is
+    exactly the drift the exact-set test must catch."""
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    external = {name for name in policy["environment"]["packages"] if name != "dbfbridge"}
+    constraints_text = (
+        Path(__file__)
+        .parents[1]
+        .joinpath("benchmarks/regression/constraints-phase3-v1.txt")
+        .read_text(encoding="utf-8")
+    )
+    pinned_names = {
+        line.split("==", 1)[0].strip()
+        for line in constraints_text.splitlines()
+        if "==" in line and not line.strip().startswith("#")
+    }
+    assert pinned_names == external

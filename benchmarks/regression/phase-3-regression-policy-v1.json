@@ -1,6 +1,38 @@
 {
   "benchmark_contract": "phase-3-performance-v1",
   "calibration_count": 5,
+  "calibration_sources": [
+    {
+      "benchmark_run_id": "run-7b565ca935c32bc9c2d4c33566789e9e",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "49870811e70b83f9b815b5997e83a4e3d5d5c58bfdb42949d2cab34d6e0681b4",
+      "workflow_run_id": "33546526573"
+    },
+    {
+      "benchmark_run_id": "run-10372b9d3b8dd26080979c6f29161004",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "fccbfb819387ec03290fa6a74dc96be6c4831c2036691117678075a6ef5cddd1",
+      "workflow_run_id": "33546534607"
+    },
+    {
+      "benchmark_run_id": "run-c21e6709cec53372e4d881b5fd609e0c",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "6c5dc595ca6e291a9c621824b68d67d5fbc3dc23e990f9b40da06ac8298c89b2",
+      "workflow_run_id": "33546542658"
+    },
+    {
+      "benchmark_run_id": "run-1b84e5312f25847fc791fb09341348c5",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "3423fa42eca96fec41d20bb4c0030cabe697fa8888168febdbf92609e397ed76",
+      "workflow_run_id": "33546551328"
+    },
+    {
+      "benchmark_run_id": "run-8a6289eb63fb465bfbf7c127eaa983b3",
+      "git_commit": "1ba135ad18fef291ef104795606a5860d15b0c4e",
+      "report_sha256": "44af55e73d10a39b742a5db9617853abce3184dfb8034f89eff3f546522a3311",
+      "workflow_run_id": "33546559054"
+    }
+  ],
   "derivation": {
     "absolute_wall_policy": "advisory_only — GitHub-hosted runner instances drift by tens of percent across all scenarios (measured: per-run median wall ratios 0.67x-1.00x in this calibration), so absolute wall time can never hard-fail a merge",
     "center": "median of per-run aggregated.median_wall_seconds over >= 5 calibration runs",
@@ -10,7 +42,7 @@
     "policy_parameters": {
       "hard_gate_discrimination_bound": {
         "rationale": "a ratio qualifies as a hard gate only when its envelope stays under a 1.5x shift of the calibration center; looser envelopes cannot discriminate a real regression from observed noise and are advisory_only",
-        "validation_evidence": "memo_skip_over_lazy observed a 2x inter-run outlier (1.510 vs 0.77) — its envelope reaches 2.23x center, so it is honestly classified advisory_only",
+        "validation_evidence": "memo_skip_over_lazy observed a 2x inter-run outlier (1.510 vs 0.77) - its envelope reaches 2.23x center, so it is honestly classified advisory_only",
         "value": 1.5
       },
       "mad_multiplier": {
@@ -69,11 +101,11 @@
     "migration_validate_on"
   ],
   "generated_from_benchmark_run_ids": [
-    "run-10372b9d3b8dd26080979c6f29161004",
-    "run-1b84e5312f25847fc791fb09341348c5",
     "run-7b565ca935c32bc9c2d4c33566789e9e",
-    "run-8a6289eb63fb465bfbf7c127eaa983b3",
-    "run-c21e6709cec53372e4d881b5fd609e0c"
+    "run-10372b9d3b8dd26080979c6f29161004",
+    "run-c21e6709cec53372e4d881b5fd609e0c",
+    "run-1b84e5312f25847fc791fb09341348c5",
+    "run-8a6289eb63fb465bfbf7c127eaa983b3"
   ],
   "generated_from_workflow_run_ids": [
     "33546526573",
