@@ -55,6 +55,7 @@ from dbfbridge import (
 
 SRC_ROOT = Path(__file__).parents[1] / "src"
 
+import vfp_fixture_factory as vfp_factory  # noqa: E402 - tests dir on sys.path
 
 # ---------------------------------------------------------------------------
 # fixture helpers
@@ -417,10 +418,16 @@ def test_unknown_duplicate_and_string_projections_are_typed_errors(tmp_path: Pat
 
 
 def test_unselected_unsupported_field_does_not_block_reading(tmp_path: Path) -> None:
-    dbf_path = _create_vfp_table(
-        tmp_path / "UNSUP.dbf", "KOD N(4,0); DANE C(10)", [{"KOD": 1, "DANE": "x"}]
+    # Authentic VFP 0x32 fixture: Q (Varbinary) column with a real _NullFlags
+    # varlength bit (a bare type-byte patch would not be a valid Q table).
+    dbf_path = vfp_factory.build_vfp32_table(
+        tmp_path / "UNSUP.dbf",
+        columns=[
+            {"name": "KOD", "type": "N", "width": 4},
+            {"name": "DANE", "type": "Q", "width": 10},
+        ],
+        rows=[{"KOD": 1, "DANE": b"payload"}],
     )
-    _patch_field_type(dbf_path, 1, "Q")  # VFP Varbinary: unsupported for decode
 
     records = list(iter_records(dbf_path, fields=["KOD"]))
     assert [record.values["KOD"] for record in records] == [1]

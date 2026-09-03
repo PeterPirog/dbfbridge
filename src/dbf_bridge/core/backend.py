@@ -26,13 +26,14 @@ import os
 import struct
 from collections.abc import Generator
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO, Any, Protocol
 
 from dbfread import DBF, DBFNotFound, FieldParser, MissingMemoFile
 from dbfread.memo import FakeMemoFile, MemoFile, open_memofile
 
 from . import errors
 from .header import ParsedHeader, parse_header
+from .nullflags import NullFlagsLayout
 
 #: Visual FoxPro DBF version bytes (0x30 plain, 0x31 autoincrement, 0x32
 #: Varchar) — they decide whether a ``B`` field is a double or a memo pointer.
@@ -111,7 +112,7 @@ class RecordStreamBackend(Protocol):
 
     def iter_physical_records(
         self,
-        table: object,
+        table: DBF,
         *,
         projection: frozenset[str] | None = None,
         memo_pointer_fields: frozenset[str] | None = None,
@@ -119,12 +120,23 @@ class RecordStreamBackend(Protocol):
         use_memofile: bool = True,
         start_index: int = 0,
         skip_deleted_parse: bool = False,
+        nullflags_layout: NullFlagsLayout | None = None,
     ) -> Generator[PhysicalRecord, None, None]:
         """Yield :class:`PhysicalRecord` frames in physical order.
 
         The file handles live inside the generator: closing the iterator (or
         finishing, or raising) releases them on every platform, including
         Windows.
+
+        ``nullflags_layout`` carries the VFP ``_NullFlags`` bit allocation
+        (computed once per request by the caller from the canonical header).
+        When given, a set NULL bit resolves a selected field to ``None``
+        without parsing its storage bytes, and a set varlength bit of a
+        ``V``/``Q`` payload selects the length-byte storage form (the last
+        payload byte is the actual value length; a clear bit means the full
+        declared width is the value).  This is the minimal evidence-driven
+        VFP semantic adaptation applied inside the single physical loop —
+        never a second parser or a second pass.
         """
         ...
 
@@ -254,6 +266,7 @@ class DbfreadBackend:
         use_memofile: bool = True,
         start_index: int = 0,
         skip_deleted_parse: bool = False,
+        nullflags_layout: NullFlagsLayout | None = None,
     ) -> Generator[PhysicalRecord, None, None]:
         """Stream physical records (the single shared physical/decoded loop).
 
@@ -281,6 +294,23 @@ class DbfreadBackend:
             read = infile.read
             fields = table.fields
             pointer_fields = memo_pointer_fields or frozenset()
+            # _NullFlags integration: locate the bitmap column once; its raw
+            # bytes are part of every physical frame already (the loop reads
+            # every field's bytes), so NULL/varlength semantics cost no
+            # extra I/O and no second pass.
+            bitmap_position: int | None = None
+            if nullflags_layout is not None:
+                for position, candidate in enumerate(fields):
+                    if candidate.name == nullflags_layout.field_name:
+                        bitmap_position = position
+                        break
+                else:
+                    raise errors.DbfHeaderInvalidError(
+                        f"The header declares a {nullflags_layout.field_name!r} bitmap "
+                        "column, but it is missing from the table's field list.",
+                        path=path,
+                        context={"expected_field": nullflags_layout.field_name},
+                    )
             index = start_index
             declared_records = table.header.numrecords
             for _ in range(max(0, declared_records - start_index)):
@@ -336,6 +366,21 @@ class DbfreadBackend:
                             for field in fields
                         )
                     for field, field_raw, want in zip(fields, raw_fields, wants, strict=True):
+                        if nullflags_layout is not None and nullflags_layout.null_bits:
+                            bitmap = (
+                                raw_fields[bitmap_position] if bitmap_position is not None else None
+                            )
+                            null_bit = nullflags_layout.null_bits.get(field.name)
+                            if null_bit is not None and NullFlagsLayout.bit_is_set(
+                                bitmap, null_bit
+                            ):
+                                # A set NULL bit means "no value": the field
+                                # resolves to None without its storage bytes
+                                # being decoded (and without a memo payload
+                                # ever being read).
+                                if want or field.name in pointer_fields:
+                                    items.append((field.name, None))
+                                continue
                         if field.name in pointer_fields:
                             memo_indices = (
                                 *memo_indices,
@@ -344,6 +389,47 @@ class DbfreadBackend:
                             continue
                         if not want:
                             continue
+                        if nullflags_layout is not None and nullflags_layout.varlength_bits:
+                            varlength_bit = nullflags_layout.varlength_bits.get(field.name)
+                            if varlength_bit is not None:
+                                varlength = NullFlagsLayout.bit_is_set(
+                                    raw_fields[bitmap_position]
+                                    if bitmap_position is not None
+                                    else None,
+                                    varlength_bit,
+                                )
+                                # Core owns the physical Varchar contract
+                                # (_NullFlags bits, length byte, width form):
+                                # it isolates the exact LOGICAL bytes; the
+                                # CONFIGURED parser instance then decodes them,
+                                # so the exporter's loss-aware text policy (and
+                                # any other parser policy) stays in charge of
+                                # text decoding — never a direct bytes.decode.
+                                logical_bytes = (
+                                    _varlength_logical_bytes(
+                                        field,
+                                        field_raw,
+                                        path=path,
+                                        record_index=index,
+                                    )
+                                    if varlength
+                                    else field_raw
+                                )
+                                try:
+                                    decoded = parser.decode_text(logical_bytes)
+                                except UnicodeDecodeError as exc:
+                                    raise errors.TextDecodeError(
+                                        f"Field {field.name!r} cannot be decoded with "
+                                        f"{table.encoding!r}: {exc}",
+                                        path=path,
+                                        context={
+                                            "field": field.name,
+                                            "record_index": index,
+                                            "encoding": table.encoding,
+                                        },
+                                    ) from exc
+                                items.append((field.name, decoded))
+                                continue
                         try:
                             value = parse(field, field_raw)
                         except UnicodeDecodeError as exc:
@@ -464,8 +550,48 @@ class DbfreadBackend:
             ) from exc
 
 
+def _varlength_logical_bytes(
+    field: Any,
+    data: bytes,
+    *,
+    path: Path,
+    record_index: int,
+) -> bytes:
+    """Isolate the logical bytes of one variable-length ``V`` payload.
+
+    With the varlength bit set, the last byte of the field's payload is the
+    actual value length and the logical bytes are the preceding ones
+    (significant trailing spaces preserved — never a blanket ``rstrip``).  A
+    declared length beyond the field's capacity (which also holds the length
+    byte) is a typed record-level inconsistency, never a silent truncation.
+    Text decoding itself belongs to the configured parser policy.
+    """
+    if not data:
+        raise errors.DbfRecordInvalidError(
+            f"Varchar field {field.name!r} at record {record_index} has an empty "
+            "payload although its varlength bit is set.",
+            path=path,
+            context={"field": field.name, "record_index": record_index},
+        )
+    declared_length = data[-1]
+    capacity = len(data) - 1
+    if declared_length > capacity:
+        raise errors.DbfRecordInvalidError(
+            f"Varchar field {field.name!r} at record {record_index} declares a "
+            f"payload length of {declared_length} byte(s) beyond its physical "
+            f"capacity of {capacity}.",
+            path=path,
+            context={
+                "field": field.name,
+                "record_index": record_index,
+                "declared_length": declared_length,
+                "capacity": capacity,
+            },
+        )
+    return data[:declared_length]
+
+
 def _open_input(path: Path) -> IO[bytes]:
-    """Open *path* read-only, mapping OSError to a typed :class:`DbfIoError`."""
     try:
         return open(path, "rb")
     except OSError as exc:

@@ -9,6 +9,7 @@ from typing import Any, TextIO
 
 from dbfread import MissingMemoFile
 
+from ..core.nullflags import build_nullflags_layout
 from .discovery import output_data_path, output_schema_path
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, StreamStats, TableResult
 from .reader import UnsupportedTableError, iter_physical_records, open_table, read_table_metadata
@@ -145,9 +146,17 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             schema_writer.write("\n")
             schema_writer.flush_and_fsync()
 
-        table = open_table(discovered.source_path, config, resolved_encoding=metadata.encoding)
+        table = open_table(
+            discovered.source_path,
+            config,
+            resolved_encoding=metadata.encoding,
+            # Same rule as the metadata preflight: only true memo fields
+            # require the FPT companion (a VFP B double is inline data).
+            require_memo_file=any(field.is_memo for field in metadata.fields),
+        )
         data_collector = StatsCollector(metadata.fields)
         stats = data_collector.stats
+        nullflags_layout = build_nullflags_layout(metadata.fields)
         with AtomicTextWriter(data_path, overwrite=config.overwrite) as data_writer:
             if config.format == "csv":
                 _write_csv_header(
@@ -160,7 +169,7 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             deleted_stats = deleted_collector.stats
             if config.deleted == "include":
                 for index, (record, is_deleted, raw_record) in enumerate(
-                    iter_physical_records(table), start=1
+                    iter_physical_records(table, nullflags_layout), start=1
                 ):
                     serialized = _serialize_context_record(
                         record,
@@ -181,7 +190,9 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         deleted_collector.add(serialized)
             else:
                 active_index = 0
-                for record, is_deleted, raw_record in iter_physical_records(table):
+                for record, is_deleted, raw_record in iter_physical_records(
+                    table, nullflags_layout
+                ):
                     if is_deleted:
                         continue
                     active_index += 1
