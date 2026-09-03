@@ -22,9 +22,9 @@ document is importable from `dbfbridge` and is declared in
 `dbfbridge.__all__`.
 
 `dbf_bridge` is the historical package name and remains a **compatibility
-alias**: it exposes the same symbols with the same semantics and is kept for
-the 1.x line at zero runtime cost (lazy delegation, no duplicated
-implementation). New code should use `dbfbridge`.
+alias**: it exposes the same symbols with the same semantics for the 1.x line
+via a lazy compatibility module sharing the same implementation — there is no
+duplicate DBF/FPT engine behind it. New code should use `dbfbridge`.
 
 Consumers — including a future transport-neutral MCP backend — never need to
 import `dbf_bridge.core.*`, `dbf_bridge.exporter.*`, or
@@ -37,9 +37,13 @@ files, loads no CLI/reporting modules and no optional heavy dependencies.
 
 ## 2. Stable public operations
 
-These nine operations form the frozen 1.x surface. Signatures are fixed as
-shown (keyword-only options; `str` or `os.PathLike` accepted wherever a path
-is taken):
+These nine operations form the frozen 1.x surface. The existing parameters,
+their positional/keyword kinds and the documented defaults below form the
+**1.0 compatibility baseline** (`str` or `os.PathLike` accepted wherever a
+path is taken). Backward-compatible evolution in a MINOR release means:
+new **optional keyword-only** parameters may be added; existing parameters
+are never removed, never change kind incompatibly, and their documented
+defaults never change incompatibly.
 
 ### Direct Read (read-only)
 
@@ -128,12 +132,59 @@ RECONSTRUCTION_FAILED     ROUNDTRIP_MISMATCH
 Compatibility rules for the 1.x line:
 
 - **removing, renaming, or repurposing an existing machine code is a breaking
-  (major) API change**;
-- **adding a new code is an additive (minor) change**; consumers must treat
-  unknown codes as `OPERATION_FAILED`-class failures;
-- every exception class carries the same JSON-safe payload shape
-  (`to_dict()` → `code` / `message` / `operation` / `path` / `table` /
-  `context`), POSIX-normalized paths.
+  (major) API change**; the codes listed above form the protected **1.0
+  stability baseline** — every one of them must remain available;
+- **adding a new code is an additive (minor) change** — the vocabulary is not
+  a closed set; consumers must treat unknown codes as
+  `OPERATION_FAILED`-class failures;
+- uniform machine classification is the contract, **not identical
+  dictionaries**: each payload family serializes its own documented keys (see
+  below), all JSON-safe, with POSIX-normalized paths.
+
+### Error payload families (exact, verified against the runtime)
+
+**1. Direct Read typed errors** — `DirectReadError` and its family
+(`DbfPathError`, `DbfHeaderInvalidError`, `DbfTruncatedError`,
+`DbfFormatUnsupportedError`, `DbfIoError`, `DbfRecordInvalidError`,
+`EncodingUnknownError`, `TextDecodeError`, `FptRequiredMissingError`,
+`FptInvalidError`, `ArgumentInvalidError`, `FieldProjectionInvalidError`,
+`FieldTypeUnsupportedError`, `ReadCancelledError`):
+
+```text
+to_dict() → {code, message, path, context}
+```
+
+**2. High-level operation errors** — `OperationError` and the typed
+public-boundary exceptions (`OperationArgumentError`, `OperationPathError`,
+`OperationOutputExistsError`), plus every entry inside
+`DBFBridgeRunError.details`:
+
+```text
+to_dict() → {code, message, operation, path, table, context}
+```
+
+**3. `OptionalDependencyMissingError`** — operation-specific payload:
+
+```text
+to_dict() → {code, dependency, extra, operation, install_command, purpose?}
+```
+
+(`purpose` is present when provided; it is intentionally **not** forced into
+the `OperationError` shape — the dependency and install-command facts are the
+useful contract here.)
+
+**4. `DBFBridgeRunError`** — the run aggregate:
+
+```text
+to_dict() → {code, message, details: [<OperationError payload>...]}
+```
+
+`.code` is the primary (first) structured detail's code, else
+`OPERATION_FAILED`; `.result` carries the original run result object.
+
+All four families satisfy the one common requirement: **public failures are
+machine-classifiable by `code` (or `to_dict()["code"]`) without parsing the
+English message.**
 
 Public exception families (all superclass-compatible, tested):
 
