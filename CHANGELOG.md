@@ -50,7 +50,40 @@ User-visible:
   `OptionalDependencyMissingError` (`OPTIONAL_DEPENDENCY_MISSING`) is raised
   before any output is created, never auto-installs, and never accesses the
   Internet.
-- 0.2 → 0.3 migration guide: `docs/migration-0.3.md`.
+- - 0.2 → 0.3 migration guide: `docs/migration-0.3.md`.
+- VFP/FPT compatibility matrix: `docs/compatibility-vfp.md` — an
+  evidence-based status per physical field type and FPT edge case, built on
+  authentic Visual FoxPro 0x32 fixtures.
+- Varchar/`_NullFlags` correctness hardening: authentic VFP 0x32 Varchar
+  decoding now honours the physical contract — per-record varlength bits
+  (the last payload byte carries the actual value length), NULL bits, and
+  the full-width storage form; significant trailing spaces in Varchar
+  values are preserved instead of being stripped.
+- Nullable VFP fields resolve through the `_NullFlags` bitmap: a set NULL
+  bit yields `None` for ordinary nullable `C`/`I`/`Y` fields (and NULL
+  memos) instead of blank/zero storage values, and NULL memos never touch
+  the FPT.
+- Varchar text decoding honours the configured encoding policy: the shared
+  read loop isolates the exact logical bytes and delegates text decoding to
+  the configured parser, so the export path's loss-aware Polish fallback
+  works for Varchar too — the exact logical Unicode is written to JSONL and
+  the original raw bytes are retained under
+  `__dbfbridge_raw_text_fields__`.
+- VFP B (Double) correctness: a table whose only `B` column is an inline
+  VFP double no longer spuriously requires an FPT companion to export or
+  reconstruct; tables with real memo fields remain strict about a missing
+  FPT (typed `FPT_REQUIRED_MISSING` / structured per-table failure).
+- FPT corruption boundaries are typed and covered: pointer beyond EOF,
+  declared payload length beyond EOF, truncated block header (lazy read
+  fails only at `load()`), empty payload, non-default block sizes,
+  multiple memo fields per record, deleted records with memos, per-block
+  text/binary typing, and atomic reconstruction failures that publish
+  nothing and leave no `.partial` residue.
+
+Known limitation (documented, not hidden): Varchar reconstruction is
+canonically correct, but exact physical Varchar DBF layout reconstruction
+remains a documented limitation — `reconstruct_dbf` matches the original
+table logically (canonical checksums) and not yet byte-for-byte.
 
 Developer/infrastructure:
 
