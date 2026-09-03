@@ -192,16 +192,29 @@ def _apply_memo_policy(
     return with_null_memos()
 
 
-def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
-    encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
-    checksum = CanonicalChecksum(schema)
-    table = DBF(
+def _memo_free_open(path: Path, schema: Mapping[str, Any], encoding: str) -> DBF:
+    """Open a DBF for canonical re-reading.
+
+    dbfread treats a ``B`` field as a memo pointer unconditionally, but in a
+    Visual FoxPro table a ``B`` column is an inline 8-byte double.  A table
+    whose schema declares no memo fields must therefore open without the FPT
+    companion; tables with memo fields keep the strict check.
+    """
+    memo_fields = schema.get("memo", {}).get("field_names") or []
+    return DBF(
         path,
         load=False,
         encoding=encoding,
         parserclass=LosslessFieldParser,
         char_decode_errors="strict",
+        ignore_missing_memofile=not memo_fields,
     )
+
+
+def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
+    encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
+    checksum = CanonicalChecksum(schema)
+    table = _memo_free_open(path, schema, encoding)
     for record in table.records:
         checksum.update(record)
     for record in table.deleted:
@@ -213,13 +226,7 @@ def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
 
 def iter_dbf_records(path: Path, schema: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
-    table = DBF(
-        path,
-        load=False,
-        encoding=encoding,
-        parserclass=LosslessFieldParser,
-        char_decode_errors="strict",
-    )
+    table = _memo_free_open(path, schema, encoding)
     for record in table.records:
         yield dict(record)
     for record in table.deleted:
