@@ -233,6 +233,7 @@ dbf-bridge --source <DBF_DIR_OR_FILE> --output <OUT_DIR> [options]
 | `--no-validate` | off | skip output SHA-256 and parse validation |
 | `--xlsx-long-text` | `overflow` | preserve long values in overflow sheets or fail with `error` |
 | `--incremental` | off | reuse verified results recorded in `conversion_checksums.json` |
+| `--raw-mode` | `full-record` | raw-retention level of the JSONL/JSON output: `full-record` keeps the per-record raw physical record image, `metadata` omits it, `none` additionally omits the replay-only physical header blobs from the schema |
 
 The output directory preserves the source directory tree. Each table can produce:
 
@@ -289,6 +290,23 @@ For the best chance of byte-identical JSON/JSONL reconstruction:
 match with a true canonical match may be caused by unreferenced/orphan blocks in the old
 FPT; exported memo values cannot recreate bytes that no record references. CSV and XLSX
 are interchange formats and generally cannot preserve every raw DBF byte.
+
+### Raw retention modes (`--raw-mode`)
+
+`--raw-mode` controls how much raw data the loss-aware JSONL/JSON intermediate output
+carries; CSV/XLSX are converted from schema-declared columns and never carry raw fields.
+
+| Mode | Logical values | Schema | Raw record images (`__dbfbridge_raw_record__`) | Raw text fallback (`__dbfbridge_raw_text_fields__`) | Canonical reconstruction | Raw physical reconstruction |
+|---|---|---|---|---|---|---|
+| `full-record` (default) | yes | full | kept | kept | yes | yes (raw-layout restoration) |
+| `metadata` | yes | full | omitted | kept | yes (ordinary/nullable/memo/deleted cases) | no |
+| `none` | yes | logical facts only (replay-only `dbf.header_base64` / `memo.header_base64` blobs omitted) | omitted | kept | yes (ordinary/nullable/memo/deleted cases) | no |
+
+Changing `--raw-mode` invalidates the incremental `conversion_checksums.json` cache.
+Nullable Varchar tables require `full-record`: the schema-driven writer cannot yet rebuild
+the variable-length Varchar layout without the per-record raw image (documented writer
+limitation), so reconstruction from `metadata`/`none` fails with the typed
+`DBF_RECORD_INVALID` error.
 
 CDX files are not reconstructed because DBF field metadata does not contain index tag
 names and expressions. The DBF structural-index flag is preserved when possible, but the

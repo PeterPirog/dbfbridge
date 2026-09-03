@@ -53,6 +53,18 @@ class FileCheck:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe payload (additive machine contract)."""
+        return {
+            "relative_path": self.relative_path,
+            "exists": self.exists,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+            "record_count": self.record_count,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+        }
+
 
 @dataclass
 class TableCheck:
@@ -77,6 +89,25 @@ class TableCheck:
         if self.warnings:
             return "WARNING"
         return "OK"
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe payload (additive machine contract)."""
+        return {
+            "dbf_relative": self.dbf_relative,
+            "output_base": self.output_base,
+            "status": self.status,
+            "formats": {name: check.to_dict() for name, check in self.formats.items()},
+            "schema": self.schema.to_dict() if self.schema is not None else None,
+            "dbf_record_count": self.dbf_record_count,
+            "dbf_deleted_count": self.dbf_deleted_count,
+            "dbf_fields": self.dbf_fields,
+            "dbf_codepage": self.dbf_codepage,
+            "dbf_version": self.dbf_version,
+            "has_fpt": self.has_fpt,
+            "has_cdx": self.has_cdx,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+        }
 
 
 def sha256_file(path: Path) -> str:

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..core.errors import OperationError
+
 InputFormat = Literal["jsonl", "json", "csv", "xlsx"]
 
 
@@ -42,6 +44,9 @@ class ReconstructionResult:
     differences: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: Machine-readable failure details (additive to ``errors``); each entry
+    #: classifies the failure by stable code without any message parsing.
+    error_details: list[OperationError] = field(default_factory=list)
     elapsed_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,5 +74,6 @@ class ReconstructionResult:
             "differences": self.differences,
             "warnings": self.warnings,
             "errors": self.errors,
+            "error_details": [detail.to_dict() for detail in self.error_details],
             "elapsed_seconds": self.elapsed_seconds,
         }
