@@ -17,12 +17,14 @@ from .api_models import (
     ReconstructionRunResult,
     VerificationRunResult,
 )
+from .core.errors import OperationArgumentError, OperationPathError
 from .exporter.models import (
     DecodeErrors,
     DeletedPolicy,
     MemoPolicy,
     MissingMemoPolicy,
     OutputFormat,
+    RawMode,
 )
 from .importer.models import InputFormat
 from .progress import ProgressCallback  # canonical shared contract (re-export)
@@ -47,6 +49,7 @@ def export_dbf(
     validate: bool = True,
     xlsx_long_text: str = "overflow",
     incremental: bool = False,
+    raw_mode: RawMode = "full-record",
     progress: ProgressCallback | None = None,
     options: ExportOptions | None = None,
 ) -> ExportRunResult:
@@ -57,6 +60,11 @@ def export_dbf(
     supplied, its values are used and the other option keywords must stay at defaults.
     Per-table failures are returned in ``ExportRunResult`` and can be converted to an
     exception with ``result.raise_for_errors()``.
+
+    ``raw_mode`` controls the raw-retention level of the loss-aware intermediate
+    output (default ``"full-record"`` — the historical forensic behaviour;
+    ``"metadata"`` omits per-record raw record images; ``"none"`` additionally
+    omits the replay-only physical header blobs from the schema).
     """
     if options is not None:
         if formats is not None or any(
@@ -72,9 +80,13 @@ def export_dbf(
                 (validate, True),
                 (xlsx_long_text, "overflow"),
                 (incremental, False),
+                (raw_mode, "full-record"),
             )
         ):
-            raise ValueError("Use either options=ExportOptions(...) or individual option keywords.")
+            raise OperationArgumentError(
+                "Use either options=ExportOptions(...) or individual option keywords.",
+                operation="export_dbf",
+            )
         formats = options.formats
         memo = options.memo
         strip_spaces = options.strip_spaces
@@ -86,27 +98,46 @@ def export_dbf(
         validate = options.validate
         xlsx_long_text = options.xlsx_long_text
         incremental = options.incremental
+        raw_mode = options.raw_mode
 
     source_path = Path(source)
     output_path = Path(output)
     resolved_formats = _normalize_formats(
         ("jsonl",) if formats is None else formats,
         SUPPORTED_FORMATS,
+        operation="export_dbf",
     )
     if not source_path.is_dir() and not (
         source_path.is_file() and source_path.suffix.lower() == ".dbf"
     ):
-        raise FileNotFoundError(f"DBF source does not exist: {source_path}")
+        raise OperationPathError(
+            f"DBF source does not exist: {source_path}",
+            operation="export_dbf",
+            path=source_path,
+        )
+    if raw_mode not in {"none", "metadata", "full-record"}:
+        raise OperationArgumentError(
+            "raw_mode must be one of: none, metadata, full-record",
+            operation="export_dbf",
+        )
     if memo not in {None, "skip", "inline", "null"}:
-        raise ValueError("memo must be one of: skip, inline, null")
+        raise OperationArgumentError("memo must be one of: skip, inline, null", operation="export_dbf")
     if decode_errors not in {"strict", "ignore", "replace"}:
-        raise ValueError("decode_errors must be one of: strict, ignore, replace")
+        raise OperationArgumentError(
+            "decode_errors must be one of: strict, ignore, replace", operation="export_dbf"
+        )
     if deleted not in {"skip", "separate", "include"}:
-        raise ValueError("deleted must be one of: skip, separate, include")
+        raise OperationArgumentError(
+            "deleted must be one of: skip, separate, include", operation="export_dbf"
+        )
     if missing_memo not in {"fail", "null-with-warning"}:
-        raise ValueError("missing_memo must be one of: fail, null-with-warning")
+        raise OperationArgumentError(
+            "missing_memo must be one of: fail, null-with-warning", operation="export_dbf"
+        )
     if xlsx_long_text not in {"overflow", "error"}:
-        raise ValueError("xlsx_long_text must be one of: overflow, error")
+        raise OperationArgumentError(
+            "xlsx_long_text must be one of: overflow, error", operation="export_dbf"
+        )
 
     if "xlsx" in resolved_formats:
         # Fail BEFORE any output is created (no JSONL, no .partial, no tree).
@@ -136,6 +167,7 @@ def export_dbf(
         validate=validate,
         xlsx_long_text=xlsx_long_text,
         incremental=incremental,
+        raw_mode=raw_mode,
         console=False,
         progress_callback=progress,
     )
@@ -154,22 +186,29 @@ def reconstruct_dbf(
     """Reconstruct a DBF/FPT directory tree from exactly one exported format."""
     if options is not None:
         if input_format != "jsonl" or memo != "inline" or overwrite:
-            raise ValueError(
-                "Use either options=ReconstructionOptions(...) or individual option keywords."
+            raise OperationArgumentError(
+                "Use either options=ReconstructionOptions(...) or individual option keywords.",
+                operation="reconstruct_dbf",
             )
         input_format = options.input_format
         memo = options.memo
         overwrite = options.overwrite
     normalized_format = cast(
         InputFormat,
-        _normalize_formats((input_format,), SUPPORTED_INPUT_FORMATS)[0],
+        _normalize_formats((input_format,), SUPPORTED_INPUT_FORMATS, operation="reconstruct_dbf")[
+            0
+        ],
     )
     if memo not in {"inline", "null"}:
-        raise ValueError("memo must be one of: inline, null")
+        raise OperationArgumentError("memo must be one of: inline, null", operation="reconstruct_dbf")
     source_path = Path(source)
     output_path = Path(output)
     if not source_path.exists():
-        raise FileNotFoundError(f"Export source does not exist: {source_path}")
+        raise OperationPathError(
+            f"Export source does not exist: {source_path}",
+            operation="reconstruct_dbf",
+            path=source_path,
+        )
 
     # Reconstruction writes DBF/FPT with the `dbf` writer ([write] extra);
     # XLSX input additionally needs openpyxl ([xlsx] extra).  Both checks run
@@ -222,7 +261,11 @@ def reconstruct_dbf(
         ),
     )
     if not table_results:
-        raise FileNotFoundError(f"No *.{normalized_format} data files found in {source_path}")
+        raise OperationPathError(
+            f"No *.{normalized_format} data files found in {source_path}",
+            operation="reconstruct_dbf",
+            path=source_path,
+        )
     failed = sum(result.status == "FAILED" for result in table_results)
     warning = sum(result.status == "WARNING" for result in table_results)
     return ReconstructionRunResult(
@@ -249,10 +292,18 @@ def verify_conversion(
     source_path = Path(source)
     output_path = Path(output)
     if not source_path.is_dir():
-        raise FileNotFoundError(f"DBF source directory does not exist: {source_path}")
+        raise OperationPathError(
+            f"DBF source directory does not exist: {source_path}",
+            operation="verify_conversion",
+            path=source_path,
+        )
     if not output_path.is_dir():
-        raise FileNotFoundError(f"Export output directory does not exist: {output_path}")
-    resolved_formats = _normalize_formats(formats, SUPPORTED_FORMATS)
+        raise OperationPathError(
+            f"Export output directory does not exist: {output_path}",
+            operation="verify_conversion",
+            path=output_path,
+        )
+    resolved_formats = _normalize_formats(formats, SUPPORTED_FORMATS, operation="verify_conversion")
 
     from .verifier import summarize, verify_all
 
@@ -291,11 +342,17 @@ def check_conversion_quality(
 ) -> QualityRunResult:
     """Run and retain a diagnostic DBF -> JSONL -> DBF round trip."""
     if max_differences < 1:
-        raise ValueError("max_differences must be positive")
+        raise OperationArgumentError(
+            "max_differences must be positive", operation="check_conversion_quality"
+        )
     source_path = Path(source)
     output_path = Path(output)
     if not source_path.exists():
-        raise FileNotFoundError(f"DBF source does not exist: {source_path}")
+        raise OperationPathError(
+            f"DBF source does not exist: {source_path}",
+            operation="check_conversion_quality",
+            path=source_path,
+        )
 
     # The quality round trip reconstructs a DBF internally, which needs the
     # `dbf` writer ([write] extra); fail BEFORE any output is created.
@@ -349,16 +406,24 @@ def check_conversion_quality(
 def _normalize_formats(
     formats: str | Iterable[str],
     supported: tuple[str, ...],
+    *,
+    operation: str | None = None,
 ) -> tuple[str, ...]:
     values = formats.split(",") if isinstance(formats, str) else list(formats)
     normalized = tuple(
         dict.fromkeys(str(value).strip().lower() for value in values if str(value).strip())
     )
     if not normalized:
-        raise ValueError("At least one format is required.")
+        raise OperationArgumentError(
+            "At least one format is required.",
+            operation=operation,
+        )
     invalid = [value for value in normalized if value not in supported]
     if invalid:
-        raise ValueError(f"Unsupported format(s): {invalid}. Available: {list(supported)}")
+        raise OperationArgumentError(
+            f"Unsupported format(s): {invalid}. Available: {list(supported)}",
+            operation=operation,
+        )
     return normalized
 
 

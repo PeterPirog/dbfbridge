@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from dbf_bridge.core.nullflags import NullFlagsLayout, build_nullflags_layout
 from dbf_bridge.exporter.serialization import (
     BINARY_MEMO_FIELDS_KEY,
     RAW_RECORD_KEY,
@@ -48,12 +49,52 @@ class ReconstructionError(ValueError):
     """Raised when exported data cannot recreate the declared DBF structure."""
 
 
+def _ensure_writer_text_codecs(codepage: int, text_encodings: list[str]) -> None:
+    """Register the schema's text codecs with the ``dbf`` writer.
+
+    Two on-demand boundaries, mirroring the export path:
+
+    - Polish OEM codec names (``mazovia``/``piast``/``pki``) must be registered
+      in the global codec registry before any text encoding;
+    - the writer's codepage table has **no codec name** for some language
+      drivers (e.g. Mazovia ``0x69``, Kamenicky ``0x68`` — the bundled entry is
+      ``(None, …)``); the first schema encoding that registers successfully is
+      bridged into that slot so schema-driven reconstruction works.
+    """
+    from ..core.codecs import _ensure_encoding_available
+
+    registered: list[str] = []
+    for encoding in text_encodings:
+        try:
+            _ensure_encoding_available(encoding)
+        except LookupError:
+            continue
+        registered.append(encoding)
+    if not registered:
+        return
+    import dbf.tables as dbf_tables
+
+    pages = getattr(dbf_tables, "code_pages", None)
+    if not isinstance(pages, dict):
+        return
+    entry = pages.get(codepage)
+    if entry is not None and entry[0] is None:
+        for encoding in registered:
+            try:
+                _ensure_encoding_available(encoding)
+            except LookupError:  # pragma: no cover - defensive
+                continue
+            pages[codepage] = (encoding, entry[1])
+            break
+
+
 def write_dbf(
     destination: Path,
     records: Iterable[Mapping[str, Any]],
     schema: Mapping[str, Any],
     *,
     overwrite: bool,
+    records_factory: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
     progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[CanonicalChecksum, list[str]]:
     try:
@@ -104,6 +145,7 @@ def write_dbf(
     codepage = _hex_byte(schema.get("dbf", {}).get("language_driver"), default=0x03)
     memo_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
     text_encodings = _text_encodings(schema)
+    _ensure_writer_text_codecs(codepage, text_encodings)
     checksum = CanonicalChecksum(schema)
     memo_block_overrides: list[tuple[int, str, int]] = []
     table = None
@@ -143,6 +185,20 @@ def write_dbf(
         table.close()
         table = None
 
+        # Schema-driven Varchar logical-layout repair (staging only): the
+        # ``dbf`` writer stores ``V`` columns as fixed-width Character and
+        # manages its own ``_NullFlags`` bitmap (one bit per NULLable field),
+        # which is not the canonical VFP contract (varlength bit per Varchar
+        # field + NULL bits in descriptor order).  The staged records are
+        # rewritten from the logical values with the canonical layout BEFORE
+        # metadata patching, layout validation, and atomic publish.
+        _repair_varchar_logical_layout(
+            partial,
+            schema,
+            records_factory,
+            text_encodings,
+        )
+
         if partial_fpt.exists():
             _patch_fpt_block_types(
                 partial,
@@ -178,6 +234,171 @@ def write_dbf(
 def output_hashes(destination: Path, schema: Mapping[str, Any]) -> tuple[str, str | None]:
     fpt = memo_output_path(destination, schema)
     return sha256_file(destination), sha256_file(fpt) if fpt.is_file() else None
+
+
+def _set_bitmap_bit(bitmap: bytearray, bit: int, *, value: bool) -> None:
+    """Apply one canonical-layout bit to a mutable bitmap (no allocation logic)."""
+    byte, offset = divmod(bit, 8)
+    if byte >= len(bitmap):
+        return
+    if value:
+        bitmap[byte] |= 1 << offset
+    else:
+        bitmap[byte] &= ~(1 << offset) & 0xFF
+
+
+def _record_bitmap(record: Mapping[str, Any], layout: NullFlagsLayout) -> bytearray:
+    """The record's exported bitmap, normalized to the canonical byte count."""
+    raw_bitmap = record.get(layout.field_name)
+    bitmap = bytearray(layout.byte_count)
+    if isinstance(raw_bitmap, (bytes, bytearray)):
+        bitmap[: len(raw_bitmap)] = bytearray(raw_bitmap[: layout.byte_count])
+    elif isinstance(raw_bitmap, str) and raw_bitmap:
+        try:
+            decoded = base64.b64decode(raw_bitmap, validate=True)
+        except ValueError as exc:
+            raise ReconstructionError(
+                f"Invalid {layout.field_name} bitmap metadata: {exc}"
+            ) from exc
+        bitmap[: len(decoded)] = bytearray(decoded[: layout.byte_count])
+    return bitmap
+
+
+def _repair_varchar_logical_layout(
+    partial: Path,
+    schema: Mapping[str, Any],
+    records_factory: Callable[[], Iterable[Mapping[str, Any]]] | None,
+    text_encodings: list[str],
+) -> None:
+    """Restore the canonical Varchar payload and ``_NullFlags`` layout on the
+    staging DBF (schema-driven, bounded-memory, atomic-publish boundary).
+
+    The ``dbf`` writer stores ``V`` columns through the Character alias with
+    fixed-width payloads and manages its own ``_NullFlags`` bitmap (one bit per
+    NULLable field, no varlength concept).  The canonical VFP contract instead
+    reserves a varlength bit for every Varchar field plus NULL bits for every
+    nullable field, in descriptor order, and stores a Varchar shorter than its
+    declared width as ``value bytes + space padding + length byte``.
+
+    This pass rewrites, per staged record:
+
+    - each text Varchar payload from its logical value (configured text
+      encoding, ``__dbfbridge_raw_text_fields__`` loss-aware bytes when
+      present) — short values carry the length byte, full-width values keep
+      all data bytes, NULLs stay blank;
+    - the ``_NullFlags`` bitmap bytes with the canonical
+      ``dbf_bridge.core.nullflags`` allocation.
+
+    It runs on the staging file only — before descriptor patching, layout
+    validation, fsync, and atomic publish — so a failure leaves no final
+    output and no partial residue.  Records are streamed via *records_factory*
+    (O(1)/O(batch) memory, no materialization).
+    """
+    if records_factory is None:
+        return
+    fields = list(schema["fields"])
+    layout: NullFlagsLayout | None = build_nullflags_layout(fields)
+    if layout is None:
+        return
+    expected_record = schema.get("dbf", {}).get("record_length_bytes")
+    expected_header = schema.get("dbf", {}).get("header_length_bytes")
+    varchar_specs: list[tuple[str, int, int, int]] = []
+    bitmap_offset: int | None = None
+    start = 1  # deletion marker precedes the first field
+    for field in fields:
+        name = str(field["name"])
+        width = int(field.get("length") or 0)
+        dbf_type = str(field.get("dbf_type"))
+        if dbf_type == "0":
+            bitmap_offset = start
+        elif dbf_type == "V":
+            bit = layout.varlength_bits.get(name)
+            if bit is None:  # pragma: no cover - the engine allocates it
+                raise ReconstructionError(f"Varchar field {name!r} has no varlength bit.")
+            if int(field.get("flags") or 0) & 0x04:
+                raise ReconstructionError(
+                    f"Varchar field {name!r} is binary (NOCPTRANS); logical-layout repair "
+                    "supports text Varchar only — full-record mode with raw record images "
+                    "is required."
+                )
+            varchar_specs.append((name, width, start, bit))
+        start += width
+    if bitmap_offset is None:
+        if varchar_specs:  # pragma: no cover - V fields always imply a bitmap
+            raise ReconstructionError(
+                "Varchar fields require the _NullFlags system column declared by the schema."
+            )
+        return
+    if bitmap_offset + layout.byte_count > (int(expected_record) if expected_record else 0):
+        raise ReconstructionError(
+            "The generated table layout does not leave room for the canonical _NullFlags "
+            f"bitmap ({layout.byte_count} byte(s)); reconstruct with full-record mode "
+            "(raw record images) for this table."
+        )
+    with partial.open("r+b") as handle:
+        header = handle.read(DBF_HEADER_SIZE)
+        header_length, record_length = struct.unpack_from("<HH", header, 8)
+        record_count = struct.unpack_from("<I", header, 4)[0]
+        if expected_record is not None and record_length != int(expected_record):
+            raise ReconstructionError(
+                f"Generated table record length {record_length} does not match the schema "
+                f"{expected_record}; canonical Varchar layout repair requires the canonical "
+                "record layout (raw record images / full-record mode for non-standard "
+                "bitmap widths)."
+            )
+        if expected_header is not None and header_length != int(expected_header):
+            raise ReconstructionError(
+                f"Generated table header length {header_length} does not match the schema "
+                f"{expected_header}; canonical Varchar layout repair requires the canonical "
+                "record layout."
+            )
+        for record_index, record in enumerate(records_factory()):
+            if record_index >= record_count:
+                raise ReconstructionError(
+                    "Record stream is longer than the staged table during Varchar "
+                    "logical-layout repair."
+                )
+            base = header_length + record_index * record_length
+            null_names = nullable_null_fields(record, fields, layout)
+            raw_text = _raw_text_fields(record)
+            # Start from the exported source bitmap (canonical allocation) and
+            # only re-derive the Varchar varlength bits from the payloads
+            # written below; padding/unused bits keep the source form.
+            bitmap = _record_bitmap(record, layout)
+            for field_name, null_bit in layout.null_bits.items():
+                _set_bitmap_bit(bitmap, null_bit, value=field_name in null_names)
+            for name, width, offset, bit in varchar_specs:
+                if name in null_names:
+                    payload = b" " * width
+                    varlength_set = False
+                else:
+                    fallback = raw_text.get(name)
+                    value = record.get(name)
+                    encoded = (
+                        fallback
+                        if fallback is not None
+                        else (_encode_text(str(value), text_encodings) if value is not None else b"")
+                    )
+                    if len(encoded) > width:
+                        raise ReconstructionError(
+                            f"Varchar field {name!r} value exceeds its declared width "
+                            f"({len(encoded)} > {width})."
+                        )
+                    if len(encoded) < width:
+                        payload = (
+                            encoded
+                            + b" " * (width - 1 - len(encoded))
+                            + len(encoded).to_bytes(1, "little")
+                        )
+                        varlength_set = True
+                    else:
+                        payload = encoded
+                        varlength_set = False
+                handle.seek(base + offset)
+                handle.write(payload)
+                _set_bitmap_bit(bitmap, bit, value=varlength_set)
+            handle.seek(base + bitmap_offset)
+            handle.write(bytes(bitmap))
 
 
 def restore_raw_layout(
@@ -346,7 +567,10 @@ def _field_spec(field: Mapping[str, Any]) -> str:
         spec = f"{name} {dbf_type}"
     else:
         raise ReconstructionError(f"Cannot build field {name!r} of type {original_type!r}.")
-    if flags & 0x02:
+    # ``V`` fields always consume a varlength bit in the canonical VFP
+    # ``_NullFlags`` contract (even when not NULLable) — declaring them NULL
+    # makes the writer's bitmap exactly one bit wide per canonical bit.
+    if (flags & 0x02) or original_type == "V":
         spec += " NULL"
     # Build every M field as binary internally.  VFP permits text and binary
     # memo blocks in the same field; after writing, the original descriptor

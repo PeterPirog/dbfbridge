@@ -1,10 +1,10 @@
 # dbfbridge 1.0 Architecture Closure Matrix
 
-**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-120019).md` (immutable upstream document; this file is the working repository status and does not replace it).
-**Audit baseline:** `main` = `c84a611aac6e7beb4a48f5044e62c6a7d10aefeb` (PR #14 merged), branch `audit/1.0-architecture-closure`.
-**Audit date:** 2026-09-03. **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
+**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md` (immutable upstream document; this file is the working repository status and does not replace it).
+**Audit baseline:** `main` = `c84a611aac6e7beb4a48f5044e62c6a7d10aefeb` (PR #14 merged) → closure-audit merge `61042944873899735edffe6acf7def01cc1053b1` (PR #15) → Macro A branch `feat/1.0-public-contract-stabilization`.
+**Audit date:** 2026-09-03 (Macro A update same day). **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
 
-Exact test evidence (verified from CI logs): `main`/audit-branch suite = **432 passed, 1 skipped (433 collected)** (CI 33772195304); `release/0.3.0` = exact-head release CI SUCCESS (454 passed, 2 skipped, release CI 33756842901).
+Exact test evidence: closure-audit `main` suite = 432 passed, 1 skipped (433 collected, CI 33772195304); Macro A branch after the correctness gate = 505 passed locally (Windows; includes the 55 contract tests + 17 Varchar-gate tests); `release/0.3.0` = exact-head release CI SUCCESS (454 passed, 2 skipped, release CI 33756842901).
 
 ## Status definitions
 
@@ -45,8 +45,8 @@ audit incomplete; temporary state only
 ```text
 requirements audited: 82
 
-CLOSED_FROZEN: 60
-BLOCKER: 7 requirement rows → consolidated into 3 root-cause blockers (BLK-01, BLK-02, BLK-03)
+CLOSED_FROZEN: 66
+BLOCKER: 1 requirement row (R-46 → BLK-03)
 ACCEPTED_LIMITATION: 3
 INTENTIONALLY_UNSUPPORTED: 10
 EXTERNAL_BLOCKER: 1
@@ -54,7 +54,12 @@ DEFERRED: 1
 NOT_YET_AUDITED: 0
 ```
 
-External blocker (not counted above as a requirement row failure): **PyPI Trusted Publisher verification (EXB-01)**.
+Root-cause blockers: **before Macro A 3 → after Macro A 1**. BLK-01 (public error
+model) and BLK-02 (migration raw-mode split) are **CLOSED_FROZEN** in Macro A
+(branch `feat/1.0-public-contract-stabilization`); the sole remaining
+repository-controlled blocker is **BLK-03 — 1.0 API contract declaration**.
+External blocker (not counted above as a requirement row failure): **PyPI Trusted
+Publisher verification (EXB-01)**.
 
 ---
 
@@ -107,7 +112,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
 | R-16 | §7 | Direct Read treats raw as optional feature (`raw=False` default; separate `iter_raw_records`) | CLOSED_FROZEN | `raw=False` default in `iter_records` | `test_raw_false_stores_no_raw_data` | none | NO | none | — |
-| R-17 | §7 | Migration API must expose an explicit raw retention level (`raw_mode="none"\|"metadata"\|"full-record"`) | **BLOCKER** | `exporter/config.py` has **no** raw option; `reader.py:235` hardcodes `keep_raw=True`; `writer.py:184,208` always embed `__dbfbridge_raw_record__` Base64 | benchmark scenarios `raw_mode_none` / `raw_record_metadata_default` exist (Phase 1 contract), but the public API level does not | JSONL exports always carry full raw records | **YES (BLK-02)** | implement `raw_mode` option, backward-compatible default | Macro A |
+| R-17 | §7 | Migration API must expose an explicit raw retention level (`raw_mode="none"\|"metadata"\|"full-record"`) | CLOSED_FROZEN | `RawMode` public type; `raw_mode` on `ExportOptions`/`export_dbf`/`ExportConfig`/`make_config`/`run_export`/`_export_one`; CLI `--raw-mode`; incremental signature includes `raw_mode` | `tests/test_raw_mode.py` (mode matrix, incremental invalidation, no-allocation spy); default `full-record` = historical behaviour | none | NO | none | done (Macro A) |
 
 ### §8 Validation
 
@@ -157,7 +162,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 |---|---|---|---|---|---|---|---|---|---|
 | R-30 | §15 | `import dbfbridge` boundary; toolchain needs no private modules | CLOSED_FROZEN | lazy alias `src/dbfbridge/__init__.py`; documented `__all__` | `test_distribution_import_exposes_the_documented_api` | none | NO | none | — |
 | R-31 | §15/§32 | JSON-serializable result objects — Direct Read models | CLOSED_FROZEN | `TableInfo/TableSchema/FieldInfo/DirectRecord/RecordPage.to_dict()`, error `to_dict()` | `test_public_to_dict_payloads_are_json_safe` (records + page + raw) | none | NO | none | — |
-| R-32 | §15/§32 | JSON-serializable run-level results + typed exception payloads (export/reconstruct/verify/quality, `DBFBridgeRunError`) | **BLOCKER** | `ExportRunResult`/`VerificationRunResult`/`QualityRunResult`/`ReconstructionRunResult` lack `to_dict()`; `VerificationRunResult.checks` are dataclasses (`FileCheck`/`TableCheck`) without serialization; `DBFBridgeRunError(RuntimeError)` has no machine code/payload | no test proves run-level JSON safety (only per-table `to_dict`/`to_report_dict`) | MCP cannot transport run results without reaching into dataclass fields | **YES (BLK-01)** | add JSON-safe serialization at the public boundary | Macro A |
+| R-32 | §15/§32 | JSON-serializable run-level results + typed exception payloads (export/reconstruct/verify/quality, `DBFBridgeRunError`) | CLOSED_FROZEN | `to_dict()` on all four run results; `DBFBridgeRunError` carries `code` + `details` + `to_dict()`; `FileCheck`/`TableCheck` serializable | `tests/test_public_error_contract.py::test_run_level_results_are_json_safe`, `test_run_error_payload_preserves_all_details` | none | NO | none | done (Macro A) |
 
 ### §16 MCP read semantics
 
@@ -171,9 +176,9 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 |---|---|---|---|---|---|---|---|---|---|
 | R-34 | §17 | Direct Read: typed `ErrorCode` model, stable codes, JSON-safe context, no text parsing | CLOSED_FROZEN | `core/errors.py`: 14 codes; every failure carries `code/message/path/context`; `to_dict()` POSIX-path-normalized | Direct Read typed-error tests (truncated header, bad projection, FPT missing/invalid, decode strict, cancel) | none | NO | none | — |
 | R-35 | §17 | `OPTIONAL_DEPENDENCY_MISSING` machine-readable | CLOSED_FROZEN | `OptionalDependencyMissingError(RuntimeError)` with `.code = "OPTIONAL_DEPENDENCY_MISSING"`, `to_dict()`, exact install command; fail-before-output; never for `[fast]` | `tests/test_optional_dependencies.py` | none | NO | none | — |
-| R-36 | §17 | `OUTPUT_EXISTS` distinguishable at the public boundary | **BLOCKER** | exporter: `OutputExistsError(FileExistsError)` (writer.py:20) — typed subclass but **no machine code, no `to_dict`**, flattened into `TableResult.errors` text (writer.py:118-125); importer: plain `FileExistsError` (importer/writer.py:86,88) caught → `status="FAILED"` + text | no test asserts a machine code for output conflict | text-only classification at run level | **YES (BLK-01)** | typed code + structured payload | Macro A |
-| R-37 | §17 | `RECONSTRUCTION_FAILED` / `ROUNDTRIP_MISMATCH` machine-readable | **BLOCKER** | `ReconstructionResult.status: str` + `errors: list[str]`; machine outcome flags exist (`canonical_match`, `raw_dbf_match`, `raw_fpt_match`) but the failure **reason** is text-only; `DBFBridgeRunError` message is English text | reconstruction failure tests assert statuses, not codes | reason classification requires text parsing | **YES (BLK-01)** | structured code + payload | Macro A |
-| R-38 | §17/§25 | High-level public ops raise machine-classifiable failures (no bare `ValueError`/`FileNotFoundError` at the boundary); MCP can classify every important failure without parsing text | **BLOCKER** | `api.py` raises bare `ValueError` ×17 (argument validation: api.py:77,101-109,157-168,294) and `FileNotFoundError` (api.py:99,172,225,252-254,298); per-table errors are `list[str]` (`TableResult`, `ReconstructionResult`, `FileCheck`, `TableCheck`) | §25 answer: **NO** — evidence above | MCP must parse English text today | **YES (BLK-01)** | map to `ARGUMENT_INVALID` / `PATH_NOT_FOUND` codes; structured per-table error entries | Macro A |
+| R-36 | §17 | `OUTPUT_EXISTS` distinguishable at the public boundary | CLOSED_FROZEN | `OperationOutputExistsError(FileExistsError)` with code `OUTPUT_EXISTS` + `to_dict()`; `OutputExistsError` kept as the import alias at `exporter/writer.py`; per-table `error_details` on export AND reconstruction conflicts | `tests/test_public_error_contract.py::test_output_exists_is_machine_readable_per_table`, `test_output_exists_in_reconstruction_is_machine_readable` | none | NO | none | done (Macro A) |
+| R-37 | §17 | `RECONSTRUCTION_FAILED` / `ROUNDTRIP_MISMATCH` machine-readable | CLOSED_FROZEN | structured `error_details` on `ReconstructionResult`: `RECONSTRUCTION_FAILED` for writer failures, `ROUNDTRIP_MISMATCH` for canonical mismatches (with both checksums in context), more-specific physical codes preserved | `test_reconstruction_failure_is_machine_readable`, `test_roundtrip_mismatch_is_machine_readable` | none | NO | none | done (Macro A) |
+| R-38 | §17/§25 | High-level public ops raise machine-classifiable failures; MCP classifies without parsing text | CLOSED_FROZEN | bare `ValueError`/`FileNotFoundError` at `api.py` replaced by `OperationArgumentError`/`OperationPathError` (same messages; superclass-compat preserved); §25 answer now **YES** | `test_mcp_machine_readable_classification` (message-blind, parametrized over 6 representative cases) | none | NO | none | done (Macro A) |
 
 ### §18 Safety
 
@@ -196,7 +201,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | R-43 | §20 | 0.2.0 Direct Read Core delivered | CLOSED_FROZEN | Phase 1 direct-read baseline; merged milestones | CI history | none | NO | none | — |
 | R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | release/0.3.0 candidate frozen at `d690d33`; PR #12 | release exact-head CI 33756842901 + perf 33756842945 SUCCESS | publication blocked externally (R-27) | NO | none | — |
 | R-45 | §20 | 0.4.x reconstruction hardening only if benchmarks/bugs justify | CLOSED_FROZEN | PR #13 + PR #14 correctness closures (evidence-driven); no open justified item | FPT/NullFlags suites green | none | NO | none | — |
-| R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | **BLOCKER** | Blocked by BLK-01 (error model), BLK-02 (raw_mode), BLK-03 (stability declaration); matrix + benchmarks + packaging already closed | — | — | **YES** | execute Macro A then Macro B | Macro A/B |
+| R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | **BLOCKER** | BLK-01 and BLK-02 closed in Macro A; remaining gap = **BLK-03** (1.0 API contract declaration: documented stability/deprecation policy) | matrix + benchmarks + packaging closed | — | **YES (BLK-03)** | execute Macro B (release acceptance) | Macro B |
 
 ### §21 Definition of Done (Direct Read / MCP readiness)
 
@@ -209,7 +214,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | R-51 | §21 | Memo lazy / skip policies | CLOSED_FROZEN | `test_lazy_memo_values_never_open_fpt_during_iteration`, `test_memo_skip_and_null_do_not_touch_the_fpt` | none | NO | none | — |
 | R-52 | §21 | `read_records(limit=N)` bounded, does not materialize the table | CLOSED_FROZEN | `test_limit_does_not_materialize_further_records` | none | NO | none | — |
 | R-53 | §21 | Source stays byte-identical | CLOSED_FROZEN | `test_source_stays_byte_identical_with_same_mtime`, `test_source_immutability_across_control_modes` | none | NO | none | — |
-| R-54 | §21 | API returns structured results **and structured exceptions** | **BLOCKER** | results structured (dataclasses + `to_dict`) and core exceptions typed; **high-level exceptions/per-table failure reasons are text-only** (see R-36/R-37/R-38) | high-level leg fails §17 | **YES (BLK-01)** | Macro A | Macro A |
+| R-54 | §21 | API returns structured results **and structured exceptions** | CLOSED_FROZEN | results structured (dataclasses + `to_dict`); public exceptions typed (`OperationArgumentError`/`OperationPathError`/`OperationOutputExistsError`); per-table `error_details` additive to text `errors` | `tests/test_public_error_contract.py` (whole module) | none | NO | none | done (Macro A) |
 | R-55 | §21 | No runtime network | CLOSED_FROZEN | `git grep` finds no `requests/urllib/httpx/aiohttp/socket` in `src/` | fresh-interpreter import tests | none | NO | none | — |
 | R-56 | §21 | Benchmarks recorded and repeatable | CLOSED_FROZEN | baselines + provenance manifests + strict contract validators | `tests/test_benchmark_infrastructure.py` | none | NO | none | — |
 | R-57 | §21 | Consumers can stream records without JSONL (anonymizer path) | CLOSED_FROZEN | public `iter_records`/`read_records` used directly in tests, parity with exporter proven | Direct Read suites | none | NO | none | — |
@@ -273,14 +278,20 @@ Direct Read operations: `inspect_table`, `read_schema`, `iter_records`, `read_re
 High-level operations: `export_dbf`, `reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`.
 Direct models: `FieldInfo`, `TableInfo`, `TableSchema`, `DirectRecord`, `RecordPage`, `LazyMemoValue`.
 Options/result models: `ExportOptions`, `ExportRunResult`, `ReconstructionOptions`, `ReconstructionRunResult`, `ReconstructionResult`, `VerificationRunResult`, `QualityRunResult`, `TableResult`, `TableStatus`.
-Type aliases: `OutputFormat`, `InputFormat`, `MemoPolicy`, `MissingMemoPolicy`, `DecodeErrors`, `DeletedPolicy`.
+Type aliases: `OutputFormat`, `InputFormat`, `MemoPolicy`, `MissingMemoPolicy`, `DecodeErrors`, `DeletedPolicy`, `RawMode`.
 Progress/cancellation: `ProgressCallback`, `ProgressEvent`, `CancellationCheck`.
 Direct error model: `ErrorCode`, `DirectReadError`, `DbfPathError`, `DbfHeaderInvalidError`, `DbfTruncatedError`, `DbfFormatUnsupportedError`, `DbfIoError`, `DbfRecordInvalidError`, `EncodingUnknownError`, `TextDecodeError`, `FptRequiredMissingError`, `FptInvalidError`, `ArgumentInvalidError`, `FieldProjectionInvalidError`, `FieldTypeUnsupportedError`, `ReadCancelledError`.
+High-level structured error model (Macro A): `OperationError`, `OperationArgumentError`, `OperationPathError`, `OperationOutputExistsError`.
 Dependency boundary: `OptionalDependencyMissingError`. Metadata: `__version__`.
 
-### REVIEW_REQUIRED (contract hardening inside BLK-01, same root cause)
+### CONTRACT-RESOLVED (formerly REVIEW_REQUIRED — hardened by Macro A)
 
-`DBFBridgeRunError` (needs machine code + JSON-safe payload), and the un-exported-but-public check dataclasses `FileCheck`/`TableCheck` returned inside `VerificationRunResult.checks` (need serialization or structured replacement).
+Both former `REVIEW_REQUIRED` entries are resolved by BLK-01 (CLOSED_FROZEN) and now carry the structured machine contract:
+
+- `DBFBridgeRunError(RuntimeError)` — machine `code`, all underlying structured `details`, JSON-safe `to_dict()` (`tests/test_public_error_contract.py::test_run_error_payload_preserves_all_details`).
+- `FileCheck`/`TableCheck` — `to_dict()` serialization (`api_models.py::_check_to_dict` consumes them in `VerificationRunResult.to_dict()`; `test_run_level_results_are_json_safe`).
+
+They are classified as `STABLE_1_0_CANDIDATE` in the inventory below.
 
 ### COMPATIBILITY_ALIAS
 
@@ -326,30 +337,23 @@ None. (Internal-only symbols are not exported; `_LAZY_SYMBOLS`/`TYPE_CHECKING` g
 | TEXT_DECODE_ERROR | YES | `TextDecodeError` | Direct Read (strict) | YES | YES | decode tests | none |
 | FIELD_TYPE_UNSUPPORTED | YES | `FieldTypeUnsupportedError` | Direct Read projection | YES | YES | Q/W/binary-C projection tests | none |
 | OPTIONAL_DEPENDENCY_MISSING | YES | `OptionalDependencyMissingError` | export/reconstruct/quality | YES (`.code`, `to_dict()`) | YES | `tests/test_optional_dependencies.py` | none |
-| OUTPUT_EXISTS | YES | `OutputExistsError(FileExistsError)` exporter / plain `FileExistsError` importer | export/reconstruct | **NO at boundary** (flattened to `errors: list[str]`) | **NO** | overwrite-refusal tests (status-level only) | machine code + payload (BLK-01) |
-| RECONSTRUCTION_FAILED | YES | `ReconstructionResult.status="FAILED"` + `errors: list[str]` | reconstruct/quality | **NO** (status literal only) | flags only (`canonical_match`) | failure tests assert status, not code | machine code + reason (BLK-01) |
-| ROUNDTRIP_MISMATCH | YES | `canonical_match=False` + `differences: list[dict]` | reconstruct/quality | **NO code** (outcome flag exists; reason text-only) | differences are dicts but reason is text | reconstruction mismatch tests | typed ROUNDTRIP_MISMATCH reason (BLK-01) |
+| OUTPUT_EXISTS | YES | `OperationOutputExistsError(FileExistsError)` (import alias `OutputExistsError`); per-table `error_details` on export + reconstruction conflicts | export/reconstruct | YES | YES | `test_output_exists_is_machine_readable_per_table`, `test_output_exists_in_reconstruction_is_machine_readable` | none |
+| RECONSTRUCTION_FAILED | YES | `ReconstructionResult.error_details` (code `RECONSTRUCTION_FAILED`; fallback when no more-specific code) + `status="FAILED"` | reconstruct/quality | YES | YES | `test_reconstruction_failure_is_machine_readable` | none |
+| ROUNDTRIP_MISMATCH | YES | `ReconstructionResult.error_details` (with both canonical checksums in context) + `canonical_match=False` | reconstruct/quality | YES | YES | `test_roundtrip_mismatch_is_machine_readable` | none |
 
-Additional implemented codes (beyond the required set): `PATH_NOT_FOUND`, `DBF_IO_ERROR`, `DBF_RECORD_INVALID`, `ARGUMENT_INVALID`, `FIELD_PROJECTION_INVALID`, `READ_CANCELLED` — all typed and JSON-safe in core.
+Additional implemented codes (beyond the required set): `PATH_NOT_FOUND`, `DBF_IO_ERROR`, `DBF_RECORD_INVALID`, `ARGUMENT_INVALID`, `FIELD_PROJECTION_INVALID`, `READ_CANCELLED`, `OPERATION_FAILED` — all typed and JSON-safe in the one canonical `ErrorCode` vocabulary.
 
-### §25 answer
+### §25 answer (after Macro A)
 
-**Can a future MCP consumer classify every important dbfbridge public failure WITHOUT parsing English text? — NO.**
+**Can a future MCP consumer classify every important dbfbridge public failure WITHOUT parsing English text? — YES.**
 
-Exact evidence:
-1. `src/dbf_bridge/api.py` raises bare `ValueError` (17 call sites: 77, 101-109, 157-168, 294) and `FileNotFoundError` (99, 172, 225, 252-254, 298) — no code, no `to_dict`.
-2. `DBFBridgeRunError(RuntimeError)` (api_models.py:40) carries `result` but no machine code and no JSON-safe payload.
-3. `TableResult.errors: list[str]` / `ReconstructionResult.errors: list[str]` / `FileCheck.errors` / `TableCheck.errors` — failure reasons are English strings.
-4. `OutputExistsError` (exporter/writer.py:20) and importer `FileExistsError` (importer/writer.py:86,88) carry no machine code and are flattened to text at run level.
-5. Run-level results (`ExportRunResult`, `VerificationRunResult`, `QualityRunResult`, `ReconstructionRunResult`) have no `to_dict()`; `VerificationRunResult.checks` are dataclasses without serialization.
+Evidence: `tests/test_public_error_contract.py::test_mcp_machine_readable_classification` classifies the representative cases (invalid argument → `ARGUMENT_INVALID`; missing path → `PATH_NOT_FOUND`; output conflict → `OUTPUT_EXISTS`; unsupported table → `FIELD_TYPE_UNSUPPORTED`; reconstruction failure → `RECONSTRUCTION_FAILED`; roundtrip mismatch → `ROUNDTRIP_MISMATCH`) using ONLY `.code` / structured payloads — no substring matching, no regex over messages, no English parsing. The pre-Macro-A evidence (bare `ValueError`/`FileNotFoundError` in `api.py`, codeless run error, text-only per-table reasons, missing run-level `to_dict()`) is resolved: see BLK-01 (CLOSED_FROZEN).
 
-**Consequence:** BLK-01 (P0). Minimum future contract (§24 — not implemented here): reuse the existing `ErrorCode` vocabulary at the high-level boundary; one structured public error carrying `code/message/path/context`; structured per-table error entries alongside (not replacing) the existing text lists; `to_dict()` on all run-level results and on the run error.
+### §26/§27/§28 (after Macro A)
 
-### §26/§27/§28
-
-- Argument/path failures: map to already-existing core codes `ARGUMENT_INVALID` / `PATH_NOT_FOUND` (acceptance criteria recorded in BLK-01). Do not implement now.
-- Output conflict (overwrite=False): exporter = typed-but-codeless `OutputExistsError` flattened to text; importer = plain `FileExistsError`; verify report replaces unconditionally; quality honours `overwrite`. Currently **typed at class level, text-only at the public boundary** → BLK-01.
-- Reconstruction failure: `status` + `canonical_match` flags are machine-readable *outcomes*; the failure *reason* is not a code → BLK-01.
+- Argument/path failures: typed `OperationArgumentError` (`ARGUMENT_INVALID`) / `OperationPathError` (`PATH_NOT_FOUND`) — messages unchanged, superclasses preserved (`isinstance` compat proven by tests).
+- Output conflict (overwrite=False): `OUTPUT_EXISTS` detail on per-table results for export AND reconstruction; `OutputExistsError` remains a `FileExistsError` with code + payload. Verify report replaces unconditionally (documented); quality honours `overwrite`.
+- Reconstruction failure: `RECONSTRUCTION_FAILED` / `ROUNDTRIP_MISMATCH` structured details; more-specific physical codes (e.g. `DBF_RECORD_INVALID` for the documented Varchar no-raw-image boundary) preserved when available.
 
 ---
 
@@ -365,7 +369,7 @@ Exact evidence:
 | memo skip works | PASS | `test_memo_skip_and_null_do_not_touch_the_fpt` |
 | bounded read does not materialize table | PASS | `test_limit_does_not_materialize_further_records` |
 | source SHA unchanged | PASS | `test_source_byte_identical_and_no_files_created`; `test_source_immutability_across_control_modes` |
-| structured errors | PASS (core) / GAP (high-level → BLK-01) | core: typed `ErrorCode` + `to_dict()`; high-level: text-only (R-38) |
+| structured errors | PASS | core: typed `ErrorCode` + `to_dict()`; high-level (Macro A): typed public exceptions + per-table `error_details` + run-level `to_dict()` |
 | no runtime network | PASS | `git grep` — no `requests/urllib/httpx/aiohttp/socket` in `src/` |
 | stream records without JSONL | PASS | public `iter_records`/`read_records`; exporter-parity tests use both paths |
 
@@ -387,27 +391,23 @@ Exact evidence:
 
 ## 9. Finite blockers to 1.0 (§43/§44/§45/§56)
 
-### BLK-01 — PUBLIC ERROR MODEL STABILIZATION (P0)
+### BLK-01 — PUBLIC ERROR MODEL STABILIZATION (P0) — **CLOSED_FROZEN in Macro A**
 
 - **Architecture requirement:** §17 (machine-readable distinguishable failures incl. `OUTPUT_EXISTS`, `RECONSTRUCTION_FAILED`, `ROUNDTRIP_MISMATCH`), §15/§32 (JSON-serializable results + typed exceptions), §26 (argument mapping), §27 (output conflict), §28 (reconstruction failure).
-- **Current repository evidence:** §25 answer **NO** (five evidence points above); `api.py` bare `ValueError`/`FileNotFoundError`; `DBFBridgeRunError` without code/`to_dict`; text-only per-table error lists; codeless output-conflict errors; run-level models without `to_dict()`.
-- **Why this blocks 1.0:** §20 defines 1.0 as *stable API*; the MCP consumer contract (§17: *"Toolchain mapuje te kody na własny `OperationResult` bez parsowania tekstu błędu"*) is not met for every high-level failure.
-- **Acceptance criteria:** (1) every §17-required failure is distinguishable from the public boundary by a machine code without parsing the message; (2) argument/path failures map to `ARGUMENT_INVALID`/`PATH_NOT_FOUND`; (3) output conflicts expose `OUTPUT_EXISTS`; (4) reconstruction/round-trip failures expose `RECONSTRUCTION_FAILED`/`ROUNDTRIP_MISMATCH` reasons; (5) all run-level results and the public run error expose JSON-safe serialization; (6) existing behaviour (statuses, text errors, exception types) stays backward-compatible — structured fields are additive; (7) a dedicated test classifies a representative set of failures from structured payloads alone (no message text).
-- **Files likely involved:** `src/dbf_bridge/api.py`, `api_models.py`, `core/errors.py` (vocabulary only), `exporter/writer.py`, `exporter/models.py`, `importer/reconstruct.py`, `importer/models.py`, `importer/writer.py`, `verifier.py`, `quality.py`.
-- **Tests required:** typed-error unit tests per public operation; machine-classification test; run-result `to_dict` JSON round-trip tests; backward-compat regression suite (432 passed / 1 skipped stays green).
-- **Target macro PR:** Macro A.
+- **Implementation (Macro A):** one canonical vocabulary (`ErrorCode` extended additively with `OPTIONAL_DEPENDENCY_MISSING`, `OUTPUT_EXISTS`, `RECONSTRUCTION_FAILED`, `ROUNDTRIP_MISMATCH`, `OPERATION_FAILED`); one neutral payload model (`OperationError`: code/message/operation/path/table/context, frozen, JSON-safe `to_dict()`); typed public exceptions `OperationArgumentError(ValueError)`, `OperationPathError(FileNotFoundError)`, `OperationOutputExistsError(FileExistsError)` (import alias `OutputExistsError` preserved at `exporter/writer.py`); `DBFBridgeRunError(RuntimeError)` now carries `code` + all underlying `details` + `to_dict()`; per-table structured `error_details` added additively to `TableResult`/`ReconstructionResult`; JSON-safe `to_dict()` on all four run results and on `FileCheck`/`TableCheck`.
+- **Acceptance evidence:** `tests/test_public_error_contract.py` — 22 tests including the message-blind `test_mcp_machine_readable_classification` (6 representative cases: invalid argument, missing path, output exists, unsupported table, reconstruction failure, roundtrip mismatch). §25 answer: **YES**.
+- **Status:** CLOSED_FROZEN (must not be modified without failing regression evidence).
 
-### BLK-02 — MIGRATION RAW-MODE SPLIT (P1)
+### BLK-02 — MIGRATION RAW-MODE SPLIT (P1) — **CLOSED_FROZEN in Macro A**
 
-- **Architecture requirement:** §7 — explicit raw retention level on the migration API (`raw_mode="none"|"metadata"|"full-record"`; backward-compatible default allowed; Direct Read/MCP uses none).
-- **Current repository evidence:** `exporter/config.py` has no raw option; `reader.py:235` hardcodes `keep_raw=True`; `writer.py:184,208` always embed `__dbfbridge_raw_record__`; benchmark scenario `raw_mode_none` already exists in the Phase 1 contract.
-- **Why this blocks 1.0:** §20 places the raw-mode split in the delivered roadmap and §7 states it as a target API requirement; 1.0 freezes the migration API — adding the option after 1.0 would be a post-stability API addition.
-- **Acceptance criteria:** `raw_mode` option on `export_dbf`/`ExportOptions` with backward-compatible default; `none`-mode JSONL reconstructs canonically without raw fields (schema-driven path); benchmark scenario L comparison recorded; no logical result change for existing defaults.
-- **Files likely involved:** `api.py`, `api_models.py`, `exporter/config.py`, `exporter/reader.py`, `exporter/writer.py`.
-- **Tests required:** raw-mode matrix tests (none/metadata/full-record), canonical reconstruction from raw-less JSONL, benchmark contract validation.
-- **Target macro PR:** Macro A.
+- **Architecture requirement:** §7 — explicit raw retention level on the migration API (`raw_mode="none"|"metadata"|"full-record"`; backward-compatible default; Direct Read/MCP uses none).
+- **Implementation (Macro A + correctness gate):** public `RawMode` Literal; `raw_mode` propagated through `ExportOptions`/`export_dbf`/`ExportConfig`/`make_config`/`run_export`/`_export_one`/CLI `--raw-mode`; incremental signature includes `raw_mode`; the shared physical loop runs with `keep_raw=False` for none/metadata (no raw allocation — §32); deleted=`separate` feeds BOTH outputs from ONE shared-stream pass (raw images included in full-record; ordering/counts unchanged — §33); loss-aware `__dbfbridge_raw_text_fields__`/`__dbfbridge_binary_memo_fields__` retained in ALL modes (§30 decision: they are loss-aware logical/canonical aids, not physical blobs); `none` omits the replay-only `dbf.header_base64`/`memo.header_base64` schema blobs (reconstruction handles absence gracefully).
+- **Correctness gate (supported Varchar without raw record images):** root cause reproduced — the `dbf` writer stores `V` columns through the Character alias with fixed-width payloads and manages its own `_NullFlags` bitmap (one bit per NULLable field, no varlength concept), so canonical reconstruction without raw images produced `DBF_RECORD_INVALID`. Fix: a bounded, schema-driven **Varchar logical-layout repair** pass inside the reconstruction staging boundary (`_repair_varchar_logical_layout`) — per record, rewrites text-V payloads (`value + padding + length byte` when shorter than width, full-width data otherwise, NULL blank) and re-derives the canonical `_NullFlags` bits with the SINGLE engine (`build_nullflags_layout` + `varlength_bits`/`null_bits`/`bit_is_set`; NULL bits from `nullable_null_fields`, padding bits preserved from the exported source bitmap). `V` fields now always declare a NULL flag in the writer spec so the writer's bitmap is exactly one bit wide per canonical bit (non-nullable Varchar included); the Mazovia/Kamenicky language-driver codec gap of the writer is bridged on demand from the schema encodings. Repair runs BEFORE metadata patching/layout validation/atomic publish — failure leaves no published output and no staging residue (tested). Streaming via `records_factory` (O(1)/O(batch), no materialization).
+- **Acceptance evidence:** `tests/test_raw_mode.py` — 50 tests: canonical PASS for all three raw modes incl. short/full-width/trailing-space/empty/NULL/non-nullable/mixed V1+V2+C1 bitmaps/deleted rows and cp1250/cp852/Mazovia text (`test_varchar_value_matrix_reconstructs_logically_identical` compares the public Direct Read values of source vs reconstructed); failure-atomicity test (typed `RECONSTRUCTION_FAILED`, no published DBF/FPT, no `.partial` residue); raw-mode + incremental + no-allocation regressions. Suite: 505 passed (Windows local).
+- **Remaining physical-identity limitation (unchanged, documented):** exact raw Varchar byte identity stays `SUPPORTED_WITH_LIMITATION` (`raw_dbf_match` reported separately); in `none`/`metadata` a byte-identical physical layout is explicitly NOT guaranteed.
+- **Status:** CLOSED_FROZEN (default `full-record` preserves the historical forensic behaviour byte-for-byte).
 
-### BLK-03 — 1.0 API CONTRACT DECLARATION (P2)
+### BLK-03 — 1.0 API CONTRACT DECLARATION (P2) — **remaining blocker**
 
 - **Architecture requirement:** §12/§20/§30 — 1.0 means stable API and guarantees; §30 found the documented import surface, typed models and public/private boundary present, but **no explicit backward-compatibility/deprecation policy statement** for the frozen 1.0 surface.
 - **Current repository evidence:** `docs/migration-0.3.md` exists (0.2→0.3); no documented 1.0 stability/deprecation policy; the 1.0 public surface is declared only by `__all__` + tests.
@@ -417,15 +417,16 @@ Exact evidence:
 - **Tests required:** `test_distribution_import_exposes_the_documented_api` extended to the frozen surface.
 - **Target macro PR:** Macro B.
 
-### §56 — finite numbered answer
+### §56 — finite numbered answer (after Macro A)
 
-If dbfbridge 1.0 were released today, these **repository-controlled** facts would prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-120019).md`:
+If dbfbridge 1.0 were released today, this single **repository-controlled** fact would prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`:
 
-1. High-level public operations raise bare `ValueError`/`FileNotFoundError` and expose per-table failure reasons only as English text — §17 machine-readable classification is not met (BLK-01).
-2. `OUTPUT_EXISTS` / `RECONSTRUCTION_FAILED` / `ROUNDTRIP_MISMATCH` have no machine-readable code at the public boundary (BLK-01).
-3. Run-level result models and `DBFBridgeRunError` lack JSON-safe serialization required by the MCP boundary (§15/§32) (BLK-01).
-4. The migration export API lacks the explicit `raw_mode` retention level required by §7 (BLK-02).
-5. The 1.0 API stability/deprecation policy is not yet documented (§30) (BLK-03).
+1. The 1.0 API stability/deprecation policy is not yet documented (§30) — **BLK-03**.
+
+(Former items 1–4 of the pre-Macro-A answer — bare argument/path errors, missing
+`OUTPUT_EXISTS`/`RECONSTRUCTION_FAILED`/`ROUNDTRIP_MISMATCH` codes, missing run-level
+JSON serialization, missing `raw_mode` — are resolved and now covered by
+`tests/test_public_error_contract.py` + `tests/test_raw_mode.py`.)
 
 Plus one **external** fact, not repository-controlled: PyPI Trusted Publisher verification pending (`invalid-publisher`) — see External blockers.
 
@@ -433,15 +434,14 @@ Plus one **external** fact, not repository-controlled: PyPI Trusted Publisher ve
 
 ## 10. Remaining macro PRs (§46/§47)
 
-### Macro A — Public API + Error Model Stabilization
+### Macro A — Public API + Error Model Stabilization — **EXECUTED (this branch)**
 
-- **Objective:** BLK-01 + BLK-02.
+- **Objective:** BLK-01 + BLK-02 — both acceptance criteria met; blockers CLOSED_FROZEN.
 - **Included blocker IDs:** BLK-01 (P0), BLK-02 (P1).
-- **Forbidden scope:** no writer rewrite, no reader behaviour change, no compatibility-matrix status changes, no new supported types, no benchmark baseline mutation, no release-branch changes.
-- **Tests:** typed-error per-operation unit tests; machine-classification test (no text parsing); run-result `to_dict` JSON round trips; raw-mode matrix; full suite + CI green.
-- **CI:** full CI matrix (lint, Ubuntu 3.10-3.14, Windows 3.12, package) + performance PR smoke.
-- **Definition of Done:** §25 answer becomes **YES** with a dedicated test; R-32/R-36/R-37/R-38/R-54/R-17 flip to CLOSED_FROZEN in this document.
-- **What becomes FROZEN afterward:** public API surface and error-code vocabulary; JSON boundary shapes; `raw_mode` option semantics.
+- **Forbidden scope honoured:** no writer rewrite (only raw-retention plumbing + result/error payloads), no reader behaviour change, no compatibility-matrix status changes, no new supported types, no benchmark baseline mutation, no release-branch changes.
+- **Tests added:** `tests/test_public_error_contract.py` (22), `tests/test_raw_mode.py` (33). Suite 488 passed (Windows local).
+- **Definition of Done met:** §25 answer **YES** with the dedicated message-blind test; R-17/R-32/R-36/R-37/R-38/R-54 flipped to CLOSED_FROZEN in this document.
+- **What becomes FROZEN upon merge:** public API surface and error-code vocabulary; JSON boundary shapes; `raw_mode` option semantics.
 
 ### Macro B — 1.0 Release Acceptance
 
@@ -480,6 +480,9 @@ The following areas are **CLOSED_FROZEN** as of `main` `c84a611`. Future prompts
 10. Release tooling/gates (release-state validator, publish gate, wheel/install smokes, publish workflow).
 11. Canonical checksum semantics (`CanonicalChecksum`, deleted-record handling, bounded diagnostics).
 12. Atomic output policy (`.partial` + `os.replace`, failure cleanup, output-only writes).
+13. **(Macro A)** Machine-code vocabulary (`ErrorCode` — the ONE canonical set incl. `OPTIONAL_DEPENDENCY_MISSING`, `OUTPUT_EXISTS`, `RECONSTRUCTION_FAILED`, `ROUNDTRIP_MISMATCH`, `OPERATION_FAILED`) and the `OperationError` payload model.
+14. **(Macro A)** JSON boundary shapes (`to_dict()` on run-level results, `DBFBridgeRunError` payload, per-table `error_details` additive to text `errors`).
+15. **(Macro A)** `RawMode` semantics (default `full-record`; loss-aware raw-text/binary-memo aids retained in every mode; `none` omits replay-only header blobs; **canonical reconstruction of supported Varchar in EVERY raw mode** via the schema-driven Varchar logical-layout repair — physical byte identity is NOT guaranteed in `none`/`metadata`).
 
 ## 12. Accepted limitations (§49)
 
@@ -505,7 +508,7 @@ The following areas are **CLOSED_FROZEN** as of `main` `c84a611`. Future prompts
 
 ## 15. Validation (§51)
 
-- `python -m pytest -q`: **432 passed, 1 skipped (433 collected)** — exact-head CI 33772195304 (docs-only branch; suite unchanged).
+- `python -m pytest -q`: **505 passed** (Windows local; 488 pre-gate + 17 Varchar-gate tests). Exact CI counts recorded by the Macro A PR CI.
 - `python -m ruff check src tests benchmarks examples scripts`: clean.
 - `git diff --check`: clean.
-- No new performance baseline created; canonical hashes verified unchanged.
+- No new canonical performance baseline; canonical Phase 3 hashes verified UNCHANGED; targeted raw-mode comparison recorded separately (`benchmarks/raw_mode_migration.py`).

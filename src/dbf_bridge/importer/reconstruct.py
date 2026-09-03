@@ -11,6 +11,7 @@ from typing import Any
 from dbfread import DBF
 
 from dbf_bridge.core.backend import dbfread_backend
+from dbf_bridge.core.errors import ErrorCode, OperationError
 from dbf_bridge.core.nullflags import build_nullflags_layout
 from dbf_bridge.exporter.reader import LosslessFieldParser
 from dbf_bridge.exporter.validation import sha256_file
@@ -20,6 +21,39 @@ from .models import ImportConfig, ReconstructionResult
 from .readers import discover_inputs, iter_records, load_schema, schema_path_for
 from .reporting import write_reconstruction_report
 from .writer import memo_output_path, output_hashes, restore_raw_layout, write_dbf
+
+
+def _table_error_detail(
+    exc: BaseException,
+    table: str,
+    message: str,
+) -> OperationError:
+    """Classify one reconstruction failure by stable machine code.
+
+    More-specific physical codes are preserved when the underlying
+    exception already carries one (e.g. a core ``DirectReadError`` code);
+    otherwise the operation-level fallback applies.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, ErrorCode):
+        detail_code = code
+    elif isinstance(code, str):
+        try:
+            detail_code = ErrorCode(code)
+        except ValueError:
+            detail_code = ErrorCode.RECONSTRUCTION_FAILED
+    elif isinstance(exc, FileExistsError):
+        detail_code = ErrorCode.OUTPUT_EXISTS
+    elif isinstance(exc, FileNotFoundError):
+        detail_code = ErrorCode.PATH_NOT_FOUND
+    else:
+        detail_code = ErrorCode.RECONSTRUCTION_FAILED
+    return OperationError(
+        code=detail_code.value,
+        message=message,
+        operation="reconstruct_dbf",
+        table=table,
+    )
 
 
 def reconstruct_tree(
@@ -92,6 +126,11 @@ def reconstruct_tree(
                 ),
                 schema,
                 overwrite=config.overwrite,
+                records_factory=lambda data_path=data_path, schema=schema: _apply_memo_policy(
+                    iter_records(data_path, config.format, schema),
+                    schema,
+                    config.memo,
+                ),
                 progress_callback=progress,
             )
             if config.progress:
@@ -158,14 +197,30 @@ def reconstruct_tree(
                     config.memo,
                     destination,
                 )
-                result.errors.append(
+                mismatch_message = (
                     "Canonical checksum mismatch after reading the reconstructed DBF/FPT."
+                )
+                result.errors.append(mismatch_message)
+                result.error_details.append(
+                    OperationError(
+                        code=ErrorCode.ROUNDTRIP_MISMATCH.value,
+                        message=mismatch_message,
+                        operation="reconstruct_dbf",
+                        table=relative.as_posix(),
+                        context={
+                            "input_canonical_sha256": result.input_canonical_sha256,
+                            "reconstructed_canonical_sha256": result.reconstructed_canonical_sha256,
+                        },
+                    )
                 )
             result.status = "FAILED" if result.errors else "WARNING" if result.warnings else "OK"
         except Exception as exc:
             if config.progress:
                 print()
             result.errors.append(str(exc))
+            result.error_details.append(
+                _table_error_detail(exc, relative.as_posix(), str(exc))
+            )
             result.status = "FAILED"
         result.elapsed_seconds = time.monotonic() - started
         results.append(result)

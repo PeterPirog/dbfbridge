@@ -217,13 +217,15 @@ def open_table(
 
 
 def iter_physical_records(
-    table: DBF, nullflags_layout: Any | None = None
-) -> Iterator[tuple[object, bool, bytes]]:
+    table: DBF, nullflags_layout: Any | None = None, *, keep_raw: bool = True
+) -> Iterator[tuple[object, bool, bytes | None]]:
     """Stream physical records through the shared core backend loop.
 
-    Yields ``(record, is_deleted, raw_record)`` exactly as before — the
-    physical/decoded iteration itself lives in ``dbf_bridge.core.backend``
-    (one record loop in the codebase, dbfread as the reference backend).
+    Yields ``(record, is_deleted, raw_record)`` — ``raw_record`` is the exact
+    physical record image when *keep_raw* is true, otherwise ``None`` (no raw
+    bytes are allocated).  The physical/decoded iteration itself lives in
+    ``dbf_bridge.core.backend`` (one record loop in the codebase, dbfread as
+    the reference backend).
 
     ``nullflags_layout`` carries the VFP ``_NullFlags`` bit layout so NULL
     values resolve to ``None`` and variable-length Varchar payloads keep
@@ -232,7 +234,7 @@ def iter_physical_records(
     for frame in core_backend.dbfread_backend.iter_physical_records(
         table,
         projection=None,
-        keep_raw=True,
+        keep_raw=keep_raw,
         use_memofile=True,
         nullflags_layout=nullflags_layout,
     ):
