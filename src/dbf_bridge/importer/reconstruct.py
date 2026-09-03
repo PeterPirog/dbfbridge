@@ -10,6 +10,8 @@ from typing import Any
 
 from dbfread import DBF
 
+from dbf_bridge.core.backend import dbfread_backend
+from dbf_bridge.core.nullflags import build_nullflags_layout
 from dbf_bridge.exporter.reader import LosslessFieldParser
 from dbf_bridge.exporter.validation import sha256_file
 
@@ -211,28 +213,49 @@ def _memo_free_open(path: Path, schema: Mapping[str, Any], encoding: str) -> DBF
     )
 
 
+def _schema_nullflags_layout(schema: Mapping[str, Any]) -> Any:
+    """Canonical ``_NullFlags`` layout from schema field mappings.
+
+    Delegates to the single allocation engine in ``core.nullflags`` — the
+    importer never reimplements which bit means NULL.
+    """
+    return build_nullflags_layout(schema.get("fields") or [])
+
+
 def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
     encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
     checksum = CanonicalChecksum(schema)
+    nullflags_layout = build_nullflags_layout(schema.get("fields") or [])
     table = _memo_free_open(path, schema, encoding)
-    for record in table.records:
+    for frame in dbfread_backend.iter_physical_records(
+        table,
+        projection=None,
+        keep_raw=False,
+        use_memofile=True,
+        nullflags_layout=nullflags_layout,
+    ):
+        record = dict(frame.items)
+        if frame.deleted:
+            record["__deleted__"] = True
         checksum.update(record)
-    for record in table.deleted:
-        deleted = dict(record)
-        deleted["__deleted__"] = True
-        checksum.update(deleted)
     return checksum
 
 
 def iter_dbf_records(path: Path, schema: Mapping[str, Any]) -> Iterable[dict[str, Any]]:
     encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
+    nullflags_layout = build_nullflags_layout(schema.get("fields") or [])
     table = _memo_free_open(path, schema, encoding)
-    for record in table.records:
-        yield dict(record)
-    for record in table.deleted:
-        deleted = dict(record)
-        deleted["__deleted__"] = True
-        yield deleted
+    for frame in dbfread_backend.iter_physical_records(
+        table,
+        projection=None,
+        keep_raw=False,
+        use_memofile=True,
+        nullflags_layout=nullflags_layout,
+    ):
+        record = dict(frame.items)
+        if frame.deleted:
+            record["__deleted__"] = True
+        yield record
 
 
 def diagnose_reconstruction(

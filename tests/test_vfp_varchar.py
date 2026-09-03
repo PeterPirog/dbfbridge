@@ -20,6 +20,7 @@ import base64
 import json
 from pathlib import Path
 
+import dbf
 import pytest
 import vfp_fixture_factory as factory
 
@@ -362,6 +363,98 @@ def test_vfp_varchar_null_record_reconstructs_canonically(tmp_path: Path) -> Non
         "abc",
         None,
     ]
+    # Raw byte identity remains a known, honestly reported limitation.
+    assert report.raw_dbf_match is not True
+    assert any("Raw DBF SHA-256 differs" in warning for warning in report.warnings)
+    assert not list(rebuilt.rglob("*.partial"))
+
+
+def test_vfp_varchar_mixed_null_bitmap_reconstructs_canonically(tmp_path: Path) -> None:
+    """Reconstruction of a table with THREE nullable columns whose bitmap
+    allocation interleaves varlength and NULL bits: V1 varlength=0, V1
+    NULL=1, C1 NULL=2, V2 varlength=3, V2 NULL=4.
+
+    Record 1 has C1 NULL; record 2 has V1/V2 NULL — the exact per-field bit
+    assignment must survive the round trip (the pre-unification importer
+    read NULL bits from ``enumerate(nullable)`` positions instead)."""
+    source = factory.build_vfp32_table(
+        tmp_path / "mixed.dbf",
+        columns=[
+            {"name": "V1", "type": "V", "width": 8, "nullable": True},
+            {"name": "C1", "type": "C", "width": 4, "nullable": True},
+            {"name": "V2", "type": "V", "width": 8, "nullable": True},
+        ],
+        rows=[
+            {"V1": "row-one", "C1": None, "V2": "row-two"},
+            {"V1": None, "C1": "abc", "V2": None},
+            {"V1": "r3", "C1": "d4", "V2": ("e5f6g7h8", False)},
+        ],
+    )
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "mixed.dbf"))
+    assert [record.values["V1"] for record in records] == ["row-one", None, "r3"]
+    assert [record.values["C1"] for record in records] == [None, "abc", "d4"]
+    assert [record.values["V2"] for record in records] == ["row-two", None, "e5f6g7h8"]
+
+
+def test_vfp_ordinary_nullable_fields_reconstruct_canonically(tmp_path: Path) -> None:
+    """Ordinary NULLable C/I/Y fields (no Varchar at all) keep reconstructing
+    canonically — the unified NullFlags verification must not regress the
+    reference-written path."""
+    source = factory.create_vfp_table(
+        tmp_path / "nulls.dbf",
+        "TX C(6) NULL; LICZ I NULL; KWOTA Y NULL",
+        [
+            {"TX": "abc", "LICZ": 5, "KWOTA": 1.5},
+            {"TX": dbf.Null, "LICZ": dbf.Null, "KWOTA": dbf.Null},
+        ],
+    )
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "nulls.dbf"))
+    assert [record.values["TX"] for record in records] == ["abc", None]
+    assert [record.values["LICZ"] for record in records] == [5, None]
+    assert [record.values["KWOTA"] for record in records] == [
+        pytest.approx(1.5),
+        None,
+    ]
+
+
+def test_vfp_interleaved_deleted_records_reconstruct_canonically(tmp_path: Path) -> None:
+    """Deleted and active records interleave physically; reconstruction
+    keeps the relative order within each group (active hash, deleted hash)
+    and the deleted markers stay exact."""
+    source = factory.create_vfp_table(
+        tmp_path / "interleaved.dbf",
+        "K N(4,0); TX C(6) NULL",
+        [{"K": 1, "TX": "one"}, {"K": 2, "TX": "two"}, {"K": 3, "TX": "three"}],
+    )
+    factory.mark_deleted(source, 1)  # physical order: active, deleted, active
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(
+        source, export_dir, formats=("jsonl",), overwrite=True, deleted="include"
+    )
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "interleaved.dbf", include_deleted=True))
+    assert [(r.values["K"], r.deleted) for r in records] == [(1, False), (2, True), (3, False)]
 
 
 # ---------------------------------------------------------------------------
