@@ -677,6 +677,36 @@ def test_nullflags_accepts_one_shot_iterable() -> None:
     assert from_generator.null_bits == from_list.null_bits == {"V1": 1, "C1": 2}
 
 
+def test_nullflags_accepts_attribute_and_mapping_descriptors() -> None:
+    """One allocation engine for every descriptor shape: attribute-based
+    (ParsedField/FieldMetadata) and Mapping-based (importer schema dicts)
+    produce the identical layout — no parallel bit model may exist."""
+    attributes = [
+        _StubField("V1", "V", 0x02),
+        _StubField("C1", "C", 0x02),
+        _StubField("V2", "V", 0x02),
+        _StubField("_NullFlags", "0", 0x05),
+    ]
+    mappings = [
+        {"name": "V1", "dbf_type": "V", "flags": 0x02, "length": 8},
+        {"name": "C1", "dbf_type": "C", "flags": 0x02, "length": 4},
+        {"name": "V2", "dbf_type": "V", "flags": 0x02, "length": 8},
+        {"name": "_NullFlags", "dbf_type": "0", "flags": 0x05, "length": 1},
+    ]
+    from_attributes = nullflags.build_nullflags_layout(attributes)
+    from_mappings = nullflags.build_nullflags_layout(mappings)
+    assert from_attributes is not None and from_mappings is not None
+    assert from_mappings.varlength_bits == from_attributes.varlength_bits == {
+        "V1": 0,
+        "V2": 3,
+    }
+    assert from_mappings.null_bits == from_attributes.null_bits == {
+        "V1": 1,
+        "C1": 2,
+        "V2": 4,
+    }
+
+
 def test_nullflags_single_system_bitmap_is_accepted() -> None:
     """Happy path: exactly one system-flagged bitmap column."""
     layout = nullflags.build_nullflags_layout(
