@@ -51,6 +51,19 @@ User-visible:
   before any output is created, never auto-installs, and never accesses the
   Internet.
 - - 0.2 → 0.3 migration guide: `docs/migration-0.3.md`.
+- 0.2 → 0.3 migration guide: `docs/migration-0.3.md`.
+- Fixed canonical reconstruction of NULL-bearing Visual FoxPro Varchar
+  tables: a set `_NullFlags` NULL bit now resolves to `None` on both sides
+  of the round trip, so `reconstruct_dbf` verification matches the source
+  instead of reporting a false blank-vs-NULL mismatch.
+- Unified `_NullFlags` semantics across Direct Read, reconstruction
+  checksum, writer NULL detection, and diagnostics: one bit-allocation
+  engine (varlength bits of `V`/`Q` fields included) instead of parallel
+  importer arithmetic; verification re-reads the rebuilt table through the
+  shared physical record loop with the configured loss-aware parser.
+- Mixed nullable Varchar/ordinary fields now reconstruct canonically,
+  including interleaved deleted records; ordinary nullable `C`/`I`/`Y`
+  round trips are regression-protected.
 - VFP/FPT compatibility matrix: `docs/compatibility-vfp.md` — an
   evidence-based status per physical field type and FPT edge case, built on
   authentic Visual FoxPro 0x32 fixtures.
