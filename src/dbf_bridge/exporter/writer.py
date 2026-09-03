@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import csv
 import json
 import os
@@ -9,6 +10,11 @@ from typing import Any, TextIO
 
 from dbfread import MissingMemoFile
 
+from ..core.errors import (
+    ErrorCode,
+    OperationError,
+    OperationOutputExistsError,
+)
 from ..core.nullflags import build_nullflags_layout
 from .discovery import output_data_path, output_schema_path
 from .models import DiscoveredTable, ExportConfig, FieldMetadata, StreamStats, TableResult
@@ -17,8 +23,13 @@ from .serialization import RAW_RECORD_KEY, SerializationError, serialize_record
 from .validation import StatsCollector, ValidationResult, sha256_file, validate_output
 
 
-class OutputExistsError(FileExistsError):
-    """Raised when an export would overwrite a final output."""
+class OutputExistsError(OperationOutputExistsError):
+    """Raised when an export would overwrite a final output.
+
+    Historical internal class retained at its original import path; it now
+    carries the canonical machine code ``OUTPUT_EXISTS`` and a JSON-safe
+    ``to_dict()`` while remaining a :class:`FileExistsError`.
+    """
 
 
 class AtomicTextWriter:
@@ -63,7 +74,21 @@ def partial_path(final_path: Path) -> Path:
 
 def ensure_can_write_final(final_path: Path, *, overwrite: bool) -> None:
     if final_path.exists() and not overwrite:
-        raise OutputExistsError(f"Refusing to overwrite existing output: {final_path}")
+        raise OutputExistsError(
+            f"Refusing to overwrite existing output: {final_path}",
+            path=final_path,
+        )
+
+
+def _failure_code(exc: BaseException, fallback: ErrorCode) -> ErrorCode:
+    """Reuse a typed exception's canonical code, else the fallback code."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, ErrorCode):
+        return code
+    if isinstance(code, str):
+        with contextlib.suppress(ValueError):
+            return ErrorCode(code)
+    return fallback
 
 
 def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResult:
@@ -86,6 +111,15 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             format=config.format,
             warnings=warnings,
             errors=[f"Unsupported table {table_report_path}: {exc}"],
+            error_details=[
+                OperationError(
+                    code=ErrorCode.FIELD_TYPE_UNSUPPORTED.value,
+                    message=f"Unsupported table {table_report_path}: {exc}",
+                    operation="export_dbf",
+                    path=discovered.source_path,
+                    table=table_report_path,
+                )
+            ],
         )
     except MissingMemoFile as exc:
         return TableResult(
@@ -95,6 +129,15 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             encoding=config.encoding,
             format=config.format,
             errors=[f"Table {table_report_path}: {exc}"],
+            error_details=[
+                OperationError(
+                    code=ErrorCode.FPT_REQUIRED_MISSING.value,
+                    message=f"Table {table_report_path}: {exc}",
+                    operation="export_dbf",
+                    path=discovered.source_path,
+                    table=table_report_path,
+                )
+            ],
         )
     except Exception as exc:
         return TableResult(
@@ -104,6 +147,15 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             encoding=config.encoding,
             format=config.format,
             errors=[f"Table {table_report_path}: preflight failed: {exc}"],
+            error_details=[
+                OperationError(
+                    code=_failure_code(exc, ErrorCode.OPERATION_FAILED),
+                    message=f"Table {table_report_path}: preflight failed: {exc}",
+                    operation="export_dbf",
+                    path=discovered.source_path,
+                    table=table_report_path,
+                )
+            ],
         )
 
     data_path = intended_data_path
@@ -122,6 +174,15 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             warnings,
             [str(exc)],
             output=intended_output,
+            error_details=[
+                OperationError(
+                    code=ErrorCode.OUTPUT_EXISTS.value,
+                    message=str(exc),
+                    operation="export_dbf",
+                    path=exc.error.path,
+                    table=table_report_path,
+                )
+            ],
         )
 
     schema_writer: AtomicTextWriter | None = None
@@ -133,11 +194,20 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
     deleted_collector: StatsCollector | None = None
 
     try:
+        schema_payload = metadata.to_schema()
+        if config.raw_mode == "none":
+            # ``none`` keeps logical values and every fact needed for
+            # canonical reconstruction, but omits the replay-only physical
+            # header blobs (the DBF header region incl. backlink/CDX flag,
+            # and the raw FPT header block).  Reconstruction handles their
+            # absence explicitly (generic header, computed FPT header).
+            schema_payload["dbf"].pop("header_base64", None)
+            schema_payload["memo"].pop("header_base64", None)
         schema_writer = AtomicTextWriter(schema_path, overwrite=config.overwrite)
         with schema_writer:
             schema_writer.write(
                 json.dumps(
-                    metadata.to_schema(),
+                    schema_payload,
                     ensure_ascii=False,
                     allow_nan=False,
                     indent=2,
@@ -167,9 +237,10 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             json_first = True
             deleted_collector = StatsCollector(metadata.fields)
             deleted_stats = deleted_collector.stats
+            keep_raw = config.raw_mode == "full-record"
             if config.deleted == "include":
                 for index, (record, is_deleted, raw_record) in enumerate(
-                    iter_physical_records(table, nullflags_layout), start=1
+                    iter_physical_records(table, nullflags_layout, keep_raw=keep_raw), start=1
                 ):
                     serialized = _serialize_context_record(
                         record,
@@ -181,17 +252,81 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         memo_policy=config.memo,
                         strip_spaces=config.strip_spaces,
                     )
-                    serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
+                    if raw_record is not None:
+                        serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
                     json_first = not _write_record(
                         data_writer, serialized, metadata.fields, config, json_first=json_first
                     )
                     data_collector.add(serialized)
                     if is_deleted:
                         deleted_collector.add(serialized)
+            elif config.deleted == "separate" and deleted_path is not None:
+                with AtomicTextWriter(deleted_path, overwrite=config.overwrite) as deleted_writer:
+                    if config.format == "csv":
+                        _write_csv_header(deleted_writer, metadata.fields, include_deleted=True)
+                    elif config.format == "json":
+                        deleted_writer.write("[\n")
+                    deleted_json_first = True
+                    deleted_index = 0
+                    active_index = 0
+                    # One pass over the shared physical stream feeds both the
+                    # active and the deleted output — physical order and
+                    # counts are unchanged, and (in ``full-record`` mode) the
+                    # deleted output preserves the raw record images too.
+                    for record, is_deleted, raw_record in iter_physical_records(
+                        table, nullflags_layout, keep_raw=keep_raw
+                    ):
+                        if is_deleted:
+                            deleted_index += 1
+                            serialized = _serialize_context_record(
+                                record,
+                                metadata.fields,
+                                table_report_path,
+                                deleted_index,
+                                deleted_marker=True,
+                                deleted=True,
+                                memo_policy=config.memo,
+                                strip_spaces=config.strip_spaces,
+                            )
+                            if raw_record is not None:
+                                serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode(
+                                    "ascii"
+                                )
+                            deleted_json_first = not _write_record(
+                                deleted_writer,
+                                serialized,
+                                metadata.fields,
+                                config,
+                                json_first=deleted_json_first,
+                            )
+                            deleted_collector.add(serialized)
+                            continue
+                        active_index += 1
+                        serialized = _serialize_context_record(
+                            record,
+                            metadata.fields,
+                            table_report_path,
+                            active_index,
+                            deleted_marker=None,
+                            memo_policy=config.memo,
+                            strip_spaces=config.strip_spaces,
+                        )
+                        if raw_record is not None:
+                            serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode(
+                                "ascii"
+                            )
+                        json_first = not _write_record(
+                            data_writer, serialized, metadata.fields, config, json_first=json_first
+                        )
+                        data_collector.add(serialized)
+                    if config.format == "json":
+                        deleted_writer.write("\n]\n")
+                    deleted_stats = deleted_collector.finish()
+                    deleted_writer.flush_and_fsync()
             else:
                 active_index = 0
                 for record, is_deleted, raw_record in iter_physical_records(
-                    table, nullflags_layout
+                    table, nullflags_layout, keep_raw=keep_raw
                 ):
                     if is_deleted:
                         continue
@@ -205,48 +340,14 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
                         memo_policy=config.memo,
                         strip_spaces=config.strip_spaces,
                     )
-                    serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
+                    if raw_record is not None:
+                        serialized[RAW_RECORD_KEY] = base64.b64encode(raw_record).decode("ascii")
                     json_first = not _write_record(
                         data_writer, serialized, metadata.fields, config, json_first=json_first
                     )
                     data_collector.add(serialized)
-
-            if config.deleted == "separate" and deleted_path is not None:
-                with AtomicTextWriter(deleted_path, overwrite=config.overwrite) as deleted_writer:
-                    if config.format == "csv":
-                        _write_csv_header(deleted_writer, metadata.fields, include_deleted=True)
-                    elif config.format == "json":
-                        deleted_writer.write("[\n")
-                    deleted_json_first = True
-                    for index, record in _iter_records_with_context(
-                        table.deleted,
-                        table_report_path,
-                        deleted=True,
-                    ):
-                        serialized = _serialize_context_record(
-                            record,
-                            metadata.fields,
-                            table_report_path,
-                            index,
-                            deleted_marker=True,
-                            deleted=True,
-                            memo_policy=config.memo,
-                            strip_spaces=config.strip_spaces,
-                        )
-                        deleted_json_first = not _write_record(
-                            deleted_writer,
-                            serialized,
-                            metadata.fields,
-                            config,
-                            json_first=deleted_json_first,
-                        )
-                        deleted_collector.add(serialized)
-                    if config.format == "json":
-                        deleted_writer.write("\n]\n")
-                    deleted_stats = deleted_collector.finish()
-                    deleted_writer.flush_and_fsync()
-            elif config.deleted == "skip":
-                deleted_collector.stats.record_count = len(table.deleted)
+                if config.deleted == "skip":
+                    deleted_collector.stats.record_count = len(table.deleted)
 
             if config.format == "json":
                 data_writer.write("\n]\n")
@@ -338,26 +439,20 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             stats,
             deleted_stats,
             output=intended_output,
+            error_details=[
+                OperationError(
+                    code=_failure_code(exc, ErrorCode.OPERATION_FAILED).value,
+                    message=error,
+                    operation="export_dbf",
+                    path=discovered.source_path,
+                    table=table_report_path,
+                )
+            ],
         )
 
 
 def deleted_output_path(data_path: Path) -> Path:
     return data_path.with_name(f"{data_path.stem}.deleted{data_path.suffix}")
-
-
-def _iter_records_with_context(records: object, table: str, *, deleted: bool) -> object:
-    iterator = iter(records)
-    index = 1
-    kind = "deleted record" if deleted else "record"
-    while True:
-        try:
-            record = next(iterator)
-        except StopIteration:
-            return
-        except Exception as exc:
-            raise RuntimeError(f"{table} {kind} {index}: {exc}") from exc
-        yield index, record
-        index += 1
 
 
 def _serialize_context_record(
@@ -453,6 +548,7 @@ def _failed_result(
     stats: StreamStats | None = None,
     deleted_stats: StreamStats | None = None,
     output: str | None = None,
+    error_details: list[OperationError] | None = None,
 ) -> TableResult:
     stats = stats or StreamStats()
     deleted_stats = deleted_stats or StreamStats()
@@ -477,6 +573,7 @@ def _failed_result(
         memo_hashes={},
         warnings=warnings,
         errors=errors,
+        error_details=error_details if error_details is not None else [],
     )
 
 
