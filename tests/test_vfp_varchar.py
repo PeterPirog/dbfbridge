@@ -341,24 +341,27 @@ def test_vfp_varchar_roundtrip_canonical_identity_with_raw_gap(tmp_path: Path) -
     assert [record.values["TX"] for record in records] == ["abc", "abc  ", "abcdefghij"]
 
 
-def test_vfp_varchar_null_record_reconstruction_is_a_known_gap(tmp_path: Path) -> None:
-    """A genuinely NULL-marked Varchar record does not yet reconstruct with
-    canonical equality: the writer does not emit NULL bits and the
-    verification re-read resolves the stored blanks.  The failure is typed
-    and structured (per-table FAILED), never a crash — documented as a
-    reconstruction gap, not hidden."""
+def test_vfp_varchar_null_record_reconstructs_canonically(tmp_path: Path) -> None:
+    """A genuinely NULL-marked Varchar record reconstructs with CANONICAL
+    equality: the JSONL carries ``TX: null`` plus the raw ``_NullFlags``
+    bitmap bytes, the rebuilt table restores those bytes, and the
+    verification re-read resolves the NULL bit to ``None`` — matching the
+    input side exactly.  (Before the NullFlags unification this failed with
+    'Canonical checksum mismatch': expected None, actual ''.)"""
     source = _varchar_table(tmp_path, [{"TX": "abc"}, {"TX": None}])
     export_dir = tmp_path / "export"
     export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
     export_result.raise_for_errors()
     rebuilt = tmp_path / "rebuilt"
     result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
-    assert result.ok == 0
+    result.raise_for_errors()
     report = result.results[0]
-    assert report.status == "FAILED"
-    assert any("Canonical checksum mismatch" in message for message in report.errors)
-    # No residue: only the report is published for the failed table.
-    assert not list(rebuilt.rglob("*.partial"))
+    assert report.canonical_match is True
+    # Logical values after re-read of the rebuilt table.
+    assert [record.values["TX"] for record in iter_records(rebuilt / "varchar.dbf")] == [
+        "abc",
+        None,
+    ]
 
 
 # ---------------------------------------------------------------------------
