@@ -145,7 +145,14 @@ def export_table(discovered: DiscoveredTable, config: ExportConfig) -> TableResu
             schema_writer.write("\n")
             schema_writer.flush_and_fsync()
 
-        table = open_table(discovered.source_path, config, resolved_encoding=metadata.encoding)
+        table = open_table(
+            discovered.source_path,
+            config,
+            resolved_encoding=metadata.encoding,
+            # Same rule as the metadata preflight: only true memo fields
+            # require the FPT companion (a VFP B double is inline data).
+            require_memo_file=any(field.is_memo for field in metadata.fields),
+        )
         data_collector = StatsCollector(metadata.fields)
         stats = data_collector.stats
         with AtomicTextWriter(data_path, overwrite=config.overwrite) as data_writer:
