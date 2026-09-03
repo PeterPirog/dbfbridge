@@ -45,8 +45,8 @@ audit incomplete; temporary state only
 ```text
 requirements audited: 82
 
-CLOSED_FROZEN: 66
-BLOCKER: 1 requirement row (R-46 → BLK-03)
+CLOSED_FROZEN: 67
+BLOCKER: 0 requirement rows
 ACCEPTED_LIMITATION: 3
 INTENTIONALLY_UNSUPPORTED: 10
 EXTERNAL_BLOCKER: 1
@@ -54,12 +54,13 @@ DEFERRED: 1
 NOT_YET_AUDITED: 0
 ```
 
-Root-cause blockers: **before Macro A 3 → after Macro A 1**. BLK-01 (public error
-model) and BLK-02 (migration raw-mode split) are **CLOSED_FROZEN** in Macro A
-(branch `feat/1.0-public-contract-stabilization`); the sole remaining
-repository-controlled blocker is **BLK-03 — 1.0 API contract declaration**.
-External blocker (not counted above as a requirement row failure): **PyPI Trusted
-Publisher verification (EXB-01)**.
+Root-cause blockers: **Macro A 3 → Macro B 0**. BLK-01 (public error model) and
+BLK-02 (migration raw-mode split) are **CLOSED_FROZEN** (merged in Macro A,
+PR #16 `90f8362`); BLK-03 (1.0 API contract declaration) is **CLOSED_FROZEN**
+by Macro B (`docs/api-1.0.md` + `tests/test_api_1_0_contract.py`, branch
+`docs/1.0-api-contract`). **Zero repository-controlled architecture blockers
+remain.** The sole remaining blocker is external: **PyPI Trusted Publisher
+verification (EXB-01)**.
 
 ---
 
@@ -201,7 +202,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | R-43 | §20 | 0.2.0 Direct Read Core delivered | CLOSED_FROZEN | Phase 1 direct-read baseline; merged milestones | CI history | none | NO | none | — |
 | R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | release/0.3.0 candidate frozen at `d690d33`; PR #12 | release exact-head CI 33756842901 + perf 33756842945 SUCCESS | publication blocked externally (R-27) | NO | none | — |
 | R-45 | §20 | 0.4.x reconstruction hardening only if benchmarks/bugs justify | CLOSED_FROZEN | PR #13 + PR #14 correctness closures (evidence-driven); no open justified item | FPT/NullFlags suites green | none | NO | none | — |
-| R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | **BLOCKER** | BLK-01 and BLK-02 closed in Macro A; remaining gap = **BLK-03** (1.0 API contract declaration: documented stability/deprecation policy) | matrix + benchmarks + packaging closed | — | **YES (BLK-03)** | execute Macro B (release acceptance) | Macro B |
+| R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | CLOSED_FROZEN | BLK-03 closed by Macro B: the 1.0 public API contract is declared in `docs/api-1.0.md` (import boundary, nine frozen operations, guarantees, machine-code vocabulary, RawMode contract, JSON boundary, SemVer + deprecation policy, aliases, accepted limitations) and enforced mechanically by `tests/test_api_1_0_contract.py` | all other §20 items CLOSED_FROZEN; matrix + benchmarks + packaging closed | none | NO | none | done (Macro B) |
 
 ### §21 Definition of Done (Direct Read / MCP readiness)
 
@@ -270,9 +271,9 @@ All 24 type rows audited; every `SUPPORTED`/`SUPPORTED_WITH_LIMITATION` row now 
 
 ## 3. Public API candidate for 1.0
 
-Exported surface (51 symbols in `src/dbf_bridge/__init__.py::__all__`, mirrored lazily by `src/dbfbridge/__init__.py`).
+Exported surface (57 symbols in `src/dbf_bridge/__init__.py::__all__`, mirrored lazily by `src/dbfbridge/__init__.py`) — declared stable for 1.x by `docs/api-1.0.md` (Macro B).
 
-### STABLE_1_0_CANDIDATE
+### STABLE_1_0 (declared by `docs/api-1.0.md`, enforced by `tests/test_api_1_0_contract.py`)
 
 Direct Read operations: `inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`.
 High-level operations: `export_dbf`, `reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`.
@@ -291,7 +292,7 @@ Both former `REVIEW_REQUIRED` entries are resolved by BLK-01 (CLOSED_FROZEN) and
 - `DBFBridgeRunError(RuntimeError)` — machine `code`, all underlying structured `details`, JSON-safe `to_dict()` (`tests/test_public_error_contract.py::test_run_error_payload_preserves_all_details`).
 - `FileCheck`/`TableCheck` — `to_dict()` serialization (`api_models.py::_check_to_dict` consumes them in `VerificationRunResult.to_dict()`; `test_run_level_results_are_json_safe`).
 
-They are classified as `STABLE_1_0_CANDIDATE` in the inventory below.
+They are classified as `STABLE_1_0` in the inventory below.
 
 ### COMPATIBILITY_ALIAS
 
@@ -407,28 +408,25 @@ Evidence: `tests/test_public_error_contract.py::test_mcp_machine_readable_classi
 - **Remaining physical-identity limitation (unchanged, documented):** exact raw Varchar byte identity stays `SUPPORTED_WITH_LIMITATION` (`raw_dbf_match` reported separately); in `none`/`metadata` a byte-identical physical layout is explicitly NOT guaranteed.
 - **Status:** CLOSED_FROZEN (default `full-record` preserves the historical forensic behaviour byte-for-byte).
 
-### BLK-03 — 1.0 API CONTRACT DECLARATION (P2) — **remaining blocker**
+### BLK-03 — 1.0 API CONTRACT DECLARATION (P2) — **CLOSED_FROZEN in Macro B**
 
-- **Architecture requirement:** §12/§20/§30 — 1.0 means stable API and guarantees; §30 found the documented import surface, typed models and public/private boundary present, but **no explicit backward-compatibility/deprecation policy statement** for the frozen 1.0 surface.
-- **Current repository evidence:** `docs/migration-0.3.md` exists (0.2→0.3); no documented 1.0 stability/deprecation policy; the 1.0 public surface is declared only by `__all__` + tests.
-- **Why this blocks 1.0:** a stability claim without a published compatibility policy is not a truthful guarantee.
-- **Acceptance criteria:** repository documentation declares the frozen 1.0 public surface (this document's inventory), the compatibility promise (semver), and the deprecation policy; final compatibility-matrix confirmation.
-- **Files likely involved:** `docs/architecture-closure.md`, README/docs, release branch flow (version/CHANGELOG only during the release macro).
-- **Tests required:** `test_distribution_import_exposes_the_documented_api` extended to the frozen surface.
-- **Target macro PR:** Macro B.
+- **Architecture requirement:** §12/§20/§30 — 1.0 means stable API and guarantees.
+- **Closure (Macro B):** `docs/api-1.0.md` declares the complete 1.x contract — preferred import boundary (`import dbfbridge`), the nine frozen public operations with signatures/inputs/results/side-effects/error contracts/optional dependencies/progress-cancellation/output behaviour, Direct Read + migration/reconstruction guarantees, the RawMode contract, the structured machine-code vocabulary (19 stable `ErrorCode` values; removal/repurposing = breaking, additions = additive), the JSON result boundary (documented keys not removed or repurposed without a major; additive keys allowed), compatibility aliases (`dbf_bridge`, `[import]`), the authoritative compatibility-matrix link, accepted limitations, and explicit SemVer + deprecation policies. Enforced mechanically by `tests/test_api_1_0_contract.py` (11 contract tests: symbol parity, operations, RawMode choices, required codes, JSON-safe run results on a real run, alias availability, no private-module imports in examples).
+- **Status:** CLOSED_FROZEN. Repository-controlled blockers: **0**. External blocker: EXB-01 (PyPI Trusted Publisher).
 
-### §56 — finite numbered answer (after Macro A)
+### §56 — finite numbered answer (after Macro B)
 
-If dbfbridge 1.0 were released today, this single **repository-controlled** fact would prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`:
+If dbfbridge 1.0 were released today, **zero repository-controlled facts** would
+prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`.
 
-1. The 1.0 API stability/deprecation policy is not yet documented (§30) — **BLK-03**.
+All former items are closed with evidence: BLK-01 (machine-readable public error
+contract — `tests/test_public_error_contract.py`), BLK-02 (RawMode split with
+canonical Varchar reconstruction in every mode — `tests/test_raw_mode.py`),
+BLK-03 (declared 1.0 API contract — `docs/api-1.0.md` +
+`tests/test_api_1_0_contract.py`).
 
-(Former items 1–4 of the pre-Macro-A answer — bare argument/path errors, missing
-`OUTPUT_EXISTS`/`RECONSTRUCTION_FAILED`/`ROUNDTRIP_MISMATCH` codes, missing run-level
-JSON serialization, missing `raw_mode` — are resolved and now covered by
-`tests/test_public_error_contract.py` + `tests/test_raw_mode.py`.)
-
-Plus one **external** fact, not repository-controlled: PyPI Trusted Publisher verification pending (`invalid-publisher`) — see External blockers.
+One **external** fact remains, not repository-controlled: PyPI Trusted Publisher
+verification pending (`invalid-publisher`) — see External blockers.
 
 ---
 
@@ -443,15 +441,13 @@ Plus one **external** fact, not repository-controlled: PyPI Trusted Publisher ve
 - **Definition of Done met:** §25 answer **YES** with the dedicated message-blind test; R-17/R-32/R-36/R-37/R-38/R-54 flipped to CLOSED_FROZEN in this document.
 - **What becomes FROZEN upon merge:** public API surface and error-code vocabulary; JSON boundary shapes; `raw_mode` option semantics.
 
-### Macro B — 1.0 Release Acceptance
+### Macro B — 1.0 Release Acceptance — **EXECUTED (branch `docs/1.0-api-contract`)**
 
-- **Objective:** BLK-03 + final guarantee freeze.
-- **Included blocker IDs:** BLK-03 (P2).
-- **Forbidden scope:** no runtime behaviour change; no new public symbols beyond Macro A outcomes; no benchmark changes.
-- **Tests:** documented-surface test updated to the frozen `__all__`; compatibility matrix final check; release-state gate for 1.0 (mirroring the 0.3 gate).
-- **CI:** full matrix green on the 1.0 release branch.
-- **Definition of Done:** this document has zero BLOCKER rows; status counts updated; 1.0 compatibility/deprecation policy published.
-- **What becomes FROZEN afterward:** the 1.0 API contract and guarantees (this matrix becomes the release record).
+- **Objective:** BLK-03 — declared, closed.
+- **Included blocker IDs:** BLK-03 (P2) — CLOSED_FROZEN.
+- **Deliverables:** `docs/api-1.0.md` (the 1.x contract), `tests/test_api_1_0_contract.py` (mechanical contract regression), truthful inventory (no stale `REVIEW_REQUIRED`; classification vocabulary `STABLE_1_0` / `COMPATIBILITY_ALIAS` / internal-not-public), R-46 → CLOSED_FROZEN, repository-controlled blockers → 0.
+- **Forbidden scope honoured:** no runtime behaviour change, no new public symbols, no benchmark changes, no release-branch changes.
+- **What becomes FROZEN upon merge:** the 1.x public API contract and guarantees (this matrix + `docs/api-1.0.md` become the release record).
 
 ### Macro C — Publication + post-publish verification (externally gated)
 
@@ -483,6 +479,7 @@ The following areas are **CLOSED_FROZEN** as of `main` `c84a611`. Future prompts
 13. **(Macro A)** Machine-code vocabulary (`ErrorCode` — the ONE canonical set incl. `OPTIONAL_DEPENDENCY_MISSING`, `OUTPUT_EXISTS`, `RECONSTRUCTION_FAILED`, `ROUNDTRIP_MISMATCH`, `OPERATION_FAILED`) and the `OperationError` payload model.
 14. **(Macro A)** JSON boundary shapes (`to_dict()` on run-level results, `DBFBridgeRunError` payload, per-table `error_details` additive to text `errors`).
 15. **(Macro A)** `RawMode` semantics (default `full-record`; loss-aware raw-text/binary-memo aids retained in every mode; `none` omits replay-only header blobs; **canonical reconstruction of supported Varchar in EVERY raw mode** via the schema-driven Varchar logical-layout repair — physical byte identity is NOT guaranteed in `none`/`metadata`).
+16. **(Macro B)** The declared 1.x public API contract (`docs/api-1.0.md`): import boundary, nine stable operations, machine-code vocabulary, JSON boundary keys, RawMode contract, SemVer + deprecation policy — enforced by `tests/test_api_1_0_contract.py`.
 
 ## 12. Accepted limitations (§49)
 
@@ -508,7 +505,7 @@ The following areas are **CLOSED_FROZEN** as of `main` `c84a611`. Future prompts
 
 ## 15. Validation (§51)
 
-- `python -m pytest -q`: **505 passed** (Windows local; 488 pre-gate + 17 Varchar-gate tests). Exact CI counts recorded by the Macro A PR CI.
+- `python -m pytest -q`: **516 passed** (Windows local; 505 pre-Macro-B + 11 contract tests). Exact CI counts recorded by the Macro B PR CI.
 - `python -m ruff check src tests benchmarks examples scripts`: clean.
 - `git diff --check`: clean.
 - No new canonical performance baseline; canonical Phase 3 hashes verified UNCHANGED; targeted raw-mode comparison recorded separately (`benchmarks/raw_mode_migration.py`).
