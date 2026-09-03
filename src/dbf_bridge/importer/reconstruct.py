@@ -126,6 +126,11 @@ def reconstruct_tree(
                 ),
                 schema,
                 overwrite=config.overwrite,
+                records_factory=lambda data_path=data_path, schema=schema: _apply_memo_policy(
+                    iter_records(data_path, config.format, schema),
+                    schema,
+                    config.memo,
+                ),
                 progress_callback=progress,
             )
             if config.progress:

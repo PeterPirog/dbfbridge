@@ -298,15 +298,17 @@ carries; CSV/XLSX are converted from schema-declared columns and never carry raw
 
 | Mode | Logical values | Schema | Raw record images (`__dbfbridge_raw_record__`) | Raw text fallback (`__dbfbridge_raw_text_fields__`) | Canonical reconstruction | Raw physical reconstruction |
 |---|---|---|---|---|---|---|
-| `full-record` (default) | yes | full | kept | kept | yes | yes (raw-layout restoration) |
-| `metadata` | yes | full | omitted | kept | yes (ordinary/nullable/memo/deleted cases) | no |
-| `none` | yes | logical facts only (replay-only `dbf.header_base64` / `memo.header_base64` blobs omitted) | omitted | kept | yes (ordinary/nullable/memo/deleted cases) | no |
+| `full-record` (default) | yes | full | kept | kept | yes (all supported cases incl. Varchar) | yes (raw-layout restoration) |
+| `metadata` | yes | full | omitted | kept | yes (all supported cases incl. Varchar) | no |
+| `none` | yes | logical facts only (replay-only `dbf.header_base64` / `memo.header_base64` blobs omitted) | omitted | kept | yes (all supported cases incl. Varchar) | no |
 
+All raw modes preserve canonical reconstruction for supported Varchar tables
+(short, full-width, significant trailing spaces, NULL, empty, non-nullable,
+mixed `_NullFlags` bitmaps, deleted rows, cp1250/cp852/Mazovia text).
+`full-record` additionally retains per-record physical images for forensic/raw-layout
+restoration; `none`/`metadata` do not guarantee a byte-identical physical Varchar
+layout (the raw DBF checksum is reported separately as `raw_dbf_match`).
 Changing `--raw-mode` invalidates the incremental `conversion_checksums.json` cache.
-Nullable Varchar tables require `full-record`: the schema-driven writer cannot yet rebuild
-the variable-length Varchar layout without the per-record raw image (documented writer
-limitation), so reconstruction from `metadata`/`none` fails with the typed
-`DBF_RECORD_INVALID` error.
 
 CDX files are not reconstructed because DBF field metadata does not contain index tag
 names and expressions. The DBF structural-index flag is preserved when possible, but the
