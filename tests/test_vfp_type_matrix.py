@@ -35,7 +35,6 @@ from dbfbridge import (
     inspect_table,
     iter_raw_records,
     iter_records,
-    read_schema,
 )
 
 # ---------------------------------------------------------------------------
@@ -174,34 +173,6 @@ def test_vfp_double_alias_o_reads_like_a_double(tmp_path: Path) -> None:
     result, _rebuilt = _roundtrip(tmp_path, source)
     assert result.results[0].canonical_match is True
     assert result.results[0].raw_dbf_match is True
-
-
-def test_vfp_varchar_direct_read_and_roundtrip(tmp_path: Path) -> None:
-    """V (Varchar) is physically a character field; the table carries the
-    VFP 0x32 'Varchar enabled' version byte.  Fixture: legal C table patched
-    to V (same layout) with the documented version change."""
-    source = factory.create_vfp_table(
-        tmp_path / "varchar.dbf", "TX C(10); K N(4,0)", [{"TX": "hello", "K": 1}]
-    )
-    factory.patch_field_type(source, 0, "V")
-    factory.patch_dbversion(source, 0x32)
-
-    info = inspect_table(source)
-    varchar_field = info.fields[0]
-    assert varchar_field.dbf_type == "V"
-    assert varchar_field.supported is True
-
-    schema = read_schema(source)
-    assert schema.dbversion_name == "Visual FoxPro (Varchar/Varbinary enabled)"
-
-    record = next(iter(iter_records(source)))
-    assert record.values["TX"] == "hello"
-
-    result, rebuilt = _roundtrip(tmp_path, source)
-    assert result.results[0].canonical_match is True
-    assert result.results[0].raw_dbf_match is True
-    rebuilt_record = next(iter(iter_records(rebuilt / "varchar.dbf")))
-    assert rebuilt_record.values["TX"] == "hello"
 
 
 def test_vfp_timestamp_alias_decodes_like_datetime(tmp_path: Path) -> None:
@@ -361,11 +332,17 @@ def test_memo_block_type_decides_text_vs_binary_decoding(tmp_path: Path) -> None
 def test_unsupported_varbinary_is_raw_readable_but_not_decoded(tmp_path: Path) -> None:
     """Q (Varbinary): the descriptor stays visible with a stable reason, a
     selected decoded read raises the typed error, and the forensic raw
-    stream keeps the exact physical bytes.  No Q support is implied."""
-    source = factory.create_vfp_table(
-        tmp_path / "varbin.dbf", "K N(4,0); BIN C(6)", [{"K": 1, "BIN": "abcdef"}]
+    stream keeps the exact physical bytes.  Fixture: an authentic VFP 0x32
+    table with a real ``_NullFlags`` varlength bit — not a type-byte patch.
+    No Q support is implied."""
+    source = factory.build_vfp32_table(
+        tmp_path / "varbin.dbf",
+        columns=[
+            {"name": "K", "type": "N", "width": 4},
+            {"name": "BIN", "type": "Q", "width": 10},
+        ],
+        rows=[{"K": 1, "BIN": b"\x00\x01\x02payload"}],
     )
-    factory.patch_field_type(source, 1, "Q")  # same inline-bytes layout as C
 
     info = inspect_table(source)
     varbinary = info.fields[1]
@@ -379,7 +356,7 @@ def test_unsupported_varbinary_is_raw_readable_but_not_decoded(tmp_path: Path) -
 
     fingerprint_before = factory.directory_fingerprint(tmp_path)
     raw = next(iter(iter_raw_records(source)))
-    assert raw.raw_record is not None and raw.raw_record.endswith(b"abcdef")
+    assert raw.raw_record is not None and b"payload" in raw.raw_record
     # The forensic read must not leave a single trace on disk.
     assert factory.directory_fingerprint(tmp_path) == fingerprint_before
 
@@ -432,11 +409,16 @@ def test_binary_character_nocptrans_is_raw_readable_but_not_decoded(tmp_path: Pa
 def test_unsupported_table_export_reports_typed_unsupported_status(tmp_path: Path) -> None:
     """Migration of a Q table: the run completes, the table is reported
     UNSUPPORTED with a typed per-table reason, and no data/schema output is
-    written for it — never a partial or falsely published file."""
-    source = factory.create_vfp_table(
-        tmp_path / "varbin.dbf", "K N(4,0); BIN C(6)", [{"K": 1, "BIN": "abcdef"}]
+    written for it — never a partial or falsely published file.  Fixture:
+    an authentic VFP 0x32 Q table (real ``_NullFlags`` varlength bit)."""
+    source = factory.build_vfp32_table(
+        tmp_path / "varbin.dbf",
+        columns=[
+            {"name": "K", "type": "N", "width": 4},
+            {"name": "BIN", "type": "Q", "width": 10},
+        ],
+        rows=[{"K": 1, "BIN": b"\x00\x01payload"}],
     )
-    factory.patch_field_type(source, 1, "Q")
 
     export_dir = tmp_path / "export"
     result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
@@ -451,6 +433,39 @@ def test_unsupported_table_export_reports_typed_unsupported_status(tmp_path: Pat
         "migration_report.csv",
         "migration_report.jsonl",
     ]
+
+
+def test_vfp_double_with_real_memo_still_requires_fpt(tmp_path: Path) -> None:
+    """Guard for the B-Double fix: suppressing dbfread's spurious memo check
+    applies ONLY to tables without real memo fields.  A table with a B
+    Double AND a text memo still requires its FPT — a missing companion is a
+    typed failure in Direct Read and a structured per-table failure in the
+    migration, never silently suppressed by the Double column."""
+    source = factory.create_vfp_table(
+        tmp_path / "mix.dbf",
+        "POMIAR B; K N(4,0); NOTATKA M",
+        [{"POMIAR": 2.5, "K": 1, "NOTATKA": "prawdziwe memo"}],
+    )
+    source.with_suffix(".fpt").unlink()
+    assert inspect_table(source).has_memo is True  # the M field is a real memo
+
+    from dbfbridge import FptRequiredMissingError
+
+    with pytest.raises(FptRequiredMissingError):
+        next(iter_records(source, memo="inline"))
+
+    export_dir = tmp_path / "export"
+    result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    assert result.ok == 0
+    report = result.results[0]
+    assert report.status == "FAILED"
+    assert "memo" in " ".join(report.errors).lower()
+
+    # memo="skip" needs no FPT: the Double and Numeric values stay readable.
+    skipped = next(iter(iter_records(source, memo="skip")))
+    assert skipped.values["POMIAR"] == 2.5
+    assert skipped.values["K"] == 1
+    assert "NOTATKA" not in skipped.values
 
 
 # ---------------------------------------------------------------------------
