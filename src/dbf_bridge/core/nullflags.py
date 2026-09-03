@@ -30,7 +30,7 @@ physical record loop (``core.backend``) and the exporter both consume
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +44,23 @@ NULLFLAGS_TYPE = "0"
 
 _NULLABLE_FLAG = 0x02
 _SYSTEM_FLAG = 0x01
+
+
+def _descriptor(field: Any) -> tuple[str, str, int, int]:
+    """Normalize one field descriptor to ``(name, dbf_type, flags, length)``.
+
+    Accepts attribute-based descriptors (core ``ParsedField``, exporter
+    ``FieldMetadata``) and Mapping-based descriptors (importer schema
+    dicts), so every consumer shares ONE allocation engine instead of
+    reimplementing bit arithmetic.
+    """
+    if isinstance(field, Mapping):
+        name = str(field["name"])
+        dbf_type = str(field["dbf_type"])
+        flags = int(field.get("flags") or 0)
+        length = field.get("length")
+        return name, dbf_type, flags, int(length) if length is not None else 0
+    return str(field.name), str(field.dbf_type), int(field.flags), int(field.length)
 
 
 @dataclass(frozen=True)
@@ -91,14 +108,13 @@ def build_nullflags_layout(fields: Iterable[Any]) -> NullFlagsLayout | None:
             allocated bits.
     """
     field_list = list(fields)
-    descriptors = [
-        (field.name, field.dbf_type, bool(field.flags & _NULLABLE_FLAG)) for field in field_list
-    ]
-    bitmap_candidates = [field for field in field_list if field.dbf_type == NULLFLAGS_TYPE]
+    descriptors = [_descriptor(field) for field in field_list]
+    bitmap_candidates = [field for field in field_list if _descriptor(field)[1] == NULLFLAGS_TYPE]
     varlength_bits: dict[str, int] = {}
     null_bits: dict[str, int] = {}
     bit = 0
-    for name, dbf_type, nullable in descriptors:
+    for name, dbf_type, flags, _length in descriptors:
+        nullable = bool(flags & _NULLABLE_FLAG)
         if dbf_type == NULLFLAGS_TYPE:
             continue
         if dbf_type in VARLENGTH_FIELD_TYPES:
@@ -123,21 +139,16 @@ def build_nullflags_layout(fields: Iterable[Any]) -> NullFlagsLayout | None:
             path=None,
             context={"bitmap_columns": len(bitmap_candidates), "allocated_bits": bit},
         )
-    bitmap_field = bitmap_candidates[0]
-    if not bitmap_field.flags & _SYSTEM_FLAG:
+    bitmap_name, _bitmap_type, bitmap_flags, declared_length = _descriptor(bitmap_candidates[0])
+    if not bitmap_flags & _SYSTEM_FLAG:
         raise errors.DbfHeaderInvalidError(
-            f"The bitmap column {bitmap_candidates[0].name!r} (physical type 0) "
+            f"The bitmap column {bitmap_name!r} (physical type 0) "
             "lacks the VFP system flag (0x01); it is not trustworthy as the "
             "_NullFlags control structure.",
             path=None,
-            context={"field": bitmap_candidates[0].name},
+            context={"field": bitmap_name},
         )
-    bitmap_name = bitmap_candidates[0].name
     byte_count = (bit + 7) // 8
-    declared_length = next(
-        (field.length for field in field_list if field.name == bitmap_name),
-        None,
-    )
     if declared_length is not None and declared_length < byte_count:
         raise nullflags_capacity_error(declared_length, byte_count)
     return NullFlagsLayout(
@@ -146,6 +157,20 @@ def build_nullflags_layout(fields: Iterable[Any]) -> NullFlagsLayout | None:
         varlength_bits=varlength_bits,
         null_bits=null_bits,
     )
+
+
+def null_field_names(layout: NullFlagsLayout, bitmap: bytes | bytearray | None) -> set[str]:
+    """The set of field names whose NULL bit is set in one record's bitmap.
+
+    Pure interpretation helper: ``layout.null_bits`` + the bitmap bytes are
+    the only inputs, so consumers (importer checksums, diagnostics) never
+    reimplement ``divmod(bit, 8)`` against a parallel allocation model.
+    """
+    if layout is None or not layout.null_bits:
+        return set()
+    return {
+        name for name, bit in layout.null_bits.items() if NullFlagsLayout.bit_is_set(bitmap, bit)
+    }
 
 
 def nullflags_capacity_error(
@@ -169,5 +194,6 @@ __all__ = [
     "NullFlagsLayout",
     "VARLENGTH_FIELD_TYPES",
     "build_nullflags_layout",
+    "null_field_names",
     "nullflags_capacity_error",
 ]

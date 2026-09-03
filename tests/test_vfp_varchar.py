@@ -20,6 +20,7 @@ import base64
 import json
 from pathlib import Path
 
+import dbf
 import pytest
 import vfp_fixture_factory as factory
 
@@ -341,24 +342,119 @@ def test_vfp_varchar_roundtrip_canonical_identity_with_raw_gap(tmp_path: Path) -
     assert [record.values["TX"] for record in records] == ["abc", "abc  ", "abcdefghij"]
 
 
-def test_vfp_varchar_null_record_reconstruction_is_a_known_gap(tmp_path: Path) -> None:
-    """A genuinely NULL-marked Varchar record does not yet reconstruct with
-    canonical equality: the writer does not emit NULL bits and the
-    verification re-read resolves the stored blanks.  The failure is typed
-    and structured (per-table FAILED), never a crash — documented as a
-    reconstruction gap, not hidden."""
+def test_vfp_varchar_null_record_reconstructs_canonically(tmp_path: Path) -> None:
+    """A genuinely NULL-marked Varchar record reconstructs with CANONICAL
+    equality: the JSONL carries ``TX: null`` plus the raw ``_NullFlags``
+    bitmap bytes, the rebuilt table restores those bytes, and the
+    verification re-read resolves the NULL bit to ``None`` — matching the
+    input side exactly.  (Before the NullFlags unification this failed with
+    'Canonical checksum mismatch': expected None, actual ''.)"""
     source = _varchar_table(tmp_path, [{"TX": "abc"}, {"TX": None}])
     export_dir = tmp_path / "export"
     export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
     export_result.raise_for_errors()
     rebuilt = tmp_path / "rebuilt"
     result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
-    assert result.ok == 0
+    result.raise_for_errors()
     report = result.results[0]
-    assert report.status == "FAILED"
-    assert any("Canonical checksum mismatch" in message for message in report.errors)
-    # No residue: only the report is published for the failed table.
+    assert report.canonical_match is True
+    # Logical values after re-read of the rebuilt table.
+    assert [record.values["TX"] for record in iter_records(rebuilt / "varchar.dbf")] == [
+        "abc",
+        None,
+    ]
+    # Raw byte identity remains a known, honestly reported limitation.
+    assert report.raw_dbf_match is not True
+    assert any("Raw DBF SHA-256 differs" in warning for warning in report.warnings)
     assert not list(rebuilt.rglob("*.partial"))
+
+
+def test_vfp_varchar_mixed_null_bitmap_reconstructs_canonically(tmp_path: Path) -> None:
+    """Reconstruction of a table with THREE nullable columns whose bitmap
+    allocation interleaves varlength and NULL bits: V1 varlength=0, V1
+    NULL=1, C1 NULL=2, V2 varlength=3, V2 NULL=4.
+
+    Record 1 has C1 NULL; record 2 has V1/V2 NULL — the exact per-field bit
+    assignment must survive the round trip (the pre-unification importer
+    read NULL bits from ``enumerate(nullable)`` positions instead)."""
+    source = factory.build_vfp32_table(
+        tmp_path / "mixed.dbf",
+        columns=[
+            {"name": "V1", "type": "V", "width": 8, "nullable": True},
+            {"name": "C1", "type": "C", "width": 4, "nullable": True},
+            {"name": "V2", "type": "V", "width": 8, "nullable": True},
+        ],
+        rows=[
+            {"V1": "row-one", "C1": None, "V2": "row-two"},
+            {"V1": None, "C1": "abc", "V2": None},
+            {"V1": "r3", "C1": "d4", "V2": ("e5f6g7h8", False)},
+        ],
+    )
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "mixed.dbf"))
+    assert [record.values["V1"] for record in records] == ["row-one", None, "r3"]
+    assert [record.values["C1"] for record in records] == [None, "abc", "d4"]
+    assert [record.values["V2"] for record in records] == ["row-two", None, "e5f6g7h8"]
+
+
+def test_vfp_ordinary_nullable_fields_reconstruct_canonically(tmp_path: Path) -> None:
+    """Ordinary NULLable C/I/Y fields (no Varchar at all) keep reconstructing
+    canonically — the unified NullFlags verification must not regress the
+    reference-written path."""
+    source = factory.create_vfp_table(
+        tmp_path / "nulls.dbf",
+        "TX C(6) NULL; LICZ I NULL; KWOTA Y NULL",
+        [
+            {"TX": "abc", "LICZ": 5, "KWOTA": 1.5},
+            {"TX": dbf.Null, "LICZ": dbf.Null, "KWOTA": dbf.Null},
+        ],
+    )
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "nulls.dbf"))
+    assert [record.values["TX"] for record in records] == ["abc", None]
+    assert [record.values["LICZ"] for record in records] == [5, None]
+    assert [record.values["KWOTA"] for record in records] == [
+        pytest.approx(1.5),
+        None,
+    ]
+
+
+def test_vfp_interleaved_deleted_records_reconstruct_canonically(tmp_path: Path) -> None:
+    """Deleted and active records interleave physically; reconstruction
+    keeps the relative order within each group (active hash, deleted hash)
+    and the deleted markers stay exact."""
+    source = factory.create_vfp_table(
+        tmp_path / "interleaved.dbf",
+        "K N(4,0); TX C(6) NULL",
+        [{"K": 1, "TX": "one"}, {"K": 2, "TX": "two"}, {"K": 3, "TX": "three"}],
+    )
+    factory.mark_deleted(source, 1)  # physical order: active, deleted, active
+    export_dir = tmp_path / "export"
+    export_result = export_dbf(
+        source, export_dir, formats=("jsonl",), overwrite=True, deleted="include"
+    )
+    export_result.raise_for_errors()
+    rebuilt = tmp_path / "rebuilt"
+    result = reconstruct_dbf(export_dir, rebuilt, input_format="jsonl", overwrite=True)
+    result.raise_for_errors()
+    report = result.results[0]
+    assert report.canonical_match is True
+    records = list(iter_records(rebuilt / "interleaved.dbf", include_deleted=True))
+    assert [(r.values["K"], r.deleted) for r in records] == [(1, False), (2, True), (3, False)]
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +675,36 @@ def test_nullflags_accepts_one_shot_iterable() -> None:
     assert from_generator.field_name == from_list.field_name == "_NullFlags"
     assert from_generator.varlength_bits == from_list.varlength_bits == {"V1": 0}
     assert from_generator.null_bits == from_list.null_bits == {"V1": 1, "C1": 2}
+
+
+def test_nullflags_accepts_attribute_and_mapping_descriptors() -> None:
+    """One allocation engine for every descriptor shape: attribute-based
+    (ParsedField/FieldMetadata) and Mapping-based (importer schema dicts)
+    produce the identical layout — no parallel bit model may exist."""
+    attributes = [
+        _StubField("V1", "V", 0x02),
+        _StubField("C1", "C", 0x02),
+        _StubField("V2", "V", 0x02),
+        _StubField("_NullFlags", "0", 0x05),
+    ]
+    mappings = [
+        {"name": "V1", "dbf_type": "V", "flags": 0x02, "length": 8},
+        {"name": "C1", "dbf_type": "C", "flags": 0x02, "length": 4},
+        {"name": "V2", "dbf_type": "V", "flags": 0x02, "length": 8},
+        {"name": "_NullFlags", "dbf_type": "0", "flags": 0x05, "length": 1},
+    ]
+    from_attributes = nullflags.build_nullflags_layout(attributes)
+    from_mappings = nullflags.build_nullflags_layout(mappings)
+    assert from_attributes is not None and from_mappings is not None
+    assert from_mappings.varlength_bits == from_attributes.varlength_bits == {
+        "V1": 0,
+        "V2": 3,
+    }
+    assert from_mappings.null_bits == from_attributes.null_bits == {
+        "V1": 1,
+        "C1": 2,
+        "V2": 4,
+    }
 
 
 def test_nullflags_single_system_bitmap_is_accepted() -> None:
