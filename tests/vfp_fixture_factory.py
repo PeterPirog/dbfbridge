@@ -259,3 +259,184 @@ def directory_fingerprint(directory: Path) -> list[tuple[str, str]]:
     return sorted(
         (item.name, sha256_file(item)) for item in Path(directory).rglob("*") if item.is_file()
     )
+
+
+# ---------------------------------------------------------------------------
+# authentic VFP 0x32 builder (Varchar/Varbinary + _NullFlags)
+# ---------------------------------------------------------------------------
+
+VFP_BACKLINK_SIZE = 263
+_TEXT_ENCODING = {0xC8: "cp1250", 0x01: "cp437"}
+
+
+def build_vfp32_table(
+    path: Path,
+    columns: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    *,
+    codepage: int = 0xC8,
+) -> Path:
+    """Write an AUTHENTIC VFP 0x32 table from scratch (deterministic bytes).
+
+    This is not a type-byte patch of a ``C`` table: the whole file — header,
+    descriptors, ``_NullFlags`` system column, and every physical record —
+    follows the documented VFP physical contract for the Varchar/Varbinary
+    dialect (version byte 0x32):
+
+    - ``_NullFlags`` is appended as the last system column (type ``0``,
+      flags BINARY|SYSTEM = 0x05) and is ``ceil(bits / 8)`` bytes wide;
+    - bits are allocated in field order: each ``V``/``Q`` column takes a
+      **varlength** bit (plus a **NULL** bit when the column is nullable),
+      every other nullable column takes one NULL bit;
+    - a set varlength bit means the field payload's LAST byte holds the
+      actual value length and the value is the preceding bytes (significant
+      trailing spaces preserved); a clear bit means the full declared width
+      is the value;
+    - a set NULL bit means the logical value is NULL (payload left blank);
+    - bitmap bits beyond the allocated count are zero in this builder.
+
+    ``columns``: ``{"name", "type": "V"|"Q"|"C", "width", "nullable"}`` (``Q``
+    rows carry raw ``bytes``).  ``rows``: ``{name: value}`` where a ``V``/
+    ``Q`` value is either ``str``/``bytes``/``None`` (varlength bit
+    auto-set when the value is shorter than the width) or a
+    ``(value, varlength)`` tuple forcing the storage form.
+    """
+    path = Path(path)
+    encoding_name = _TEXT_ENCODING.get(codepage)
+    if encoding_name is None:
+        raise ValueError(f"unsupported fixture codepage {codepage:#x}")
+
+    # ---- bit allocation (documented VFP contract, field order) ----
+    bit_specs: list[tuple[str, str]] = []  # (owner field, "varlength" | "null")
+    for column in columns:
+        if column["type"] in {"V", "Q"}:
+            bit_specs.append((column["name"], "varlength"))
+            if column.get("nullable"):
+                bit_specs.append((column["name"], "null"))
+        elif column.get("nullable"):
+            bit_specs.append((column["name"], "null"))
+
+    layout: list[tuple[str, str, int, int, int]] = []  # name, type, length, decimals, flags
+    for column in columns:
+        flags = 0x02 if column.get("nullable") else 0x00
+        if column.get("binary"):
+            flags |= 0x04
+        layout.append((column["name"], column["type"], column["width"], 0, flags))
+    if bit_specs:
+        layout.append(("_NullFlags", "0", (len(bit_specs) + 7) // 8, 0, 0x05))
+
+    record_length = 1 + sum(entry[2] for entry in layout)
+    header_length = 32 + 32 * len(layout) + 1 + VFP_BACKLINK_SIZE
+
+    header = bytearray(32)
+    header[0] = 0x32
+    header[1:4] = bytes((126, 9, 1))  # 2026-09-01
+    header[4:8] = len(rows).to_bytes(4, "little")
+    header[8:10] = header_length.to_bytes(2, "little")
+    header[10:12] = record_length.to_bytes(2, "little")
+    header[29] = codepage
+
+    descriptors = bytearray()
+    offset = 1  # delete marker
+    for name, type_code, length, _decimals, flags in layout:
+        descriptor = bytearray(32)
+        descriptor[:11] = name.encode("ascii")[:11].ljust(11, b"\x00")
+        descriptor[11] = ord(type_code)
+        descriptor[12:16] = offset.to_bytes(4, "little")
+        descriptor[16] = length & 0xFF
+        descriptor[17] = (length >> 8) & 0xFF
+        descriptor[18] = flags
+        descriptors += descriptor
+        offset += length
+
+    def _row_bitmap(row: dict[str, Any]) -> bytes:
+        """The record's ``_NullFlags`` bytes, built from its own values."""
+        bitmap = bytearray((len(bit_specs) + 7) // 8)
+        for index, (owner, kind) in enumerate(bit_specs):
+            value = row.get(owner)
+            if kind == "null":
+                if value is None:
+                    bitmap[index // 8] |= 1 << (index % 8)
+            else:  # varlength
+                if isinstance(value, tuple):
+                    if bool(value[1]):
+                        bitmap[index // 8] |= 1 << (index % 8)
+                elif value is not None:
+                    encoded_len = len(
+                        value if isinstance(value, bytes) else value.encode(encoding_name)
+                    )
+                    if encoded_len < _column_width(owner):
+                        bitmap[index // 8] |= 1 << (index % 8)
+        return bytes(bitmap)
+
+    width_by_name = {column["name"]: column["width"] for column in columns}
+
+    def _column_width(name: str) -> int:
+        return int(width_by_name[name])
+
+    body = bytearray()
+    body += header
+    body += descriptors
+    body += b"\x0d"  # field terminator
+    body += b"\x00" * VFP_BACKLINK_SIZE  # DBC backlink area (no path -> not DBC-bound)
+
+    for row in rows:
+        record = bytearray(b" ")  # delete marker: active
+        for name, type_code, length, _decimals, _flags in layout:
+            if type_code == "0":
+                record += _row_bitmap(row)
+                continue
+            value = row.get(name)
+            if type_code in {"V", "Q"}:
+                pad = b" " if type_code == "V" else b"\x00"
+                encoded, use_varlength = _varchar_request(value, length, encoding_name)
+                if encoded is None:
+                    record += pad * length  # NULL: blank storage, NULL bit set
+                    continue
+                if use_varlength:
+                    if len(encoded) > length - 1:
+                        raise ValueError(
+                            f"value for {name!r} needs {len(encoded)} bytes; variable "
+                            f"storage in width {length} holds {length - 1}"
+                        )
+                    record += encoded.ljust(length - 1, pad) + bytes([len(encoded)])
+                else:
+                    if len(encoded) > length:
+                        raise ValueError(f"value for {name!r} exceeds width {length}")
+                    record += encoded.ljust(length, pad)
+            elif type_code == "C":
+                text = "" if value is None else str(value)
+                encoded = text.encode(encoding_name)
+                if len(encoded) > length:
+                    raise ValueError(f"value for {name!r} exceeds width {length}")
+                record += encoded.ljust(length, b" ")
+            elif type_code == "N":
+                text = "" if value is None else str(value)
+                if len(text) > length:
+                    raise ValueError(f"value for {name!r} exceeds width {length}")
+                record += text.rjust(length).encode(encoding_name)  # right-justified spaces
+            else:
+                raise ValueError(f"fixture builder supports V/Q/C/N columns, got {type_code!r}")
+        body += record
+
+    path.write_bytes(bytes(body) + b"\x1a")
+    return path
+
+
+def _varchar_request(value: Any, width: int, encoding_name: str) -> tuple[bytes | None, bool]:
+    """Normalize one ``V``/``Q`` row value into ``(encoded, use_varlength)``.
+
+    ``str``/``bytes``/``None`` default to variable storage when the value is
+    shorter than the width (full-width values use the fixed form); a
+    ``(value, varlength)`` tuple forces the storage form explicitly.
+    """
+    if isinstance(value, tuple) and len(value) == 2:
+        text, forced = value[0], bool(value[1])
+    else:
+        text, forced = value, None
+    if text is None:
+        return None, False
+    encoded = text if isinstance(text, bytes) else text.encode(encoding_name, errors="replace")
+    if forced is None:
+        forced = len(encoded) < width
+    return encoded, forced
