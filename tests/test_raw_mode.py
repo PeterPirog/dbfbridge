@@ -220,15 +220,11 @@ def test_canonical_reconstruction_without_raw_records(
 
 @pytest.mark.parametrize("raw_mode", RAW_MODES)
 def test_canonical_reconstruction_nullable_varchar(tmp_path: Path, raw_mode: str) -> None:
-    """Nullable-Varchar canonical reconstruction.
+    """Nullable-Varchar canonical reconstruction — RED-first contract gate.
 
-    ``full-record``: canonical PASS (raw-layout restoration rebuilds the
-    variable-length payload exactly).  ``none``/``metadata``: the schema-driven
-    writer cannot yet rebuild the variable-length Varchar layout without the
-    per-record raw image (documented writer limitation, compatibility matrix
-    row ``V``), so the reconstruction fails with the TYPED physical error
-    ``DBF_RECORD_INVALID`` surfaced as ``RECONSTRUCTION_FAILED``-context
-    structured details — never an untyped crash.
+    Target contract (architecture contract 20260903-164824): every SUPPORTED
+    Varchar case reconstructs canonically in ALL raw modes.  ``raw_mode`` may
+    change the physical raw-record retention, never the canonical correctness.
     """
     source = _varchar_fixture(tmp_path)
     exported = tmp_path / f"exp-v-{raw_mode}"
@@ -236,14 +232,209 @@ def test_canonical_reconstruction_nullable_varchar(tmp_path: Path, raw_mode: str
     assert run.ok == 1
     rebuilt = tmp_path / f"reb-v-{raw_mode}"
     result = _reconstruct(exported, rebuilt)
-    if raw_mode == "full-record":
+    assert result.failed == 0
+    assert result.results[0].canonical_match is True
+
+
+# ---------------------------------------------------------------------------
+# Macro A correctness gate: Varchar value matrix (no raw record images)
+# ---------------------------------------------------------------------------
+
+
+def _read_values(dbf_path: Path) -> list[dict[str, object]]:
+    from dbfbridge import read_records
+
+    page = read_records(dbf_path, memo="inline")
+    return [
+        {name: value for name, value in record.values.items() if name != "_NullFlags"}
+        for record in page.records
+    ]
+
+
+_VARCHAR_VALUE_ROWS: list[dict[str, object]] = [
+    {"V1": "abc", "V2": "short", "C1": None},
+    {"V1": "abc ", "V2": "0123456789", "C1": "ok"},
+    {"V1": "", "V2": None, "C1": None},
+    {"V1": None, "V2": "tail ", "C1": "ę"},
+]
+
+
+def _varchar_matrix_fixture(tmp_path: Path) -> Path:
+    """V1 nullable + V2 non-nullable + C1 nullable (mixed bitmap, 4 bits)."""
+    return factory.build_vfp32_table(
+        tmp_path / "matrix.dbf",
+        columns=[
+            {"name": "V1", "type": "V", "width": 10, "nullable": True},
+            {"name": "V2", "type": "V", "width": 10},
+            {"name": "C1", "type": "C", "width": 6, "nullable": True},
+        ],
+        rows=_VARCHAR_VALUE_ROWS,
+    )
+
+
+@pytest.mark.parametrize("raw_mode", RAW_MODES)
+def test_varchar_value_matrix_reconstructs_logically_identical(
+    tmp_path: Path, raw_mode: str
+) -> None:
+    """short / full-width / trailing-space / empty / NULL / non-nullable V /
+    mixed V+V+C bitmap — canonical PASS and identical logical values via
+    the public Direct Read surface."""
+    source = _varchar_matrix_fixture(tmp_path)
+    source_sha = source.read_bytes()
+    exported = tmp_path / f"exp-m-{raw_mode}"
+    run = export_dbf(source, exported, formats=("jsonl",), raw_mode=raw_mode, overwrite=True)
+    assert run.ok == 1
+
+    rebuilt = tmp_path / f"reb-m-{raw_mode}"
+    result = _reconstruct(exported, rebuilt)
+    assert result.failed == 0
+    assert result.results[0].canonical_match is True
+
+    expected = _read_values(source)
+    actual = _read_values(rebuilt / "matrix.dbf")
+    assert actual == expected
+    # source immutability (§27)
+    assert source.read_bytes() == source_sha
+
+
+def test_varchar_non_nullable_consumes_varlength_bit(tmp_path: Path) -> None:
+    """A non-nullable ``V`` still consumes a varlength bit; short values keep
+    the length-byte form and reconstruct canonically in every raw mode."""
+    source = factory.build_vfp32_table(
+        tmp_path / "nonnull.dbf",
+        columns=[
+            {"name": "V", "type": "V", "width": 8},
+            {"name": "K", "type": "N", "width": 4},
+        ],
+        rows=[{"V": "abc", "K": 1}, {"V": "01234567", "K": 2}],
+    )
+    for raw_mode in RAW_MODES:
+        exported = tmp_path / f"exp-nn-{raw_mode}"
+        assert export_dbf(
+            source, exported, formats=("jsonl",), raw_mode=raw_mode, overwrite=True
+        ).ok == 1
+        rebuilt = tmp_path / f"reb-nn-{raw_mode}"
+        result = _reconstruct(exported, rebuilt)
         assert result.failed == 0
         assert result.results[0].canonical_match is True
-    else:
-        assert result.failed == 1
-        codes = {detail.code for detail in result.results[0].error_details}
-        assert codes == {"DBF_RECORD_INVALID"}
-        assert json.dumps(result.to_dict())
+        assert _read_values(rebuilt / "nonnull.dbf") == [
+            {"V": "abc", "K": 1.0},
+            {"V": "01234567", "K": 2.0},
+        ]
+
+
+@pytest.mark.parametrize("raw_mode", RAW_MODES)
+def test_varchar_deleted_record_reconstructs(tmp_path: Path, raw_mode: str) -> None:
+    """deleted Varchar rows keep physical order, markers, and values."""
+    source = factory.build_vfp32_table(
+        tmp_path / "delv.dbf",
+        columns=[
+            {"name": "V1", "type": "V", "width": 10, "nullable": True},
+            {"name": "KOD", "type": "N", "width": 3},
+        ],
+        rows=[{"V1": "first", "KOD": 1}, {"V1": None, "KOD": 2}, {"V1": "third", "KOD": 3}],
+    )
+    source_bytes = bytearray(source.read_bytes())
+    header_length = int.from_bytes(source_bytes[8:10], "little")
+    record_length = int.from_bytes(source_bytes[10:12], "little")
+    # mark the third physical record deleted (VFP deletion marker '*')
+    source_bytes[header_length + 2 * record_length] = 0x2A
+    source.write_bytes(bytes(source_bytes))
+
+    exported = tmp_path / f"exp-dv-{raw_mode}"
+    run = export_dbf(
+        source,
+        exported,
+        formats=("jsonl",),
+        raw_mode=raw_mode,
+        deleted="include",  # type: ignore[arg-type]
+        overwrite=True,
+    )
+    assert run.ok == 1
+    rebuilt = tmp_path / f"reb-dv-{raw_mode}"
+    result = _reconstruct(exported, rebuilt)
+    assert result.failed == 0
+    assert result.results[0].canonical_match is True
+    assert result.results[0].deleted_records == 1
+
+    exported = tmp_path / f"exp-dv-{raw_mode}"
+    run = export_dbf(
+        source,
+        exported,
+        formats=("jsonl",),
+        raw_mode=raw_mode,
+        deleted="include",  # type: ignore[arg-type]
+        overwrite=True,
+    )
+    assert run.ok == 1
+    rebuilt = tmp_path / f"reb-dv-{raw_mode}"
+    result = _reconstruct(exported, rebuilt)
+    assert result.failed == 0
+    assert result.results[0].canonical_match is True
+    assert result.results[0].deleted_records == 1
+
+
+@pytest.mark.parametrize("raw_mode", RAW_MODES)
+@pytest.mark.parametrize(
+    ("codepage", "text"),
+    [
+        (0xC8, "Zażółć gęślą"),
+        (0x23, "ąćęłńóśźż"),
+        (0x69, "Zażółć"),
+    ],
+)
+def test_varchar_polish_codepages_reconstruct(
+    tmp_path: Path, raw_mode: str, codepage: int, text: str
+) -> None:
+    """cp1250 / cp852 / Mazovia Varchar round trips keep the exact Unicode."""
+    source = factory.build_vfp32_table(
+        tmp_path / f"cp{codepage:x}.dbf",
+        columns=[{"name": "T", "type": "V", "width": 20, "nullable": True}],
+        rows=[{"T": text}, {"T": None}],
+        codepage=codepage,
+    )
+    exported = tmp_path / f"exp-cp-{codepage:x}-{raw_mode}"
+    assert export_dbf(
+        source, exported, formats=("jsonl",), raw_mode=raw_mode, overwrite=True
+    ).ok == 1
+    rebuilt = tmp_path / f"reb-cp-{codepage:x}-{raw_mode}"
+    result = _reconstruct(exported, rebuilt)
+    assert result.failed == 0
+    assert result.results[0].canonical_match is True
+    assert _read_values(rebuilt / f"cp{codepage:x}.dbf") == [{"T": text}, {"T": None}]
+
+
+def test_varchar_repair_failure_is_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing Varchar logical-layout repair leaves no published output and
+    no staging residue, with a typed structured failure (Macro A contract)."""
+    from dbf_bridge.importer import writer as importer_writer
+    from dbf_bridge.importer.writer import ReconstructionError
+
+    source = _varchar_fixture(tmp_path)
+    exported = tmp_path / "exp-fail"
+    assert export_dbf(source, exported, formats=("jsonl",), overwrite=True).ok == 1
+    rebuilt = tmp_path / "reb-fail"
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise ReconstructionError("simulated Varchar layout repair failure")
+
+    monkeypatch.setattr(
+        importer_writer, "_repair_varchar_logical_layout", _explode
+    )
+    result = _reconstruct(exported, rebuilt)
+    assert result.failed == 1
+    table_result = result.results[0]
+    assert {detail.code for detail in table_result.error_details} == {
+        "RECONSTRUCTION_FAILED"
+    }
+    # atomic publish boundary: no final DBF/FPT and no staging residue
+    assert not (rebuilt / "varchar.dbf").exists()
+    assert not (rebuilt / "varchar.fpt").exists()
+    assert list(rebuilt.rglob("*.partial*")) == []
+    assert list(rebuilt.rglob(".*partial*")) == []
+    assert list(rebuilt.rglob(".*raw-layout*")) == []
 
 
 # ---------------------------------------------------------------------------
