@@ -16,6 +16,7 @@ the logical value is NULL regardless of the stored bytes).
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -23,12 +24,15 @@ import pytest
 import vfp_fixture_factory as factory
 
 from dbf_bridge import export_dbf, reconstruct_dbf
+from dbf_bridge.core import nullflags
 from dbfbridge import (
     DbfHeaderInvalidError,
     DbfRecordInvalidError,
     ErrorCode,
     inspect_table,
+    iter_raw_records,
     iter_records,
+    read_schema,
 )
 
 
@@ -355,3 +359,236 @@ def test_vfp_varchar_null_record_reconstruction_is_a_known_gap(tmp_path: Path) -
     assert any("Canonical checksum mismatch" in message for message in report.errors)
     # No residue: only the report is published for the failed table.
     assert not list(rebuilt.rglob("*.partial"))
+
+
+# ---------------------------------------------------------------------------
+# configured text policy: encodings through the parser instance
+# ---------------------------------------------------------------------------
+
+
+def test_vfp_varchar_cp1250_polish_text_reads_exact_unicode(tmp_path: Path) -> None:
+    """Varchar payload with real Polish characters, header driver 0xC8
+    (cp1250): the configured text policy decodes the exact Unicode."""
+    polish = "Żółw ąęłóń"
+    source = factory.build_vfp32_table(
+        tmp_path / "pl.dbf",
+        columns=[{"name": "TX", "type": "V", "width": 16, "nullable": True}],
+        rows=[{"TX": polish}],
+        codepage=0xC8,
+    )
+    assert read_schema(source).encoding == "cp1250"
+    explicit = next(iter(iter_records(source, encoding="cp1250")))
+    assert explicit.values["TX"] == polish
+    auto = next(iter(iter_records(source)))  # driver byte resolves cp1250 too
+    assert auto.values["TX"] == polish
+
+
+def test_vfp_varchar_cp852_encoding_reads_exact_unicode(tmp_path: Path) -> None:
+    """Varchar with cp852 (DOS Latin-2) payload, header driver 0x23: an
+    explicit ``encoding="cp852"`` override decodes the exact Unicode."""
+    text = "zażółć gęślą jaźń"
+    source = factory.build_vfp32_table(
+        tmp_path / "cp852.dbf",
+        columns=[{"name": "TX", "type": "V", "width": 20, "nullable": True}],
+        rows=[{"TX": text}],
+        codepage=0x23,
+    )
+    assert read_schema(source).encoding == "cp852"
+    record = next(iter(iter_records(source, encoding="cp852")))
+    assert record.values["TX"] == text
+
+
+def test_vfp_varchar_mazovia_encoding_reads_exact_unicode(tmp_path: Path) -> None:
+    """Varchar with historical Mazovia payload, header driver 0x69 (the
+    Mazovia language driver): both the honest auto path and the explicit
+    override decode the exact Unicode."""
+    text = "łódź żółw"
+    source = factory.build_vfp32_table(
+        tmp_path / "maz.dbf",
+        columns=[{"name": "TX", "type": "V", "width": 12, "nullable": True}],
+        rows=[{"TX": text}],
+        codepage=0x69,
+    )
+    assert read_schema(source).encoding == "mazovia"
+    explicit = next(iter(iter_records(source, encoding="mazovia")))
+    assert explicit.values["TX"] == text
+    auto = next(iter(iter_records(source)))
+    assert auto.values["TX"] == text
+
+
+def test_vfp_varchar_undecodable_bytes_raise_typed_text_error(tmp_path: Path) -> None:
+    """Undecodable logical Varchar bytes raise the typed
+    ``TEXT_DECODE_ERROR`` with a JSON-safe field/record/encoding context —
+    never a raw ``UnicodeDecodeError`` on the public boundary."""
+    source = _varchar_table(tmp_path, [{"TX": "abc"}])
+    data = bytearray(source.read_bytes())
+    header_length, _record_length, _count = factory.dbf_layout(source)
+    data[header_length + 1] = 0x88  # undefined in cp1250
+    source.write_bytes(bytes(data))
+
+    from dbfbridge import TextDecodeError
+
+    with pytest.raises(TextDecodeError) as error:
+        next(iter_records(source, encoding="cp1250"))
+    payload = error.value.to_dict()
+    json.dumps(payload, allow_nan=False)
+    assert payload["context"]["field"] == "TX"
+    assert payload["context"]["record_index"] == 0
+    assert payload["context"]["encoding"] == "cp1250"
+
+
+# ---------------------------------------------------------------------------
+# configured loss-aware migration policy (the decisive parser-policy case)
+# ---------------------------------------------------------------------------
+
+
+def test_vfp_varchar_migration_fallback_keeps_raw_bytes(tmp_path: Path) -> None:
+    """THE parser-policy regression: cp852 bytes in a cp1250-declared table
+    distinguish the configured loss-aware export parser from a plain
+    ``bytes.decode(primary)``.
+
+    - Direct Read with the default strict policy: typed ``TEXT_DECODE_ERROR``
+      (core stays policy-neutral);
+    - an explicit ``encoding="cp852"`` read decodes the exact value;
+    - migration applies the configured export parser policy: the Polish
+      fallback produces the exact logical Unicode AND retains the original
+      raw bytes, which surface in JSONL under
+      ``__dbfbridge_raw_text_fields__``.
+    """
+    from dbf_bridge.exporter.serialization import RAW_TEXT_FIELDS_KEY
+    from dbfbridge import TextDecodeError
+
+    polish = "łódź"
+    cp852_bytes = polish.encode("cp852")
+    with pytest.raises(UnicodeDecodeError):
+        cp852_bytes.decode("cp1250")  # sanity: the payload NEEDS a fallback
+
+    source = factory.build_vfp32_table(
+        tmp_path / "fallback.dbf",
+        columns=[{"name": "TX", "type": "V", "width": 10, "nullable": True}],
+        rows=[{"TX": cp852_bytes}],  # raw cp852 bytes, header driver 0xC8
+    )
+
+    with pytest.raises(TextDecodeError):
+        next(iter_records(source))  # default strict policy stays honest
+
+    assert next(iter(iter_records(source, encoding="cp852"))).values["TX"] == polish
+
+    export_dir = tmp_path / "export"
+    result = export_dbf(source, export_dir, formats=("jsonl",), overwrite=True)
+    result.raise_for_errors()
+    entry = json.loads((export_dir / "fallback.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert entry["TX"] == polish  # exact logical Unicode via the fallback policy
+    assert base64.b64decode(entry[RAW_TEXT_FIELDS_KEY]["TX"]) == cp852_bytes
+
+
+# ---------------------------------------------------------------------------
+# raw forensic + projection contracts on the authentic Varchar fixture
+# ---------------------------------------------------------------------------
+
+
+def test_vfp_varchar_raw_forensic_stream_is_parser_free(tmp_path: Path) -> None:
+    """``iter_raw_records`` never decodes: on a Varchar fixture whose text
+    bytes are undecodable, the forensic stream still yields the exact
+    physical record with an empty values mapping and no file residue."""
+    source = _varchar_table(tmp_path, [{"TX": "abc"}])
+    data = bytearray(source.read_bytes())
+    header_length, record_length, _count = factory.dbf_layout(source)
+    data[header_length + 1] = 0x88  # undecodable in the declared cp1250
+    source.write_bytes(bytes(data))
+
+    fingerprint_before = factory.directory_fingerprint(tmp_path)
+    raw = next(iter(iter_raw_records(source)))
+    assert dict(raw.values) == {}
+    assert raw.raw_record == data[header_length : header_length + record_length]
+    assert factory.directory_fingerprint(tmp_path) == fingerprint_before
+
+
+def test_vfp_varchar_projection_does_not_decode_other_columns(tmp_path: Path) -> None:
+    """Selecting another column never decodes the Varchar: unselected fields
+    stay unparsed, while the bitmap bytes of the already-read physical frame
+    remain available for the selected NULL semantics."""
+    source = factory.build_vfp32_table(
+        tmp_path / "proj.dbf",
+        columns=[
+            {"name": "ID", "type": "N", "width": 4, "nullable": True},
+            {"name": "TX", "type": "V", "width": 12, "nullable": True},
+        ],
+        rows=[{"ID": 7, "TX": "abc  "}],
+    )
+    projected = list(iter_records(source, fields=["ID"]))
+    assert [record.values["ID"] for record in projected] == [7]
+    assert "TX" not in projected[0].values
+    assert "_NullFlags" not in projected[0].values  # projection stays selective
+    # The hidden bitmap is a real system column: explicitly selectable, and
+    # its raw bytes are always available inside the already-read frame for
+    # the selected NULL/varlength semantics.
+    explicit = list(iter_records(source, fields=["_NullFlags"]))
+    assert isinstance(explicit[0].values["_NullFlags"], (bytes, bytearray))
+
+
+# ---------------------------------------------------------------------------
+# _NullFlags structural hardening
+# ---------------------------------------------------------------------------
+
+
+class _StubField:
+    def __init__(self, name: str, dbf_type: str, flags: int, length: int = 1) -> None:
+        self.name = name
+        self.dbf_type = dbf_type
+        self.flags = flags
+        self.length = length
+
+
+def test_nullflags_duplicate_bitmap_column_is_typed_invalid() -> None:
+    """Two type-0 bitmap columns cannot be trusted as THE control structure:
+    typed ``DBF_HEADER_INVALID``."""
+    fields = [
+        _StubField("TX", "V", 0x02),
+        _StubField("_NullFlags", "0", 0x05),
+        _StubField("_NullFlags2", "0", 0x05),
+    ]
+    with pytest.raises(DbfHeaderInvalidError):
+        nullflags.build_nullflags_layout(fields)
+
+
+def test_nullflags_non_system_bitmap_column_is_typed_invalid() -> None:
+    """A type-0 column without the VFP system flag (0x01) is not a
+    trustworthy ``_NullFlags`` structure: typed ``DBF_HEADER_INVALID``."""
+    fields = [
+        _StubField("TX", "V", 0x02),
+        _StubField("FLAGS", "0", 0x04),  # binary but not SYSTEM
+    ]
+    with pytest.raises(DbfHeaderInvalidError):
+        nullflags.build_nullflags_layout(fields)
+
+
+def test_nullflags_accepts_one_shot_iterable() -> None:
+    """The layout builder materializes its input exactly once: a one-shot
+    generator produces the identical layout as the equivalent list."""
+    as_list = [
+        _StubField("V1", "V", 0x02),
+        _StubField("C1", "C", 0x02),
+        _StubField("_NullFlags", "0", 0x05),
+    ]
+    from_list = nullflags.build_nullflags_layout(as_list)
+    from_generator = nullflags.build_nullflags_layout(
+        _StubField(field.name, field.dbf_type, field.flags) for field in as_list
+    )
+    assert from_list is not None and from_generator is not None
+    assert from_generator.field_name == from_list.field_name == "_NullFlags"
+    assert from_generator.varlength_bits == from_list.varlength_bits == {"V1": 0}
+    assert from_generator.null_bits == from_list.null_bits == {"V1": 1, "C1": 2}
+
+
+def test_nullflags_single_system_bitmap_is_accepted() -> None:
+    """Happy path: exactly one system-flagged bitmap column."""
+    layout = nullflags.build_nullflags_layout(
+        [
+            _StubField("TX", "V", 0x02),
+            _StubField("_NullFlags", "0", 0x05),
+        ]
+    )
+    assert layout is not None
+    assert layout.varlength_bits == {"TX": 0}
+    assert layout.null_bits == {"TX": 1}

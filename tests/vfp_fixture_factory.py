@@ -266,7 +266,7 @@ def directory_fingerprint(directory: Path) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 VFP_BACKLINK_SIZE = 263
-_TEXT_ENCODING = {0xC8: "cp1250", 0x01: "cp437"}
+_TEXT_ENCODING = {0xC8: "cp1250", 0x23: "cp852", 0x69: "mazovia", 0x01: "cp437"}
 
 
 def build_vfp32_table(
@@ -305,6 +305,12 @@ def build_vfp32_table(
     encoding_name = _TEXT_ENCODING.get(codepage)
     if encoding_name is None:
         raise ValueError(f"unsupported fixture codepage {codepage:#x}")
+    if encoding_name == "mazovia":
+        # The historical Polish OEM codec is registered on demand by the
+        # library; the fixture builder needs it for deterministic encoding.
+        from dbf_bridge.core.codecs import _ensure_encoding_available
+
+        _ensure_encoding_available("mazovia")
 
     # ---- bit allocation (documented VFP contract, field order) ----
     bit_specs: list[tuple[str, str]] = []  # (owner field, "varlength" | "null")
