@@ -168,6 +168,16 @@ def build_parser() -> argparse.ArgumentParser:
             "żądane wyniki są zgodne z conversion_checksums.json."
         ),
     )
+    parser.add_argument(
+        "--raw-mode",
+        choices=["none", "metadata", "full-record"],
+        default="full-record",
+        help=(
+            "Poziom retencji surowych danych w formatach JSONL/JSON: "
+            "'full-record' (domyślnie) zachowuje pełny fizyczny obraz rekordu, "
+            "'metadata' pomija obrazy rekordów, 'none' pomija też fizyczne nagłówki w schemacie."
+        ),
+    )
     return parser
 
 
@@ -237,6 +247,7 @@ def _export_one(
     progress: bool,
     tables: list[DiscoveredTable] | None = None,
     console: bool = True,
+    raw_mode: str = "full-record",
     progress_callback: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[int, list[TableResult]]:
     try:
@@ -252,6 +263,7 @@ def _export_one(
             strip_spaces=strip_spaces,
             validate=validate,
             overwrite=overwrite,
+            raw_mode=raw_mode,  # type: ignore[arg-type]
         )
     except ConfigError as exc:
         if not console:
@@ -589,6 +601,7 @@ def _incremental_signature(
     missing_memo: str,
     validate: bool,
     xlsx_long_text: str,
+    raw_mode: str,
 ) -> dict[str, object]:
     return {
         "output_compatibility_version": OUTPUT_COMPATIBILITY_VERSION,
@@ -604,6 +617,7 @@ def _incremental_signature(
         "missing_memo_policy": missing_memo,
         "validation_enabled": validate,
         "xlsx_long_text_policy": xlsx_long_text,
+        "raw_mode": raw_mode,
     }
 
 
@@ -640,6 +654,7 @@ def run_export(
     incremental: bool,
     console: bool,
     show_progress: bool = False,
+    raw_mode: str = "full-record",
     progress_callback: Callable[[ProgressEvent], None] | None = None,
 ) -> ExportRunResult:
     started_at = datetime.now(timezone.utc)
@@ -658,6 +673,7 @@ def run_export(
         strip_spaces=strip_spaces,
         validate=validate,
         overwrite=overwrite,
+        raw_mode=raw_mode,  # type: ignore[arg-type]
     )
     output.mkdir(parents=True, exist_ok=True)
     requested_formats = list(formats)
@@ -683,6 +699,7 @@ def run_export(
         missing_memo=missing_memo,
         validate=validate,
         xlsx_long_text=xlsx_long_text,
+        raw_mode=raw_mode,
     )
     result_formats = ["jsonl", *(fmt for fmt in requested_formats if fmt != "jsonl")]
     source_root = _source_root(source)
@@ -738,6 +755,7 @@ def run_export(
         progress=show_progress,
         tables=tables_to_convert,
         console=console,
+        raw_mode=raw_mode,
         progress_callback=progress_callback,
     )
     overall_errors = max(overall_errors, code)
@@ -855,6 +873,7 @@ def main(argv: list[str] | None = None) -> int:
             validate=args.validate,
             xlsx_long_text=args.xlsx_long_text,
             incremental=args.incremental,
+            raw_mode=args.raw_mode,
             console=True,
             show_progress=args.progress,
         )

@@ -17,7 +17,13 @@ from typing import Any
 
 
 class ErrorCode(str, enum.Enum):
-    """Stable machine codes for direct read failures."""
+    """Stable machine codes for direct read failures.
+
+    The vocabulary is shared with the high-level public operations:
+    ``OPTIONAL_DEPENDENCY_MISSING``, ``OUTPUT_EXISTS``, ``RECONSTRUCTION_FAILED``,
+    ``ROUNDTRIP_MISMATCH`` and ``OPERATION_FAILED`` extend it additively so the
+    whole codebase classifies failures through ONE canonical set of codes.
+    """
 
     PATH_NOT_FOUND = "PATH_NOT_FOUND"
     DBF_HEADER_INVALID = "DBF_HEADER_INVALID"
@@ -33,6 +39,11 @@ class ErrorCode(str, enum.Enum):
     FIELD_PROJECTION_INVALID = "FIELD_PROJECTION_INVALID"
     FIELD_TYPE_UNSUPPORTED = "FIELD_TYPE_UNSUPPORTED"
     READ_CANCELLED = "READ_CANCELLED"
+    OPTIONAL_DEPENDENCY_MISSING = "OPTIONAL_DEPENDENCY_MISSING"
+    OUTPUT_EXISTS = "OUTPUT_EXISTS"
+    RECONSTRUCTION_FAILED = "RECONSTRUCTION_FAILED"
+    ROUNDTRIP_MISMATCH = "ROUNDTRIP_MISMATCH"
+    OPERATION_FAILED = "OPERATION_FAILED"
 
 
 def _json_safe(value: Any) -> Any:
@@ -191,6 +202,166 @@ class ReadCancelledError(DirectReadError):
     code = ErrorCode.READ_CANCELLED
 
 
+@dataclasses.dataclass(frozen=True)
+class OperationError:
+    """Structured, machine-readable description of one public failure.
+
+    This is the single neutral payload model shared by every high-level
+    operation (export, reconstruction, verification, quality).  It never
+    replaces the human-readable ``str`` fields of existing result objects —
+    it is the additive machine contract so callers (including the MCP
+    toolchain) can classify a failure from ``code`` alone, without parsing
+    the English message.
+    """
+
+    code: str
+    message: str
+    operation: str | None = None
+    path: str | os.PathLike[str] | None = None
+    table: str | None = None
+    context: Mapping[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-safe payload (``json.dumps`` never raises)."""
+        path = _json_safe(self.path)
+        if isinstance(path, str) and os.sep != "/":
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                path = Path(path).as_posix()
+        return {
+            "code": self.code,
+            "message": self.message,
+            "operation": self.operation,
+            "path": path,
+            "table": self.table,
+            "context": _json_safe(dict(self.context)) if self.context else {},
+        }
+
+
+def _operation_error_code(code: ErrorCode | str) -> str:
+    return code.value if isinstance(code, ErrorCode) else str(code)
+
+
+class _OperationErrorMixin(Exception):
+    """Shared payload behaviour for public-boundary operation exceptions.
+
+    Subclasses keep their historical builtin superclass (``ValueError``,
+    ``FileNotFoundError``, ``FileExistsError``) so existing
+    ``isinstance`` checks continue to work, and additionally expose the
+    machine contract: a stable ``code`` and a JSON-safe ``to_dict()``.
+    """
+
+    error: OperationError
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ErrorCode | str,
+        operation: str | None = None,
+        path: str | os.PathLike[str] | None = None,
+        table: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.error = OperationError(
+            code=_operation_error_code(code),
+            message=message,
+            operation=operation,
+            # POSIX form for transport stability (matches DirectReadError).
+            path=Path(path).as_posix() if path is not None else None,
+            table=table,
+            context=context,
+        )
+
+    @property
+    def code(self) -> str:
+        return self.error.code
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.error.to_dict()
+
+
+class OperationArgumentError(_OperationErrorMixin, ValueError):
+    """A public operation received an invalid argument (``ARGUMENT_INVALID``).
+
+    Subclasses :class:`ValueError` for backward compatibility with callers
+    that previously caught the bare ``ValueError`` raised at the public
+    boundary.
+    """
+
+    default_code = ErrorCode.ARGUMENT_INVALID
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=type(self).default_code,
+            operation=operation,
+            context=context,
+        )
+
+
+class OperationPathError(_OperationErrorMixin, FileNotFoundError):
+    """A public operation received a missing path (``PATH_NOT_FOUND``).
+
+    Subclasses :class:`FileNotFoundError` for backward compatibility with
+    callers that previously caught the bare ``FileNotFoundError``.
+    """
+
+    default_code = ErrorCode.PATH_NOT_FOUND
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        path: str | os.PathLike[str] | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=type(self).default_code,
+            operation=operation,
+            path=path,
+            context=context,
+        )
+
+
+class OperationOutputExistsError(_OperationErrorMixin, FileExistsError):
+    """A write operation refused to overwrite an existing output
+    (``OUTPUT_EXISTS``).
+
+    Subclasses :class:`FileExistsError` so callers that previously caught
+    the codeless internal error keep working.
+    """
+
+    default_code = ErrorCode.OUTPUT_EXISTS
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        path: str | os.PathLike[str] | None = None,
+        table: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=type(self).default_code,
+            operation=operation,
+            path=path,
+            table=table,
+            context=context,
+        )
+
+
 __all__ = [
     "ArgumentInvalidError",
     "DbfFormatUnsupportedError",
@@ -206,6 +377,10 @@ __all__ = [
     "FieldTypeUnsupportedError",
     "FptInvalidError",
     "FptRequiredMissingError",
+    "OperationArgumentError",
+    "OperationError",
+    "OperationOutputExistsError",
+    "OperationPathError",
     "ReadCancelledError",
     "TextDecodeError",
 ]

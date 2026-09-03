@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..core.errors import OperationError
 from ..core.fields import FIELD_TYPE_NAMES as DBF_FIELD_TYPE_NAMES
 
 ExportFormat = Literal["jsonl", "csv", "json"]
@@ -14,6 +15,18 @@ DeletedPolicy = Literal["skip", "separate", "include"]
 MissingMemoPolicy = Literal["fail", "null-with-warning"]
 MemoPolicy = Literal["skip", "inline", "null"]
 TableStatus = Literal["OK", "WARNING", "SKIPPED", "FAILED", "UNSUPPORTED"]
+#: Explicit raw-retention level for the migration export (architecture §7).
+#:
+#: - ``full-record`` — forensic mode (default): keeps the per-record raw
+#:   physical record image (``__dbfbridge_raw_record__``) and the full
+#:   schema-level structural metadata, exactly as historical releases did;
+#: - ``metadata`` — keeps logical values plus the full schema-level
+#:   structural metadata, but omits per-record raw record images;
+#: - ``none`` — keeps logical values and the loss-aware text fallback, but
+#:   omits per-record raw record images **and** the replay-only physical
+#:   header blobs (``dbf.header_base64`` / ``memo.header_base64``) from the
+#:   schema.
+RawMode = Literal["none", "metadata", "full-record"]
 
 
 @dataclass(frozen=True)
@@ -29,6 +42,7 @@ class ExportConfig:
     strip_spaces: bool = False
     validate: bool = True
     overwrite: bool = False
+    raw_mode: RawMode = "full-record"
 
 
 @dataclass(frozen=True)
@@ -230,6 +244,10 @@ class TableResult:
     size_bytes: int | None = None
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    #: Machine-readable per-table failure details (additive to ``errors``);
+    #: each entry classifies the failure by stable code without any message
+    #: parsing.
+    error_details: list[OperationError] = field(default_factory=list)
     schema: str | None = None
     schema_sha256: str | None = None
     deleted_output: str | None = None
@@ -268,4 +286,5 @@ class TableResult:
             "elapsed_seconds": self.elapsed_seconds,
             "warnings": self.warnings,
             "errors": self.errors,
+            "error_details": [detail.to_dict() for detail in self.error_details],
         }

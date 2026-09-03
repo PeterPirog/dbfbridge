@@ -9,6 +9,7 @@ from .models import (
     ExportFormat,
     MemoPolicy,
     MissingMemoPolicy,
+    RawMode,
 )
 
 
@@ -29,6 +30,7 @@ def make_config(
     strip_spaces: bool = False,
     validate: bool = True,
     overwrite: bool = True,
+    raw_mode: RawMode = "full-record",
 ) -> ExportConfig:
     encoding_override = None if encoding == "auto" else encoding
     config = ExportConfig(
@@ -43,12 +45,18 @@ def make_config(
         strip_spaces=strip_spaces,
         validate=validate,
         overwrite=overwrite,
+        raw_mode=raw_mode,
     )
     validate_config(config)
     return config
 
 
 def validate_config(config: ExportConfig) -> None:
+    if config.raw_mode not in {"none", "metadata", "full-record"}:
+        raise ConfigError(
+            "raw_mode must be one of: none, metadata, full-record "
+            f"(got {config.raw_mode!r})."
+        )
     source = config.source.resolve(strict=True)
     if not source.is_dir() and not (source.is_file() and source.suffix.lower() == ".dbf"):
         raise ConfigError(f"Source path is not a directory or DBF file: {config.source}")
