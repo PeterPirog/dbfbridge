@@ -213,15 +213,6 @@ def _memo_free_open(path: Path, schema: Mapping[str, Any], encoding: str) -> DBF
     )
 
 
-def _schema_nullflags_layout(schema: Mapping[str, Any]) -> Any:
-    """Canonical ``_NullFlags`` layout from schema field mappings.
-
-    Delegates to the single allocation engine in ``core.nullflags`` — the
-    importer never reimplements which bit means NULL.
-    """
-    return build_nullflags_layout(schema.get("fields") or [])
-
-
 def checksum_dbf(path: Path, schema: dict[str, Any]) -> CanonicalChecksum:
     encoding = schema.get("text_encoding", {}).get("declared_or_detected_encoding") or "cp1250"
     checksum = CanonicalChecksum(schema)
