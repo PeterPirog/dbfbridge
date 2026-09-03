@@ -44,6 +44,7 @@ from .header import (
     memo_companion_format,
     parse_header,
 )
+from .nullflags import NullFlagsLayout, build_nullflags_layout
 
 #: Supported memo read policies.
 MEMO_POLICIES: tuple[str, ...] = ("lazy", "inline", "null", "skip")
@@ -249,6 +250,9 @@ class _RecordRequest:
     memo_path: Path | None
     #: Companion format implied by the DBF version (FPT/DBT/SMT/None).
     memo_format: str | None
+    #: VFP ``_NullFlags`` bit layout (computed once per request; ``None``
+    #: when the table needs no bitmap).  Applied by the single physical loop.
+    nullflags_layout: NullFlagsLayout | None = None
 
 
 def _as_dbf_path(path: str | os.PathLike[str]) -> Path:
@@ -397,6 +401,12 @@ def _prepare(
     else:  # real inline with memo fields: parse through the opened memo file
         parse_set = selected
 
+    # VFP _NullFlags bitmap layout: computed once per request from the
+    # canonical header (O(1) per record downstream; no extra source pass).
+    # Raises a typed DbfHeaderInvalidError for structurally inconsistent
+    # tables (flags needed but the bitmap column missing/too short).
+    nullflags_layout = build_nullflags_layout(header.fields)
+
     return _RecordRequest(
         dbf_path=dbf_path,
         encoding=header.encoding,
@@ -414,6 +424,7 @@ def _prepare(
         strict_memo_open=strict_memo_open,
         memo_path=memo_path,
         memo_format=memo_format,
+        nullflags_layout=nullflags_layout,
     )
 
 
@@ -633,6 +644,7 @@ def _stream_records(
         use_memofile=request.use_memofile,
         start_index=start_index,
         skip_deleted_parse=not request.include_deleted,
+        nullflags_layout=request.nullflags_layout,
     )
     try:
         if progress is None and cancel_check is None:

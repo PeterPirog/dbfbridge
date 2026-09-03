@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from dbfread import DBF, MissingMemoFile
 from dbfread.codepages import codepages
@@ -118,7 +119,14 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
         )
         raise UnsupportedTableError(details)
 
-    table = open_table(discovered.source_path, config, resolved_encoding=raw.encoding)
+    table = open_table(
+        discovered.source_path,
+        config,
+        resolved_encoding=raw.encoding,
+        # Only a table with true memo fields legitimately requires the FPT
+        # companion (a VFP B double is inline data, not a memo pointer).
+        require_memo_file=any(field.is_memo for field in raw.fields),
+    )
     fields = raw.fields
     warnings: list[str] = []
     if config.decode_errors in {"ignore", "replace"}:
@@ -176,7 +184,11 @@ def read_table_metadata(discovered: DiscoveredTable, config: ExportConfig) -> Ta
 
 
 def open_table(
-    dbf_path: Path, config: ExportConfig, *, resolved_encoding: str | None = None
+    dbf_path: Path,
+    config: ExportConfig,
+    *,
+    resolved_encoding: str | None = None,
+    require_memo_file: bool = True,
 ) -> DBF:
     """Open a table for export (delegates to the shared core backend).
 
@@ -185,25 +197,44 @@ def open_table(
     is passed to ``dbfread`` explicitly so it does not fall back to ASCII for
     driver bytes it does not know.  The Polish fallback field parser keeps the
     historical export behaviour.
+
+    ``require_memo_file=False`` suppresses dbfread's memo-companion check at
+    table construction.  dbfread treats a ``B`` field as a memo pointer
+    unconditionally, but in a Visual FoxPro table a ``B`` column is an inline
+    8-byte double — a table without any real memo field must therefore open
+    cleanly without an FPT companion (the core header classification already
+    separates true memo fields from inline VFP doubles).
     """
     return core_backend.dbfread_backend.open_table(
         dbf_path,
         encoding=config.encoding or resolved_encoding,
         parserclass=LosslessFieldParser,
         char_decode_errors=config.decode_errors,
-        ignore_missing_memofile=config.missing_memo == "null-with-warning",
+        ignore_missing_memofile=(
+            config.missing_memo == "null-with-warning" or not require_memo_file
+        ),
     )
 
 
-def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool, bytes]]:
+def iter_physical_records(
+    table: DBF, nullflags_layout: Any | None = None
+) -> Iterator[tuple[object, bool, bytes]]:
     """Stream physical records through the shared core backend loop.
 
     Yields ``(record, is_deleted, raw_record)`` exactly as before — the
     physical/decoded iteration itself lives in ``dbf_bridge.core.backend``
     (one record loop in the codebase, dbfread as the reference backend).
+
+    ``nullflags_layout`` carries the VFP ``_NullFlags`` bit layout so NULL
+    values resolve to ``None`` and variable-length Varchar payloads keep
+    their exact logical value (including significant trailing spaces).
     """
     for frame in core_backend.dbfread_backend.iter_physical_records(
-        table, projection=None, keep_raw=True, use_memofile=True
+        table,
+        projection=None,
+        keep_raw=True,
+        use_memofile=True,
+        nullflags_layout=nullflags_layout,
     ):
         yield table.recfactory(frame.items), frame.deleted, frame.raw  # type: ignore[arg-type]
 
