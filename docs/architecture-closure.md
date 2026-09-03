@@ -4,6 +4,8 @@
 **Audit baseline:** `main` = `c84a611aac6e7beb4a48f5044e62c6a7d10aefeb` (PR #14 merged), branch `audit/1.0-architecture-closure`.
 **Audit date:** 2026-09-03. **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
 
+Exact test evidence (verified from CI logs): `main`/audit-branch suite = **432 passed, 1 skipped (433 collected)** (CI 33772195304); `release/0.3.0` = exact-head release CI SUCCESS (454 passed, 2 skipped, release CI 33756842901).
+
 ## Status definitions
 
 ```text
@@ -65,14 +67,14 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
 | R-01 | §1 | Standalone Python library; single DBF/FPT implementation; no copy into `mcp-vfp9sp2-toolchain` | CLOSED_FROZEN | Single implementation in `src/dbf_bridge/`; `src/dbfbridge/` is a lazy alias package | `tests/test_public_api.py::test_distribution_import_exposes_the_documented_api` | none | NO | none | — |
-| R-02 | §1 | Loss-aware engine capability set (inspect / schema / direct read / raw metadata / migration / reconstruction / verification) | CLOSED_FROZEN | Public API exposes all six capability areas | 456-test suite green on `main`/release | none | NO | none | — |
+| R-02 | §1 | Loss-aware engine capability set (inspect / schema / direct read / raw metadata / migration / reconstruction / verification) | CLOSED_FROZEN | Public API exposes all six capability areas | exact-head CI 33772195304: 432 passed, 1 skipped (433 collected) | none | NO | none | — |
 | R-03 | §1 | Two consumer classes: PyPI users; MCP `PURE_READ` backend without VFP | CLOSED_FROZEN | `core/` reads via `dbfread` only; no COM/VFP/network imports (`git grep` evidence) | CI (Ubuntu 3.10–3.14 + Windows 3.12) runs without any VFP runtime | none | NO | none | — |
 
 ### §2 Assets
 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
-| R-04 | §2 | Project assets preserved (streaming dbfread, VFP/FPT metadata, Polish codepages, deleted distinction, memo policies, atomic output, JSONL, raw metadata, SHA256/validation/diagnostics, schema-driven reconstruction, typed API, progress, incremental, honest CDX) | CLOSED_FROZEN | All assets present after PR #13/#14; CHANGELOG 0.2→0.3 records each | 456 tests green; `docs/compatibility-vfp.md` evidence matrix | none | NO | none | — |
+| R-04 | §2 | Project assets preserved (streaming dbfread, VFP/FPT metadata, Polish codepages, deleted distinction, memo policies, atomic output, JSONL, raw metadata, SHA256/validation/diagnostics, schema-driven reconstruction, typed API, progress, incremental, honest CDX) | CLOSED_FROZEN | All assets present after PR #13/#14; CHANGELOG 0.2→0.3 records each | 432 passed / 1 skipped green on `main`; release exact-head CI SUCCESS (454 passed, 2 skipped, verified from release CI 33756842901) | none | NO | none | — |
 
 ### §4 Package layers
 
@@ -392,7 +394,7 @@ Exact evidence:
 - **Why this blocks 1.0:** §20 defines 1.0 as *stable API*; the MCP consumer contract (§17: *"Toolchain mapuje te kody na własny `OperationResult` bez parsowania tekstu błędu"*) is not met for every high-level failure.
 - **Acceptance criteria:** (1) every §17-required failure is distinguishable from the public boundary by a machine code without parsing the message; (2) argument/path failures map to `ARGUMENT_INVALID`/`PATH_NOT_FOUND`; (3) output conflicts expose `OUTPUT_EXISTS`; (4) reconstruction/round-trip failures expose `RECONSTRUCTION_FAILED`/`ROUNDTRIP_MISMATCH` reasons; (5) all run-level results and the public run error expose JSON-safe serialization; (6) existing behaviour (statuses, text errors, exception types) stays backward-compatible — structured fields are additive; (7) a dedicated test classifies a representative set of failures from structured payloads alone (no message text).
 - **Files likely involved:** `src/dbf_bridge/api.py`, `api_models.py`, `core/errors.py` (vocabulary only), `exporter/writer.py`, `exporter/models.py`, `importer/reconstruct.py`, `importer/models.py`, `importer/writer.py`, `verifier.py`, `quality.py`.
-- **Tests required:** typed-error unit tests per public operation; machine-classification test; run-result `to_dict` JSON round-trip tests; backward-compat regression suite (456 tests stay green).
+- **Tests required:** typed-error unit tests per public operation; machine-classification test; run-result `to_dict` JSON round-trip tests; backward-compat regression suite (432 passed / 1 skipped stays green).
 - **Target macro PR:** Macro A.
 
 ### BLK-02 — MIGRATION RAW-MODE SPLIT (P1)
@@ -503,7 +505,7 @@ The following areas are **CLOSED_FROZEN** as of `main` `c84a611`. Future prompts
 
 ## 15. Validation (§51)
 
-- `python -m pytest -q`: **456 passed** (docs-only branch; suite unchanged).
+- `python -m pytest -q`: **432 passed, 1 skipped (433 collected)** — exact-head CI 33772195304 (docs-only branch; suite unchanged).
 - `python -m ruff check src tests benchmarks examples scripts`: clean.
 - `git diff --check`: clean.
 - No new performance baseline created; canonical hashes verified unchanged.
