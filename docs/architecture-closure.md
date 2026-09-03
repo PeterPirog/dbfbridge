@@ -1,6 +1,6 @@
 # dbfbridge 1.0 Architecture Closure Matrix
 
-**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-120019).md` (immutable upstream document; this file is the working repository status and does not replace it).
+**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md` (immutable upstream document; this file is the working repository status and does not replace it).
 **Audit baseline:** `main` = `c84a611aac6e7beb4a48f5044e62c6a7d10aefeb` (PR #14 merged) → closure-audit merge `61042944873899735edffe6acf7def01cc1053b1` (PR #15) → Macro A branch `feat/1.0-public-contract-stabilization`.
 **Audit date:** 2026-09-03 (Macro A update same day). **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
 
@@ -284,9 +284,14 @@ Direct error model: `ErrorCode`, `DirectReadError`, `DbfPathError`, `DbfHeaderIn
 High-level structured error model (Macro A): `OperationError`, `OperationArgumentError`, `OperationPathError`, `OperationOutputExistsError`.
 Dependency boundary: `OptionalDependencyMissingError`. Metadata: `__version__`.
 
-### REVIEW_REQUIRED (contract hardening inside BLK-01, same root cause)
+### CONTRACT-RESOLVED (formerly REVIEW_REQUIRED — hardened by Macro A)
 
-`DBFBridgeRunError` (needs machine code + JSON-safe payload), and the un-exported-but-public check dataclasses `FileCheck`/`TableCheck` returned inside `VerificationRunResult.checks` (need serialization or structured replacement).
+Both former `REVIEW_REQUIRED` entries are resolved by BLK-01 (CLOSED_FROZEN) and now carry the structured machine contract:
+
+- `DBFBridgeRunError(RuntimeError)` — machine `code`, all underlying structured `details`, JSON-safe `to_dict()` (`tests/test_public_error_contract.py::test_run_error_payload_preserves_all_details`).
+- `FileCheck`/`TableCheck` — `to_dict()` serialization (`api_models.py::_check_to_dict` consumes them in `VerificationRunResult.to_dict()`; `test_run_level_results_are_json_safe`).
+
+They are classified as `STABLE_1_0_CANDIDATE` in the inventory below.
 
 ### COMPATIBILITY_ALIAS
 
@@ -414,7 +419,7 @@ Evidence: `tests/test_public_error_contract.py::test_mcp_machine_readable_classi
 
 ### §56 — finite numbered answer (after Macro A)
 
-If dbfbridge 1.0 were released today, this single **repository-controlled** fact would prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-120019).md`:
+If dbfbridge 1.0 were released today, this single **repository-controlled** fact would prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`:
 
 1. The 1.0 API stability/deprecation policy is not yet documented (§30) — **BLK-03**.
 
