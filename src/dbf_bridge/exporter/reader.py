@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from dbfread import DBF, MissingMemoFile
 from dbfread.codepages import codepages
@@ -215,15 +216,25 @@ def open_table(
     )
 
 
-def iter_physical_records(table: DBF) -> Iterator[tuple[object, bool, bytes]]:
+def iter_physical_records(
+    table: DBF, nullflags_layout: Any | None = None
+) -> Iterator[tuple[object, bool, bytes]]:
     """Stream physical records through the shared core backend loop.
 
     Yields ``(record, is_deleted, raw_record)`` exactly as before — the
     physical/decoded iteration itself lives in ``dbf_bridge.core.backend``
     (one record loop in the codebase, dbfread as the reference backend).
+
+    ``nullflags_layout`` carries the VFP ``_NullFlags`` bit layout so NULL
+    values resolve to ``None`` and variable-length Varchar payloads keep
+    their exact logical value (including significant trailing spaces).
     """
     for frame in core_backend.dbfread_backend.iter_physical_records(
-        table, projection=None, keep_raw=True, use_memofile=True
+        table,
+        projection=None,
+        keep_raw=True,
+        use_memofile=True,
+        nullflags_layout=nullflags_layout,
     ):
         yield table.recfactory(frame.items), frame.deleted, frame.raw  # type: ignore[arg-type]
 
