@@ -43,6 +43,7 @@ VARLENGTH_FIELD_TYPES = frozenset({"V", "Q"})
 NULLFLAGS_TYPE = "0"
 
 _NULLABLE_FLAG = 0x02
+_SYSTEM_FLAG = 0x01
 
 
 @dataclass(frozen=True)
@@ -74,22 +75,26 @@ def build_nullflags_layout(fields: Iterable[Any]) -> NullFlagsLayout | None:
     """Derive the ``_NullFlags`` bit layout from canonical field descriptors.
 
     *fields* are objects exposing ``name``, ``dbf_type``, and ``flags``
-    (core ``ParsedField`` or exporter ``FieldMetadata``).  Returns ``None``
+    (core ``ParsedField`` or exporter ``FieldMetadata``).  The iterable is
+    materialized once, so one-shot generators are accepted.  Returns ``None``
     when the table needs no bitmap (no ``V``/``Q`` and no NULLable field).
+
+    When a bitmap is needed, the table must carry exactly ONE type-``0``
+    candidate and that candidate must carry the VFP system flag (bit 0x01) —
+    anything else is a structurally untrustworthy control column.
 
     Raises:
         DbfHeaderInvalidError: when the table needs a bitmap (``V``/``Q``
             field or any NULLable field) but carries no type-``0`` system
-            column, or when the declared bitmap column is too short for the
+            column, carries more than one, carries one without the system
+            flag, or when the declared bitmap column is too short for the
             allocated bits.
     """
+    field_list = list(fields)
     descriptors = [
-        (field.name, field.dbf_type, bool(field.flags & _NULLABLE_FLAG)) for field in fields
+        (field.name, field.dbf_type, bool(field.flags & _NULLABLE_FLAG)) for field in field_list
     ]
-    bitmap_name = next(
-        (name for name, dbf_type, _nullable in descriptors if dbf_type == NULLFLAGS_TYPE),
-        None,
-    )
+    bitmap_candidates = [field for field in field_list if field.dbf_type == NULLFLAGS_TYPE]
     varlength_bits: dict[str, int] = {}
     null_bits: dict[str, int] = {}
     bit = 0
@@ -107,20 +112,30 @@ def build_nullflags_layout(fields: Iterable[Any]) -> NullFlagsLayout | None:
             bit += 1
     if bit == 0:
         return None
-    if bitmap_name is None:
+    # A table that needs NULL/varlength metadata must carry exactly one
+    # physically trustworthy bitmap column: a single type-0 field flagged as
+    # a VFP system field.
+    if len(bitmap_candidates) != 1:
         raise errors.DbfHeaderInvalidError(
-            "The table carries Varchar/Varbinary or NULLable fields but has no "
-            "_NullFlags system column (physical type 0) to hold their bits.",
+            "The table carries Varchar/Varbinary or NULLable fields but has "
+            f"{len(bitmap_candidates)} bitmap columns of physical type '0' "
+            "(exactly one is required).",
             path=None,
-            context={"allocated_bits": bit},
+            context={"bitmap_columns": len(bitmap_candidates), "allocated_bits": bit},
         )
+    bitmap_field = bitmap_candidates[0]
+    if not bitmap_field.flags & _SYSTEM_FLAG:
+        raise errors.DbfHeaderInvalidError(
+            f"The bitmap column {bitmap_candidates[0].name!r} (physical type 0) "
+            "lacks the VFP system flag (0x01); it is not trustworthy as the "
+            "_NullFlags control structure.",
+            path=None,
+            context={"field": bitmap_candidates[0].name},
+        )
+    bitmap_name = bitmap_candidates[0].name
     byte_count = (bit + 7) // 8
     declared_length = next(
-        (
-            field.length
-            for field in fields
-            if field.name == bitmap_name and field.dbf_type == NULLFLAGS_TYPE
-        ),
+        (field.length for field in field_list if field.name == bitmap_name),
         None,
     )
     if declared_length is not None and declared_length < byte_count:

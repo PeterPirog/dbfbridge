@@ -32,7 +32,7 @@ trip (canonical checksums are always checked first).
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `C` | Character | visible | decoded text | text | byte-identical | yes | yes (NULL bit) | no | `SUPPORTED` | existing suite + `tests/test_vfp_varchar.py::test_vfp_nullable_ordinary_fields_null_bit_reads_as_none` | NULLable columns carry the hidden `_NullFlags` column (see type `0`); genuinely NULL values read as `None` |
 | `C` + flags 0x04 | NOCPTRANS/binary Character | visible, classified `nocptrans=True`, `supported=False` + reason | typed `FIELD_TYPE_UNSUPPORTED` | per-table `UNSUPPORTED` | n/a | yes (exact bytes) | n/a | no | `RAW_ONLY` | `tests/test_vfp_type_matrix.py::test_binary_character_nocptrans_is_raw_readable_but_not_decoded` | dedicated binary C/V parser is an explicit non-goal; bytes never lost |
-| `V` | Varchar (0x32 dialect) | visible, `dbversion_name` "Varchar/Varbinary enabled" | exact value incl. significant trailing spaces; varlength + NULL bits honoured | exact logical value in JSONL | canonical match; raw byte identity is a tested gap (writer cannot yet rebuild the variable-length layout) | no (tested gap) | yes (NULL bit) | no | `SUPPORTED_WITH_LIMITATION` | `tests/test_vfp_varchar.py` (whole module; authentic 0x32 fixtures with real `_NullFlags`) | fixture = authentic low-level build (header + descriptors + bitmap + length-byte payloads), **not** a `C` patch |
+| `V` | Varchar (0x32 dialect) | visible, `dbversion_name` "Varchar/Varbinary enabled" | exact value incl. significant trailing spaces; varlength + NULL bits honoured; text decoded by the configured parser policy | exact logical value in JSONL | canonical match; raw byte identity is a tested gap (writer cannot yet rebuild the variable-length layout) | no (tested gap) | yes (NULL bit) | no | `SUPPORTED_WITH_LIMITATION` | `tests/test_vfp_varchar.py` (whole module; authentic 0x32 fixtures with real `_NullFlags`) | fixture = authentic low-level build (header + descriptors + bitmap + length-byte payloads), **not** a `C` patch. Text-policy evidence: `test_vfp_varchar_keeps_significant_trailing_spaces` (parser policy, not a blanket rstrip), cp1250 `test_vfp_varchar_cp1250_polish_text_reads_exact_unicode`, cp852 `test_vfp_varchar_cp852_encoding_reads_exact_unicode`, Mazovia `test_vfp_varchar_mazovia_encoding_reads_exact_unicode`; the migration fallback path retains the original raw bytes under `__dbfbridge_raw_text_fields__` (`test_vfp_varchar_migration_fallback_keeps_raw_bytes`) |
 | `V` + flags 0x04 | binary Varchar | visible, `supported=False` | typed `FIELD_TYPE_UNSUPPORTED` (by classifier) | — | — | — | — | — | `NOT_YET_VERIFIED` (unsupported by design) | no authentic physical fixture exists; similarity to binary `C` is not evidence | dedicated binary Varchar parser is an explicit non-goal |
 | `N` | Numeric | visible | number | number | byte-identical | yes | yes (NULL bit) | no | `SUPPORTED` | `tests/test_importer.py::test_jsonl_roundtrip_preserves_narrow_negative_numeric_and_complete_header`, `test_vfp_nullable_ordinary_fields_null_bit_reads_as_none` | |
 | `F` | Float | visible | number | number | byte-identical | yes | yes (NULL bit) | no | `SUPPORTED` | Direct Read: existing suite; round trip: `tests/test_vfp_type_matrix.py::test_vfp_integer_float_datetime_roundtrip` | |
@@ -89,10 +89,29 @@ then its NULL bit when nullable):
 - NULL memos never touch the FPT (handled inside the single physical loop);
 - bitmap bytes beyond the allocated bit count are template residue and are
   never interpreted;
-- a table that needs a bitmap but lacks the `_NullFlags` column (or carries
-  one too short for the allocated bits) fails typed (`DBF_HEADER_INVALID`) —
-  `tests/test_vfp_varchar.py::test_vfp_missing_nullflags_column_is_typed_header_invalid`,
-  `test_vfp_nullflags_too_short_is_typed_header_invalid`.
+- a table that needs a bitmap must carry **exactly one** type-`0` column and
+  that column must carry the VFP system flag (0x01): zero candidates, more
+  than one candidate, or a non-system bitmap column all fail typed
+  (`DBF_HEADER_INVALID`) — `tests/test_vfp_varchar.py::test_nullflags_duplicate_bitmap_column_is_typed_invalid`,
+  `test_nullflags_non_system_bitmap_column_is_typed_invalid`;
+- a bitmap column shorter than the allocated bits fails typed as well —
+  `test_nullflags_too_short_is_typed_header_invalid`;
+- the layout builder materializes its input once (one-shot generators
+  accepted) — `test_nullflags_accepts_one_shot_iterable`.
+
+## Text-policy boundary (Varchar)
+
+The single physical record loop owns the physical Varchar contract
+(`_NullFlags` bits, the length byte, full-width vs variable-width forms) and
+isolates the logical bytes; their TEXT decoding always goes through the
+configured parser instance (`parser.decode_text`) — never a direct
+`bytes.decode` in the core.  Dependency direction: core backend → configured
+parser instance; the core never imports exporter policy
+(`test_vfp_varchar_migration_fallback_keeps_raw_bytes` proves the exporter's
+loss-aware Polish fallback still applies to Varchar: exact logical Unicode +
+original raw bytes retained under `__dbfbridge_raw_text_fields__` in JSONL,
+while the policy-neutral Direct Read keeps raising the typed
+`TEXT_DECODE_ERROR` for undecodable bytes).
 
 ## Correctness notes discovered while building this matrix
 
@@ -111,11 +130,12 @@ then its NULL bit when nullable):
    a set NULL bit to `None` before any decoding or memo I/O
    (`test_vfp_nullable_ordinary_fields_null_bit_reads_as_none` failed before
    the fix).
-3. **Varchar significant trailing spaces.** dbfread's `parseV` aliases
-   `parseC` (blank rstrip), destroying significant trailing spaces of
+3. **Varchar significant trailing spaces + text policy.** dbfread's `parseV`
+   aliases `parseC` (blank rstrip), destroying significant trailing spaces of
    variable-length values and misreading the length byte.  The shared
    physical loop now applies the varlength contract (length-byte form vs
-   full-width form) inside the single record loop
+   full-width form) and hands the isolated logical bytes to the configured
+   parser policy for text decoding
    (`test_vfp_varchar_keeps_significant_trailing_spaces` failed before the
    fix).
 

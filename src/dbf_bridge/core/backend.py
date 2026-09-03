@@ -398,30 +398,37 @@ class DbfreadBackend:
                                     else None,
                                     varlength_bit,
                                 )
-                                items.append(
-                                    (
-                                        field.name,
-                                        (
-                                            _decode_varlength_payload(
-                                                field,
-                                                field_raw,
-                                                encoding=table.encoding,
-                                                decode_errors=table.char_decode_errors,
-                                                path=path,
-                                                record_index=index,
-                                            )
-                                            if varlength
-                                            else _decode_fixed_width_payload(
-                                                field,
-                                                field_raw,
-                                                encoding=table.encoding,
-                                                decode_errors=table.char_decode_errors,
-                                                path=path,
-                                                record_index=index,
-                                            )
-                                        ),
+                                # Core owns the physical Varchar contract
+                                # (_NullFlags bits, length byte, width form):
+                                # it isolates the exact LOGICAL bytes; the
+                                # CONFIGURED parser instance then decodes them,
+                                # so the exporter's loss-aware text policy (and
+                                # any other parser policy) stays in charge of
+                                # text decoding — never a direct bytes.decode.
+                                logical_bytes = (
+                                    _varlength_logical_bytes(
+                                        field,
+                                        field_raw,
+                                        path=path,
+                                        record_index=index,
                                     )
+                                    if varlength
+                                    else field_raw
                                 )
+                                try:
+                                    decoded = parser.decode_text(logical_bytes)
+                                except UnicodeDecodeError as exc:
+                                    raise errors.TextDecodeError(
+                                        f"Field {field.name!r} cannot be decoded with "
+                                        f"{table.encoding!r}: {exc}",
+                                        path=path,
+                                        context={
+                                            "field": field.name,
+                                            "record_index": index,
+                                            "encoding": table.encoding,
+                                        },
+                                    ) from exc
+                                items.append((field.name, decoded))
                                 continue
                         try:
                             value = parse(field, field_raw)
@@ -543,22 +550,21 @@ class DbfreadBackend:
             ) from exc
 
 
-def _decode_varlength_payload(
+def _varlength_logical_bytes(
     field: Any,
     data: bytes,
     *,
-    encoding: str,
-    decode_errors: str,
     path: Path,
     record_index: int,
-) -> str:
-    """Decode one variable-length ``V`` payload per the VFP physical contract.
+) -> bytes:
+    """Isolate the logical bytes of one variable-length ``V`` payload.
 
     With the varlength bit set, the last byte of the field's payload is the
-    actual value length and the value is the preceding bytes (significant
-    trailing spaces preserved — never a blanket ``rstrip``).  A declared
-    length beyond the field's capacity (which also holds the length byte) is
-    a typed record-level inconsistency, never a silent truncation.
+    actual value length and the logical bytes are the preceding ones
+    (significant trailing spaces preserved — never a blanket ``rstrip``).  A
+    declared length beyond the field's capacity (which also holds the length
+    byte) is a typed record-level inconsistency, never a silent truncation.
+    Text decoding itself belongs to the configured parser policy.
     """
     if not data:
         raise errors.DbfRecordInvalidError(
@@ -582,47 +588,7 @@ def _decode_varlength_payload(
                 "capacity": capacity,
             },
         )
-    payload = data[:declared_length]
-    try:
-        return payload.decode(encoding, errors=decode_errors)
-    except UnicodeDecodeError as exc:
-        raise errors.TextDecodeError(
-            f"Field {field.name!r} cannot be decoded with {encoding!r}: {exc}",
-            path=path,
-            context={
-                "field": field.name,
-                "record_index": record_index,
-                "encoding": encoding,
-            },
-        ) from exc
-
-
-def _decode_fixed_width_payload(
-    field: Any,
-    data: bytes,
-    *,
-    encoding: str,
-    decode_errors: str,
-    path: Path,
-    record_index: int,
-) -> str:
-    """Decode one full-width ``V`` payload (varlength bit clear).
-
-    The whole declared width is the logical value — significant trailing
-    spaces are preserved, never stripped.
-    """
-    try:
-        return data.decode(encoding, errors=decode_errors)
-    except UnicodeDecodeError as exc:
-        raise errors.TextDecodeError(
-            f"Field {field.name!r} cannot be decoded with {encoding!r}: {exc}",
-            path=path,
-            context={
-                "field": field.name,
-                "record_index": record_index,
-                "encoding": encoding,
-            },
-        ) from exc
+    return data[:declared_length]
 
 
 def _open_input(path: Path) -> IO[bytes]:
