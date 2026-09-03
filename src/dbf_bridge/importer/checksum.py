@@ -9,12 +9,15 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from dbf_bridge.core.nullflags import NullFlagsLayout, build_nullflags_layout, null_field_names
+
 
 class CanonicalChecksum:
     """Schema-aware checksum independent of JSON formatting and DBF headers."""
 
     def __init__(self, schema: Mapping[str, Any]) -> None:
         self.fields = list(schema.get("fields") or [])
+        self._nullflags_layout: NullFlagsLayout | None = build_nullflags_layout(self.fields)
         self.schema_signature = [
             [
                 field.get("ordinal"),
@@ -34,7 +37,7 @@ class CanonicalChecksum:
 
     def update(self, record: Mapping[str, Any]) -> None:
         deleted = bool(record.get("__deleted__", False))
-        values = list(canonical_record(record, self.fields).values())
+        values = list(canonical_record(record, self.fields, self._nullflags_layout).values())
         encoded = (
             json.dumps(values, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         ).encode("utf-8")
@@ -67,11 +70,23 @@ class CanonicalChecksum:
         return hashlib.sha256(payload).hexdigest()
 
 
-def nullable_null_fields(record: Mapping[str, Any], fields: list[Mapping[str, Any]]) -> set[str]:
-    null_field = next((field for field in fields if field.get("dbf_type") == "0"), None)
-    if null_field is None:
+def nullable_null_fields(
+    record: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+    layout: NullFlagsLayout | None = None,
+) -> set[str]:
+    """Resolve one record's logical NULL field names from its bitmap.
+
+    The bit allocation is the canonical VFP contract owned by
+    ``dbf_bridge.core.nullflags`` (``V``/``Q`` fields take a varlength bit
+    before their NULL bit; other NULLable fields take one bit; descriptor
+    order) — never a parallel ``enumerate(nullable)`` count.
+    """
+    if layout is None:
+        layout = build_nullflags_layout(fields)
+    if layout is None:
         return set()
-    raw_value = record.get(str(null_field["name"]))
+    raw_value = record.get(layout.field_name)
     if raw_value is None:
         return set()
     if isinstance(raw_value, (bytes, bytearray)):
@@ -81,17 +96,17 @@ def nullable_null_fields(record: Mapping[str, Any], fields: list[Mapping[str, An
             bitmap = base64.b64decode(str(raw_value), validate=True)
         except ValueError:
             return set()
-    null_names: set[str] = set()
-    nullable = [field for field in fields if int(field.get("flags") or 0) & 0x02]
-    for bit, field in enumerate(nullable):
-        byte_index, bit_index = divmod(bit, 8)
-        if byte_index < len(bitmap) and bitmap[byte_index] & (1 << bit_index):
-            null_names.add(str(field["name"]))
-    return null_names
+    return null_field_names(layout, bitmap)
 
 
-def canonical_record(record: Mapping[str, Any], fields: list[Mapping[str, Any]]) -> dict[str, Any]:
-    null_names = nullable_null_fields(record, fields)
+def canonical_record(
+    record: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+    layout: NullFlagsLayout | None = None,
+) -> dict[str, Any]:
+    if layout is None:
+        layout = build_nullflags_layout(fields)
+    null_names = nullable_null_fields(record, fields, layout)
     return {
         str(field["name"]): canonical_value(
             None if field["name"] in null_names else record.get(field["name"]),
