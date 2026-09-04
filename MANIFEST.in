@@ -6,3 +6,4 @@ recursive-include .github/workflows *.yml
 recursive-include benchmarks *.md *.py
 recursive-include examples *.md *.py *.txt
 recursive-include tests *.py
+recursive-include docs *.md
