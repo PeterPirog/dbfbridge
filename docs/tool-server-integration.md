@@ -34,7 +34,7 @@ The transport adapter owns:
 
 - tool registration and request validation;
 - authorization and data-access policy;
-- path policy (see [Path security](#15-path-security-host-responsibility));
+- path policy (see [Path security](#16-path-security-host-responsibility));
 - response-envelope shape;
 - async scheduling, timeouts, request-cancellation mapping.
 
@@ -59,10 +59,20 @@ fail-before-output error.
 |---|---|
 | read/schema/data server | `pip install dbfbridge` |
 | read + reconstruction | `pip install "dbfbridge[write]"` |
-| XLSX support | `pip install "dbfbridge[xlsx]"` |
+| XLSX export / XLSX-format reading and verification | `pip install "dbfbridge[xlsx]"` |
+| XLSX → DBF/FPT reconstruction | `pip install "dbfbridge[write,xlsx]"` |
 | full-feature service | `pip install "dbfbridge[all]"` |
 
-## 3. Import / capability probe (fail-closed)
+## 3. VFP independence
+
+dbfbridge public operations do **not** require Visual FoxPro, VFP COM
+automation, or runtime network access. This holds for both read-only
+operations (inspection/schema/records) and operations that create output
+copies/reports (export, reconstruction, verification, quality). CDX index
+tags are the one boundary: structural CDX presence is reported, but indexes
+are not rebuilt (see the format-support guidance in the compatibility section below).
+
+## 4. Import / capability probe (fail-closed)
 
 `import dbfbridge` is side-effect free: it registers no codecs, creates no
 files, and loads no CLI/reporting modules or heavy dependencies. A cheap
@@ -104,7 +114,7 @@ declaration and let the operation's typed `OptionalDependencyMissingError`
 provide the authoritative runtime failure. dbfbridge intentionally exposes no
 capability-registry API — do not invent one.
 
-## 4. Bounded reads at the tool boundary
+## 5. Bounded reads at the tool boundary
 
 For a remote/tool boundary, prefer `read_records()` over returning an
 unbounded `iter_records()` stream from a single tool call:
@@ -128,7 +138,7 @@ Drive paging with `offset` / `limit` / `next_offset` / `exhausted` from
 `page.to_dict()`. The server-side page-size cap is **host policy**;
 dbfbridge only guarantees that `read_records` is bounded by its `limit`.
 
-## 5. Field projection
+## 6. Field projection
 
 When the caller needs only selected columns, pass `fields=[...]`:
 
@@ -139,7 +149,7 @@ When the caller needs only selected columns, pass `fields=[...]`:
 Field projection is **not** an authorization mechanism — data-access policy
 remains a host responsibility.
 
-## 6. Memo policy for tool servers
+## 7. Memo policy for tool servers
 
 - `memo="skip"` — best for discovery/listing calls where memo content is not
   needed; the FPT is never opened.
@@ -151,7 +161,7 @@ remains a host responsibility.
 
 For large remote results, avoid blindly inlining every memo.
 
-## 7. Raw data policy
+## 8. Raw data policy
 
 For ordinary service calls, `raw=False` (Direct Read) and migration exports
 with `raw_mode="none"` are generally appropriate when physical forensic bytes
@@ -160,7 +170,7 @@ this guide does not change) serves forensic/raw-layout/round-trip needs and
 increases payload and storage cost. This is a host-level recommendation, not
 a change to the API contract.
 
-## 8. JSON boundary
+## 9. JSON boundary
 
 Public models expose `to_dict()` as the supported JSON-safe boundary —
 `TableInfo`, `TableSchema`, `DirectRecord`, `RecordPage`,
@@ -169,11 +179,19 @@ Public models expose `to_dict()` as the supported JSON-safe boundary —
 `dataclasses.asdict(...)`, `obj.__dict__`, or `repr(obj)` as the integration
 contract.
 
+**Intentional serialization exceptions** (frozen runtime contract):
+
+- `TableResult` exposes `to_report_dict()` — not `to_dict()`. For the normal
+  integration path, serialize the containing `ExportRunResult.to_dict()`
+  (its per-table results are already rendered through `to_report_dict()`).
+- `ProgressEvent` is a public typed event object with **no `to_dict()`** —
+  hosts serialize its documented public fields themselves (see the progress-bridging section).
+
 `DirectRecord.raw_record` is **bytes** in Python, but
 `DirectRecord.to_dict()` serializes it as Base64 — so a tool adapter should
 pass `record.to_dict()` to a JSON transport, never the raw Python bytes.
 
-## 9. Run-result and failure policy
+## 10. Run-result and failure policy
 
 High-level operations (`export_dbf`, `reconstruct_dbf`,
 `verify_conversion`, `check_conversion_quality`) return complete run
@@ -213,7 +231,7 @@ def export_tool(source: str, output: str) -> dict:
         source,
         output,
         formats=("jsonl",),
-        raw_mode="none",  # service-friendly raw-retention level (see §7)
+        raw_mode="none",  # service-friendly raw-retention level (see the raw-data-policy section)
     )
     return {
         "ok": result.failed == 0,
@@ -228,7 +246,7 @@ instead of inventing one uniform attribute. A forensic/round-trip tool can
 explicitly request `raw_mode="full-record"` when it needs the physical
 images.
 
-## 10. Machine-readable error mapping
+## 11. Machine-readable error mapping
 
 Classify failures by **`error.code`**, never by the English message. Use
 `to_dict()` on any public exception:
@@ -250,7 +268,7 @@ The error payload **families differ intentionally** (see
 - `OptionalDependencyMissingError`: `{code, dependency, extra, operation, install_command, purpose?}`;
 - `DBFBridgeRunError`: `{code, message, details: [...]}`.
 
-## 11. Complete transport-neutral example
+## 12. Complete transport-neutral example
 
 ```python
 """Thin application adapter over the public dbfbridge API.
@@ -326,7 +344,7 @@ def reconstruct_tool(source: str, output: str) -> dict:
 Everything above imports only `dbfbridge` / `from dbfbridge import ...` and
 returns plain JSON-safe dictionaries.
 
-## 12. Synchronous API / async host
+## 13. Synchronous API / async host
 
 dbfbridge API calls are **synchronous filesystem operations**. The library
 creates no event loops, threads, background workers, or global request
@@ -335,7 +353,7 @@ thread/process offloading and scheduling** (for example running blocking
 calls in a worker pool). This guide does not claim universal thread safety
 for the library and dbfbridge intentionally contains no asyncio.
 
-## 13. Cancellation bridging
+## 14. Cancellation bridging
 
 Direct Read operations accept `cancel_check: Callable[[], bool]`. A hosting
 server can map its request-cancellation state into that callable:
@@ -355,7 +373,7 @@ and raises `ReadCancelledError` (`READ_CANCELLED`) — a normal,
 machine-classifiable outcome carrying the resume context. High-level write
 operations do not expose `cancel_check`; do not invent cancellation for them.
 
-## 14. Progress bridging
+## 15. Progress bridging
 
 Direct Read and long-running operations accept `progress=` callbacks
 receiving `ProgressEvent` objects with the public fields
@@ -388,7 +406,7 @@ The hosting adapter may map `ProgressEvent` to its own
 progress/notification mechanism (for example an MCP progress notification);
 dbfbridge does not assume any protocol-specific progress API.
 
-## 15. Path security (host responsibility)
+## 16. Path security (host responsibility)
 
 dbfbridge accepts filesystem paths. It is **not an authorization sandbox**.
 The hosting server **must** define and enforce policies such as:
@@ -404,7 +422,7 @@ Canonicalize paths in the host and reject path traversal or
 symlink/junction escapes according to the deployment model. Do not assume
 that dbfbridge itself implements any of these server policies.
 
-## 16. Source immutability vs write operations
+## 17. Source immutability vs write operations
 
 **Source-read-only** (never create outputs, never touch source bytes):
 
@@ -423,7 +441,7 @@ tools/actions** (never as read-only resources), require the caller to
 provide a separate output path, and never infer write permission merely
 because an OS path is writable.
 
-## 16a. Operation / side-effect matrix for server authors
+## 18. Operation / side-effect matrix for server authors
 
 | Operation | Typical server role | Install profile | Source mutation | Writes output/report | Bounded/streaming | JSON result boundary |
 |---|---|---|---|---|---|---|
@@ -448,7 +466,7 @@ Server-authors' notes:
   read-only schema/page operations suit read tools or read-only resource
   implementations; write/report operations must be explicit tools/actions.
 
-## 16b. Request-scope object ownership
+## 19. Request-scope object ownership
 
 Do not share across unrelated requests:
 
@@ -459,9 +477,23 @@ Do not share across unrelated requests:
 `read_records()` avoids long-lived iterator ownership and is therefore
 preferred for bounded RPC/tool calls. This guide makes no global
 thread-safety claims for the library — the host owns offloading and
-request isolation (see §12).
+request isolation (see the synchronous-API section).
 
-## 17. CDX limitation in server integration
+## 20. Format support for server authors
+
+The authoritative per-type support matrix is
+[docs/compatibility-vfp.md](compatibility-vfp.md). Two rules for server
+authors:
+
+- **A host must not infer semantic support merely because raw bytes are
+  readable.** `iter_raw_records()` may expose physical records (including
+  unsupported/undecoded field types) without pretending semantic decoding
+  support — forensic raw access is exactly that.
+- For unsupported decoded field types, use the documented typed error /
+  compatibility classification (`FIELD_TYPE_UNSUPPORTED`, per-table
+  `UNSUPPORTED` status). Do not invent a decoder inside the adapter.
+
+## 21. CDX limitation in server integration
 
 dbfbridge **reports structural CDX presence**. It does **not** provide an
 authoritative CDX tag/expression engine and does **not** rebuild CDX
@@ -469,7 +501,7 @@ indexes. A system that modifies indexed DBF data must use a separate
 index-aware/VFP-capable layer where valid CDX output is required — do not
 present a copied/stale CDX file as valid after changing indexed data.
 
-## 18. Offline / pinned deployment
+## 22. Offline / pinned deployment with provenance
 
 Normal service deployment is a **pinned package installation**:
 
@@ -487,18 +519,32 @@ wheel/wheelhouse — never copy implementation modules:
 - a request handler must never run `pip install`, `git clone`, or fetch
   "latest" at runtime.
 
+**Fail-closed provenance policy (host-implemented).** For a pinned/offline
+deployment the host SHOULD verify, at service startup:
+
+- the expected dbfbridge version (`dbfbridge.__version__`);
+- the artifact hash / provenance recorded at deployment preparation;
+- the loaded module origin (`dbfbridge.__file__`) points at the intended
+  environment/vendor location.
+
+If provenance cannot be verified, the backend availability check should fail
+closed (report the backend unavailable). This is generic deployment guidance
+implemented by the host — dbfbridge intentionally exposes no provenance API.
+
 Never copy individual `dbf_bridge.core` files, fork private parser modules
 into the host, or treat private modules as a stable contract — that
 guarantees architectural drift when dbfbridge evolves.
 
-## 19. Adapter anti-drift rules
+## 23. Adapter anti-drift rules
 
 The adapter must remain thin:
 
 - reimplementing DBF parsing: **NO**;
 - reimplementing RawMode semantics: **NO**;
 - parsing English exception messages: **NO** (classify by `code`);
-- duplicating schema or memo decoding logic: **NO**.
+- duplicating schema or memo decoding logic: **NO**;
+- inventing a decoder for unsupported field types: **NO** (use the typed
+  compatibility classification — see §20).
 
 All DBF/FPT domain knowledge stays inside dbfbridge; the transport owns only
 transport concerns.

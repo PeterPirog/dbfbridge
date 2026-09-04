@@ -27,7 +27,6 @@ The examples use small synthetic file names:
 | Reconstruction + quality round trip | `pip install "dbfbridge[write]"` |
 | XLSX export / XLSX-format reading and verification support | `pip install "dbfbridge[xlsx]"` |
 | XLSX → DBF/FPT reconstruction | `pip install "dbfbridge[write,xlsx]"` |
-| XLSX → DBF reconstruction | `pip install "dbfbridge[write,xlsx]"` |
 | Optional accelerators (`orjson`, `polars`) | `pip install "dbfbridge[fast]"` |
 | Everything user-facing | `pip install "dbfbridge[all]"` |
 
@@ -66,7 +65,7 @@ print([field["name"] for field in payload["fields"]])
 `inspect_table` reads only the DBF header/descriptors — it never reads record
 data and never touches the memo file.
 
-## 2. `read_schema()` — the full reconstruction authority
+## 2. `read_schema()` — full safe table schema inspection
 
 Install: base. Input: one DBF path.
 
