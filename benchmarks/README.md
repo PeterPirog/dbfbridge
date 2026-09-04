@@ -4,7 +4,8 @@ Two things live in this directory:
 
 1. **Phase 0 baseline runner** (`run_benchmark.py` + `worker.py` + `metrics.py`
    + `fixtures.py`) — repeatable, subprocess-isolated measurement of the existing
-   `dbfbridge 0.1.0` code paths (export, reconstruction, round-trip, encodings,
+   `dbfbridge 0.1.0` code paths at Phase 0 audit time (historical — export,
+   reconstruction, round-trip, encodings,
    memo/deleted policies) on deterministic synthetic fixtures.
 2. **Legacy JSONL conversion benchmark** (`benchmark_jsonl_conversion.py`) —
    kept unchanged; still runnable standalone and still exercised by the

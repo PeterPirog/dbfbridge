@@ -1,40 +1,44 @@
-# Przykłady
+# Examples
 
-## A. Użycie po instalacji z PyPI (normalny przypadek)
+## A. Usage after installing from PyPI (the normal case)
 
-Po instalacji:
+After installing:
 
 ```bash
 python -m pip install dbfbridge
 ```
 
-nie potrzebujesz tego repozytorium. Korzystasz z zainstalowanych poleceń
+you do not need this repository. You use the installed commands
 (`dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import`, `dbf-bridge-quality`)
-oraz publicznego API `from dbfbridge import ...`. Kompletny przewodnik:
-[docs/pypi-usage.md](../docs/pypi-usage.md). Poniższe skrypty są **przykładami
-dla repozytorium** — zainstalowany pakiet działa bez nich i bez katalogu `src`.
+and the public API `from dbfbridge import ...`. The complete guide is
+[docs/pypi-usage.md](../docs/pypi-usage.md); complete Python examples for all
+nine public operations are in
+[docs/python-api-examples.md](../docs/python-api-examples.md). The scripts in
+this directory are **repository examples** — the installed package works
+without them and without a `src` directory.
 
-## B. Przykłady repozytorium / development
+## B. Repository / development examples
 
-Skrypty w tym katalogu uruchamiają te same interfejsy, które po instalacji są dostępne
-jako `dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import` i
-`dbf-bridge-quality`. Dodają lokalny katalog `src`, dlatego można ich użyć również przed
-instalacją pakietu — to wygodne wyłącznie przy pracy na kodzie repozytorium, a nie
-normalny sposób instalacji dla użytkownika.
+The scripts in this directory run the same interfaces that are available
+after installation as `dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import`,
+and `dbf-bridge-quality`. They insert the local `src` directory on
+`sys.path`, so they can also be used before installing the package — that is
+a convenient development helper while working on the repository code, not the
+normal installation path for a user.
 
-| Skrypt | Odpowiednik po instalacji | Zastosowanie |
+| Script | Installed equivalent | Purpose |
 |---|---|---|
 | `export_dbf.py` | `dbf-bridge` | DBF → CSV/JSON/JSONL/XLSX |
-| `verify_dbf.py` | `dbf-bridge-verify` | kontrola plików eksportu |
-| `export_from_file_to_dbf.py` | `dbf-bridge-import` | rekonstrukcja DBF/FPT z jednego formatu |
-| `check_conversion_quality.py` | `dbf-bridge-quality` | diagnostyczny DBF → JSONL → DBF |
-| `python_api.py` | publiczne API | kompletny przepływ przez `from dbfbridge import ...` |
-| `inspect_table.py` | publiczne API (Phase 1A) | tylko do odczytu inspekcja nagłówka i schematu |
-| `read_records.py` | publiczne API (Phase 1B) | streaming odczyt rekordów (projekcja, memo policje, raw) |
+| `verify_dbf.py` | `dbf-bridge-verify` | export file verification |
+| `export_from_file_to_dbf.py` | `dbf-bridge-import` | DBF/FPT reconstruction from one format |
+| `check_conversion_quality.py` | `dbf-bridge-quality` | diagnostic DBF → JSONL → DBF round trip |
+| `python_api.py` | public API | complete flow through `from dbfbridge import ...` |
+| `inspect_table.py` | public API (historical: Phase 1A) | read-only header and schema inspection |
+| `read_records.py` | public API (historical: Phase 1B) | streaming record read (projection, memo policies, raw) |
 
-## Uruchomienie w PowerShell
+## Running in PowerShell
 
-Eksport wymaga jawnego podania źródła i katalogu wynikowego:
+Export requires an explicit source and output directory:
 
 ```powershell
 python examples/export_dbf.py --source "K:\dbf_source" `
@@ -42,23 +46,23 @@ python examples/export_dbf.py --source "K:\dbf_source" `
   --memo inline --formats csv,json,jsonl,xlsx
 ```
 
-Przy kolejnym uruchomieniu opcja `--incremental` sprawdza
-`conversion_checksums.json` i przelicza tylko nowe, zmienione, brakujące lub uszkodzone
-tabele:
+On a later run the `--incremental` option checks
+`conversion_checksums.json` and converts only new, changed, missing, or
+damaged tables:
 
 ```powershell
 python examples/export_dbf.py --source "K:\dbf_source" `
   --output "K:\dbf_output" --formats csv,json,jsonl,xlsx --incremental
 ```
 
-Weryfikacja wskazanych formatów:
+Verification of the requested formats:
 
 ```powershell
 python examples/verify_dbf.py --source "K:\dbf_source" `
   --output "K:\dbf_output" --formats csv,json,jsonl,xlsx
 ```
 
-Rekonstrukcja drzewa z dokładnie jednego formatu:
+Reconstruction of a tree from exactly one format:
 
 ```powershell
 python examples/export_from_file_to_dbf.py --source "K:\dbf_output" `
@@ -66,33 +70,34 @@ python examples/export_from_file_to_dbf.py --source "K:\dbf_output" `
   --memo inline --overwrite --progress
 ```
 
-Pełny test jakości:
+Full quality round trip:
 
 ```powershell
 python examples/check_conversion_quality.py --source "K:\dbf_source" `
   --output "K:\dbf_quality" --overwrite --progress
 ```
 
-Inspekcja jednej tabeli (tylko nagłówek, Phase 1A):
+Inspection of a single table (header/schema only):
 
 ```powershell
 python examples/inspect_table.py --dbf "K:\dbf_source\klienci.dbf" --json
 ```
 
-Streaming odczyt rekordów (stronicowanie, projekcja pól, memo policje, raw; Phase 1B):
+Streaming record read (paging, field projection, memo policies, raw):
 
 ```powershell
 python examples/read_records.py --dbf "K:\dbf_source\klienci.dbf" `
   --offset 0 --limit 20 --memo lazy --fields ID_KL,NAZWA,NOTATKA
 ```
 
-Każdy skrypt udostępnia pełną listę parametrów przez `--help`. Te same argumenty można
-dodać w konfiguracji Run/Debug w PyCharm; skrypty nie zawierają ukrytych ścieżek do
-danych użytkownika.
+Every script exposes its full parameter list through `--help`. The same
+arguments can be added to a PyCharm Run/Debug configuration; the scripts
+contain no hidden paths to user data.
 
-## Dane testowe
+## Test data
 
-Po instalacji zależności deweloperskich można wygenerować bezpieczny zestaw testowy:
+After installing the development dependencies you can generate a safe test
+set:
 
 ```powershell
 python tests/fixtures/generate_sample_dbf.py
@@ -102,14 +107,15 @@ python examples/verify_dbf.py --source "tests\fixtures\input" `
   --output "tests\fixtures\output" --formats csv,json,jsonl,xlsx
 ```
 
-Pliki DBF/FPT/CDX i wyniki konwersji są ignorowane przez Git, aby przypadkowo nie
-opublikować danych produkcyjnych. Do porównania surowej sumy DBF użyj podczas eksportu
-`--deleted include`, ponieważ zachowuje usunięte rekordy i ich fizyczną kolejność.
+DBF/FPT/CDX files and conversion results are ignored by Git so that
+production data is never published accidentally. To compare the raw DBF
+checksum during export use `--deleted include`, because it preserves deleted
+records and their physical order.
 
-## Użycie jako biblioteka
+## Use as a library
 
-Po `pip install dbfbridge` nie trzeba uruchamiać podprocesów CLI. Te same operacje są
-dostępne jako funkcje zwracające typowane wyniki:
+After `pip install dbfbridge` you do not need to run CLI subprocesses. The
+same operations are available as functions returning typed results:
 
 ```python
 from dbfbridge import export_dbf, reconstruct_dbf, verify_conversion
@@ -136,6 +142,13 @@ reconstruction = reconstruct_dbf(
 )
 ```
 
-Plik `python_api.py` pokazuje obsługę postępu, eksport przyrostowy, weryfikację i
-rekonstrukcję w jednej aplikacji. Funkcje są domyślnie bezgłośne; do GUI lub logowania
-można przekazać callback `progress` otrzymujący obiekty `ProgressEvent`.
+The `python_api.py` script shows progress handling, incremental export,
+verification, and reconstruction in one application. The functions are
+silent by default; a `progress` callback receiving `ProgressEvent` objects
+can be passed for GUI or logging use.
+
+> **Note:** these repository-development examples insert `src/` on `sys.path`
+> so they can run before the package is installed — that is a repository
+> development convenience, not part of the installed-distribution contract.
+> Installed-package examples live in
+> [docs/python-api-examples.md](../docs/python-api-examples.md).

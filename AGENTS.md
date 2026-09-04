@@ -18,7 +18,14 @@ Repository: <https://github.com/PeterPirog/dbfbridge>
 
 License: MIT
 
-Current package version/status: 0.1.0, alpha.
+Current package version and Development Status are authoritative in
+`pyproject.toml`; `__version__` in `src/dbf_bridge/__init__.py` must remain
+synchronized with it. Do not duplicate current metadata values in this file.
+The declared 1.x architecture is code-complete on `main`; publication is
+externally blocked (PyPI Trusted Publisher / account access). Authoritative
+status documents: `docs/api-1.0.md` (stable API contract),
+`docs/architecture-closure.md` (architecture closure matrix and final main
+lineage), `CHANGELOG.md` (release history).
 
 ## Architecture
 
@@ -69,15 +76,17 @@ Other important paths:
 
 - `examples/` — thin executable wrappers and PowerShell examples;
 - `examples/python_api.py` — complete programmatic API example;
-- `examples/inspect_table.py` — Phase 1A read-only inspection example;
-- `examples/read_records.py` — Phase 1B streaming record-read example;
-- `docs/architecture/phase-1-direct-read.md` — Phase 1A/1B direct read contract;
-- `tests/test_direct_read_schema.py` — Phase 1A direct read integration tests;
-- `tests/test_direct_read_records.py` — Phase 1B streaming record tests;
+- `examples/inspect_table.py` — read-only inspection example (historical: Phase 1A);
+- `examples/read_records.py` — streaming record-read example (historical: Phase 1B);
+- `docs/architecture/phase-1-direct-read.md` — historical Phase 1A/1B direct
+  read evidence (current contract: `docs/api-1.0.md`);
+- `tests/test_direct_read_schema.py` — direct read integration tests (historical: Phase 1A);
+- `tests/test_direct_read_records.py` — streaming record tests (historical: Phase 1B);
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
-- `benchmarks/` — Phase 0/1 benchmark runner (fast = 19 MEASURED scenarios,
-  full = 24; Phase 0 baseline unchanged, Phase 1 AFTER baseline recorded);
+- `benchmarks/` — benchmark runner (fast = 19 MEASURED scenarios, full = 24;
+  the historical Phase 0/Phase 1 baselines and the canonical Phase 3 baseline
+  are recorded in `benchmarks/baselines/` with policy in `benchmarks/regression/`);
 - `.github/workflows/ci.yml` — Linux/Windows compatibility checks;
 - `.github/workflows/publish.yml` — release build and PyPI Trusted Publishing;
 - `PUBLISHING.md` — release checklist and one-time PyPI configuration;
@@ -85,8 +94,8 @@ Other important paths:
 
 ## Command-line interfaces
 
-All real-data commands require explicit source/output paths except the verifier, whose
-defaults point at generated test fixtures.
+All real-data commands require explicit `--source` and `--output` paths
+(verified by the CLI documentation regression tests).
 
 ```powershell
 dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output" --formats csv,json,jsonl,xlsx
@@ -198,16 +207,24 @@ possible instead of creating a second behavior path.
 
 ## Dependencies
 
-Runtime dependencies are installed by default:
+The dependency model is defined by `pyproject.toml` (the authoritative
+source — versions are not duplicated here):
 
-- `dbfread` — DBF/FPT reading;
-- `dbf` — DBF/FPT reconstruction and fixture generation;
-- `orjson` — JSONL parsing/validation;
-- `polars` — streaming CSV conversion;
-- `xlsxwriter` — constant-memory XLSX writing;
-- `openpyxl` — read-only XLSX reconstruction.
+- **base (default)**: `dbfread` — DBF/FPT reading; Direct Read plus
+  JSONL/JSON/CSV migration and verification;
+- **`[write]`**: `dbf` — DBF/FPT reconstruction and fixture generation;
+- **`[xlsx]`**: `xlsxwriter` (XLSX export) and `openpyxl` (XLSX-format
+  reading/verification) — this extra is NOT empty;
+- **`[fast]`**: optional accelerators — `orjson` (JSON) and `polars` (CSV);
+  absence never raises and never changes logical results;
+- **`[write,xlsx]`**: XLSX → DBF/FPT reconstruction (both extras together);
+- **`[all]`**: the complete user-facing optional feature set;
+- **`[import]`**: historical compatibility alias of `[write]`;
+- **`[benchmark]`**: `psutil` (process sampling for benchmark runs);
+- **`[dev]`**: test/lint/build/publish environment.
 
-The empty `import` and `xlsx` extras are compatibility aliases. Development setup is:
+There is no runtime installation, no runtime network access, and no VFP/COM
+requirement; `import dbfbridge` has no side effects. Development setup is:
 
 ```powershell
 python -m venv .venv
@@ -253,6 +270,47 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 - Keep `src/dbfbridge/__init__.py`, `src/dbf_bridge/__init__.py`, their `__all__` lists,
   type markers, README API tables, and API tests synchronized.
 
-## Known follow-up work
+## Explicitly deferred / conditional future work
 
-- index-aware CDX reconstruction, if a reliable source of tag definitions is added.
+- **CDX reconstruction is NOT a blocker of the declared 1.x architecture.**
+  Full index-aware CDX reconstruction may only be reconsidered if a reliable
+  source of CDX tag definitions becomes available AND a future explicit
+  requirement justifies it. Do not begin CDX implementation to "finish" 1.x —
+  the 1.x contract is code-complete with CDX presence-only reporting.
+
+## Documentation map
+
+- `README.md` — quick start and navigation (user entry point);
+- `docs/README.md` — documentation index (which document is authoritative for what);
+- `docs/pypi-usage.md` — installed-distribution user guide;
+- `docs/python-api-examples.md` — complete Python API examples (all nine stable operations);
+- `docs/tool-server-integration.md` — transport-neutral tool-server / MCP integration guide;
+- `docs/api-1.0.md` — normative stable 1.x API contract;
+- `docs/compatibility-vfp.md` — per-type VFP format support truth;
+- `docs/migration-1.0.md` — migration from 0.x to the 1.x API;
+- `docs/architecture-closure.md` — architecture closure matrix and final main lineage;
+- `docs/architecture/*`, `benchmarks/README.md`, `PUBLISHING.md` — maintainer and historical evidence.
+
+## Frozen public boundary
+
+The stable public surface is `import dbfbridge` (`dbf_bridge` is a compatibility
+alias with identical symbols). `dbf_bridge.core.*`, `dbf_bridge.exporter.*`,
+`dbf_bridge.importer.*` are implementation details — never an integration
+surface. The frozen contract is documented in `docs/api-1.0.md` and enforced by
+`tests/test_api_1_0_contract.py` (baseline symbols, nine operations,
+RawMode choices, ErrorCode stability baseline, signature baselines, JSON-safe
+run results, alias parity).
+
+## Maintenance rules
+
+- Any change to public API surface, semantics, defaults, or error codes must
+  update: `docs/api-1.0.md`, `docs/python-api-examples.md`,
+  `docs/pypi-usage.md`, `docs/tool-server-integration.md` (when integration
+  semantics change), and the tests enforcing documentation/API parity
+  (`tests/test_api_1_0_contract.py`, `tests/test_documented_public_examples.py`,
+  `tests/test_documentation.py`).
+- Keep README user-facing content navigation-first: deep implementation and
+  historical evidence belongs in `docs/architecture/*`,
+  `docs/architecture-closure.md`, and `benchmarks/README.md`.
+- Do not put transient CI test counts into this file; they belong to the PR/CI
+  evidence of the moment.

@@ -3,7 +3,7 @@
 This document declares the **stable public API and guarantees** for the dbfbridge
 1.x line. It is the repository-side closure of architecture blocker **BLK-03 —
 1.0 API CONTRACT DECLARATION** (see `docs/architecture-closure.md`) under the
-immutable architecture contract `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`.
+immutable architecture contract `DBFBRIDGE_TARGET_ARCHITECTURE(20260904-052528).md`.
 
 The authoritative format-support matrix is `docs/compatibility-vfp.md`; this
 document does not extend, weaken, or reinterpret it.
@@ -82,8 +82,8 @@ Direct Read guarantees (declared stable for 1.x):
 | Operation | Result | Optional dependency | Output behaviour |
 |---|---|---|---|
 | `export_dbf(source, output, *, formats=None, memo=None, strip_spaces=False, encoding="auto", decode_errors="strict", deleted="skip", missing_memo="fail", overwrite=True, validate=True, xlsx_long_text="overflow", incremental=False, raw_mode="full-record", progress=None, options=None)` | `ExportRunResult` | `[xlsx]` for XLSX output (typed, fail-before-output) | creates `<table>.(jsonl/json/csv/xlsx)` + `<table>_schema.json` + reports; atomic `.partial` + `os.replace`; per-table failures reported, never raised by default |
-| `reconstruct_dbf(source, output, *, input_format="jsonl", memo="inline", overwrite=False, progress=None, options=None)` | `ReconstructionRunResult` | `[write]` | schema-driven DBF/FPT reconstruction; atomic publish; failure leaves no published output and no staging residue; canonical verification per table |
-| `verify_conversion(source, output, *, formats=..., strict=True, report=None, write_report=True, verbose=False)` | `VerificationRunResult` | xlsx check for xlsx formats | writes a JSON verification report |
+| `reconstruct_dbf(source, output, *, input_format="jsonl", memo="inline", overwrite=False, progress=None, options=None)` | `ReconstructionRunResult` | `[write]` for JSONL/JSON/CSV input; `[write,xlsx]` for XLSX input | schema-driven DBF/FPT reconstruction; atomic publish; failure leaves no published output and no staging residue; canonical verification per table |
+| `verify_conversion(source, output, *, formats=..., strict=True, report=None, write_report=True, verbose=False)` | `VerificationRunResult` | xlsx check for xlsx formats | inspects the existing migration output tree; writes the JSON verification report **only when `write_report=True`** (default) — with `write_report=False` the result is returned in memory and no report file is created |
 | `check_conversion_quality(source, output, *, overwrite=False, max_differences=20, progress=None)` | `QualityRunResult` | `[write]` | retained DBF → JSONL → DBF diagnostic round trip |
 
 Run results expose `ok`/`failed`/`warnings`/`exit_code` accessors and
@@ -201,10 +201,22 @@ Public exception families (all superclass-compatible, tested):
 
 The documented result objects expose JSON-safe `to_dict()`:
 `TableInfo`, `TableSchema`, `FieldInfo`, `DirectRecord`, `RecordPage`,
-`TableResult`, `ReconstructionResult`, `ExportRunResult`,
-`ReconstructionRunResult`, `VerificationRunResult`, `QualityRunResult`,
-`FileCheck`, `TableCheck`, `OperationError`, every `DirectReadError` family
-member, `OptionalDependencyMissingError`, and `DBFBridgeRunError`.
+`ReconstructionResult`, `ExportRunResult`, `ReconstructionRunResult`,
+`VerificationRunResult`, `QualityRunResult`, `FileCheck`, `TableCheck`,
+`OperationError`, every `DirectReadError` family member,
+`OptionalDependencyMissingError`, and `DBFBridgeRunError`.
+
+**Intentional serialization exceptions** (frozen runtime contract):
+
+- `TableResult` exposes **`to_report_dict()`** — not `to_dict()`. For the
+  normal integration path, serialize the containing
+  `ExportRunResult.to_dict()` (its per-table results are already rendered
+  through `to_report_dict()`); use `TableResult.to_report_dict()` directly
+  only when serializing that one object.
+- `ProgressEvent` is a public **typed event object** and has **no
+  `to_dict()`** — hosts serialize its documented public fields
+  (`operation`, `current`, `total`, `table`, `format`, `records`,
+  `message`) themselves.
 
 1.x key policy: **existing documented keys are not removed or repurposed
 without a major version; new additive keys may appear**. No stronger key
@@ -238,7 +250,8 @@ context (`offset`, `next_physical_index`, `scanned`, `yielded`,
 |---|---|
 | base | Direct Read + JSONL/JSON/CSV migration (stdlib/Python engines) |
 | `[write]` | DBF/FPT reconstruction (`dbf`) |
-| `[xlsx]` | XLSX conversion (xlsxwriter) and XLSX reconstruction (openpyxl) |
+| `[xlsx]` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) |
+| `[write,xlsx]` | XLSX → DBF/FPT reconstruction (both extras together) |
 | `[fast]` | optional accelerators (`orjson`, `polars`) — never required |
 | `[all]` | full optional feature set |
 | `[import]` | compatibility alias of `[write]` |

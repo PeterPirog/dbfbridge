@@ -1,5 +1,7 @@
 # dbfbridge — Phase 1: Direct Read Core (inspection, schema, record streaming)
 
+> **HISTORICAL PHASE EVIDENCE** — this document records the Phase 1A/1B design and evidence at its base commit. The current contract is \docs/api-1.0.md\; the current closure status is \docs/architecture-closure.md\.
+
 - Base commit (Phase 0 end): `49500785444ffa2e798146c14a158d926c158c34`
   (branch `bench/phase-0-baseline`, stacked on unmerged PR #1)
 - Package: `dbfbridge 0.1.0` (alpha), Python >= 3.10, MIT

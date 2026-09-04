@@ -1,5 +1,7 @@
 # dbfbridge 0.3.0 — Phase 3 Performance Baseline (BEFORE only)
 
+> **HISTORICAL PHASE EVIDENCE** — this document records the canonical Phase 3 baseline decision history. The current performance closure status is \docs/architecture-closure.md\.
+
 ## 1. Motivation
 
 This baseline measures the **released 0.2.0 Direct Read Core** (the code at
