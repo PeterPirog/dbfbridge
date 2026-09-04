@@ -301,6 +301,12 @@ def _scenario_names(profile: str) -> tuple[str, ...]:
         "memo_lazy",
         "raw_mode_none",
     )
+    if profile == "phase2":
+        return (
+            "direct_read_write_roundtrip",
+            "direct_write_character_heavy",
+            "direct_write_memo_heavy",
+        )
     if profile == "phase3":
         return (
             "inspect_schema_1",
@@ -1736,6 +1742,140 @@ class Runner:
             )
         )
 
+    # ------------------------------------------------------------- phase 2 ----
+
+    def scenario_direct_read_write_roundtrip(self) -> None:
+        """Real public API: read_schema + iter_records + write_table.
+
+        The architectural assertion: zero JSONL bytes on the direct path —
+        the Direct Read -> Direct Write pair never materializes an
+        intermediate JSONL transport (RESEARCH profile; no Phase 3
+        comparison).
+        """
+        from dbf_bridge import iter_records, read_schema
+        from dbf_bridge.write import write_table
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "jsonl_bytes": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                destination = out / "roundtrip-output.dbf"
+                schema = read_schema(str(source_dbf))
+                records = iter_records(
+                    str(source_dbf), include_deleted=True, memo="inline"
+                )
+                result = write_table(
+                    destination,
+                    schema=schema,
+                    records=records,
+                    staging_directory=out,
+                    overwrite=True,
+                )
+                state["records"] = result.records_written
+                jsonl_files = list(out.rglob("*.jsonl"))
+                state["jsonl_bytes"] = sum(
+                    p.stat().st_size for p in jsonl_files if p.is_file()
+                )
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            if not isinstance(records, int) or records != 190_000:
+                raise RuntimeError(f"expected 190,000 records, got {records}")
+            if state["jsonl_bytes"] != 0:  # type: ignore[comparison-overlap]
+                raise RuntimeError("Direct Read->Write must not create intermediate JSONL")
+
+        self.results.append(
+            self._measure(
+                "direct_read_write_roundtrip",
+                "Direct Read -> Direct Write over the 190k table via the public APIs "
+                "(zero intermediate JSONL bytes; RESEARCH)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_write_character_heavy(self) -> None:
+        """Direct Write of the character-heavy 190k table via the public API."""
+        from dbf_bridge import iter_records, read_schema
+        from dbf_bridge.write import write_table
+
+        source_dbf = self.medium()
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                destination = out / "character-heavy-output.dbf"
+                schema = read_schema(str(source_dbf))
+                records = iter_records(str(source_dbf), memo="null", raw=False)
+                result = write_table(destination, schema=schema, records=records)
+                state["records"] = result.records_written
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            if not isinstance(records, int) or records != 190_000:
+                raise RuntimeError(f"expected 190,000 written, got {records}")
+
+        self.results.append(
+            self._measure(
+                "direct_write_character_heavy",
+                "Direct Write: character-heavy 190k table via the public write API (RESEARCH)",
+                make,
+                input_bytes=input_bytes,
+                input_records=190_000,
+                post_validate=post_validate,
+            )
+        )
+
+    def scenario_direct_write_memo_heavy(self) -> None:
+        """Direct Write of a memo-heavy DBF/FPT pair via the public API."""
+        from dbf_bridge import iter_records, read_schema
+        from dbf_bridge.write import write_table
+
+        source_dbf = self.memo_heavy(2_000)
+        input_bytes = self._source_bytes(source_dbf)
+        state: dict[str, object] = {"records": 0, "fpt_bytes": 0}
+
+        def make(out: Path):
+            def run() -> None:
+                destination = out / "memo-heavy-output.dbf"
+                schema = read_schema(str(source_dbf))
+                records = iter_records(str(source_dbf), memo="inline")
+                result = write_table(destination, schema=schema, records=records)
+                state["records"] = result.records_written
+                fpt = destination.with_suffix(".fpt")
+                state["fpt_bytes"] = fpt.stat().st_size if fpt.is_file() else 0
+
+            return run
+
+        def post_validate(out: Path, sample: dict[str, object]) -> None:
+            records = state["records"]  # type: ignore[assignment]
+            if not isinstance(records, int) or records != 2_000:
+                raise RuntimeError(f"expected 2,000 records, got {records}")
+            fpt_bytes = state["fpt_bytes"]  # type: ignore[assignment]
+            if not isinstance(fpt_bytes, int) or fpt_bytes <= 0:
+                raise RuntimeError(f"expected a positive FPT size, got {fpt_bytes}")
+
+        self.results.append(
+            self._measure(
+                "direct_write_memo_heavy",
+                "Direct Write: memo-heavy 2,000-record DBF/FPT via the public write "
+                "API (RESEARCH)",
+                make,
+                input_bytes=input_bytes,
+                input_records=2_000,
+                post_validate=post_validate,
+            )
+        )
+
     def run_scenario(self, name: str) -> None:
         # Shared scenarios must use IDENTICAL parameters in fast and full; only
         # scenario *names* differ between profiles, never their parameters.
@@ -1809,6 +1949,12 @@ class Runner:
             self.scenario_memo_lazy()
         elif name == "raw_mode_none":
             self.scenario_raw_mode_none()
+        elif name == "direct_read_write_roundtrip":
+            self.scenario_direct_read_write_roundtrip()
+        elif name == "direct_write_character_heavy":
+            self.scenario_direct_write_character_heavy()
+        elif name == "direct_write_memo_heavy":
+            self.scenario_direct_write_memo_heavy()
         elif name == "inspect_schema_1":
             self.scenario_inspect_schema(name, 1)
         elif name == "inspect_schema_100":
@@ -1887,7 +2033,7 @@ class Runner:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=["fast", "full", "phase3"], default="fast")
+    parser.add_argument("--profile", choices=["fast", "full", "phase2", "phase3"], default="fast")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)

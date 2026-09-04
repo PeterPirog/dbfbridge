@@ -55,6 +55,7 @@ earlier 0.x release to the declared 1.x API.
 | [architecture-closure.md](architecture-closure.md) | architecture closure matrix, final main lineage, blocker list — **MAINTAINER EVIDENCE** |
 | [architecture/phase-0-audit.md](architecture/phase-0-audit.md) | historical Phase 0 technical audit (0.1.0 state) |
 | [architecture/phase-1-direct-read.md](architecture/phase-1-direct-read.md) | historical Phase 1A/1B direct read design evidence |
+| [architecture/direct-write-next.md](architecture/direct-write-next.md) | **RESEARCH / NOT RELEASED** — next-version Direct Write contract (not part of the stable 1.x API) |
 | [architecture/phase-3-performance-baseline.md](architecture/phase-3-performance-baseline.md) | canonical Phase 3 performance baseline history |
 | [architecture/phase-3-regression-ci-calibration.md](architecture/phase-3-regression-ci-calibration.md) | regression-policy calibration evidence |
 | [benchmarks/README.md](../benchmarks/README.md) | benchmark suite, policy, and baseline history |
