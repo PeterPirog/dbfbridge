@@ -32,6 +32,84 @@ def _python_blocks() -> list[str]:
     return re.findall(r"```python\n(.*?)```", text, re.DOTALL)
 
 
+def _progress_example_block() -> str:
+    blocks = [
+        block
+        for block in _python_blocks()
+        if "iter_records(" in block and "progress=show" in block
+    ]
+    assert len(blocks) == 1, "expected exactly one executable progress example"
+    return blocks[0]
+
+
+def test_documented_event_attributes_exist_on_progress_event() -> None:
+    """Every ``event.<attr>`` reference in the guide must exist on the public
+    ``ProgressEvent`` contract — documentation may not reference members that
+    the frozen API does not have."""
+    import dataclasses
+
+    from dbfbridge import ProgressEvent
+
+    real_fields = {field.name for field in dataclasses.fields(ProgressEvent)}
+    referenced: set[str] = set()
+    for block in _python_blocks():
+        referenced.update(re.findall(r"\bevent\.(\w+)", block))
+    assert referenced, "progress example lost from the migration guide"
+    unknown = referenced - real_fields
+    assert not unknown, f"guide references nonexistent ProgressEvent members: {unknown}"
+
+
+def test_progress_example_executes_exactly_as_documented(tmp_path, monkeypatch) -> None:
+    """Execute the Direct Read progress example against a synthetic DBF.
+
+    Proves the public import succeeds, the callback actually runs, and the
+    delivered events satisfy the public ``ProgressEvent`` contract — with no
+    ``AttributeError`` and no private-module use.
+    """
+    import dbf as dbf_lib
+
+    from dbfbridge import ProgressEvent, iter_records
+
+    dbf_path = tmp_path / "KLIENCI.DBF"
+    table = dbf_lib.Table(str(dbf_path), "KOD N(3,0); NAZWA C(10)", dbf_type="vfp", codepage=0xC8)
+    table.open(dbf_lib.READ_WRITE)
+    table.append({"KOD": 1, "NAZWA": "abc"})
+    table.append({"KOD": 2, "NAZWA": "def"})
+    table.append({"KOD": 3, "NAZWA": "ghi"})
+    table.close()
+
+    monkeypatch.chdir(tmp_path)
+    namespace: dict[str, object] = {"__name__": "migration_guide_progress_snippet"}
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        exec(  # noqa: S102 - documentation code
+            compile(_progress_example_block(), str(GUIDE), "exec"),
+            namespace,
+        )
+    printed = stdout.getvalue()
+    assert "read" in printed, printed
+
+    # The documented callback receives real public events: verify the
+    # contract directly through the public surface.
+    events: list[object] = []
+
+    def collect(event) -> None:
+        events.append(event)
+
+    records = list(iter_records(dbf_path, progress=collect, cancel_check=lambda: False))
+    assert len(records) == 3
+    assert events, "callback never executed"
+    total = None
+    for event in events:
+        assert type(event) is ProgressEvent
+        assert event.operation == "read"
+        assert 0 <= event.current <= event.total
+        assert event.records is None or event.records >= 0
+        total = event.total
+    assert total == 3
+    assert events[-1].current == total
+
+
 def test_migration_guide_contains_the_typed_error_snippet() -> None:
     blocks = _python_blocks()
     assert blocks, "migration guide lost its executable examples"

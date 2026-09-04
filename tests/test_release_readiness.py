@@ -118,9 +118,10 @@ def test_publish_workflow_smokes_and_publishes_the_same_artifact() -> None:
     assert "scripts/release_wheel_smoke.py --wheel" in build_section
     assert "scripts/pypi_install_smoke.py --wheel" in build_section
     assert "actions/upload-artifact" in build_section
-    # sdist is a first-class release artifact with its own sanity gate.
-    assert "dbfbridge-*.tar.gz" in build_section
-    assert "PKG-INFO" in build_section
+    # The wheel/sdist structural gates live in the SHARED verifier
+    # (scripts/verify_release_artifacts.py — proven by
+    # test_release_artifacts.py and test_shared_artifact_verifier_runs_in_ci_and_publish);
+    # the sdist PKG-INFO check is part of that verifier, not an inline copy.
 
     publish_section = "publish:" + publish.split("publish:", 1)[1]
     assert "download-artifact" in publish_section
@@ -129,6 +130,29 @@ def test_publish_workflow_smokes_and_publishes_the_same_artifact() -> None:
     # Trusted Publishing only: no token/password-based upload.
     assert "PYPI_TOKEN" not in publish
     assert "password:" not in publish
+
+
+def test_shared_artifact_verifier_runs_in_ci_and_publish() -> None:
+    """ONE shared artifact gate: both the CI package job and the publish
+    build job must run ``scripts/verify_release_artifacts.py`` after
+    ``python -m build`` + ``twine check`` and before the wheel smokes, so
+    every PR proves the same artifact structure that later gets published."""
+    for workflow in ("ci.yml", "publish.yml"):
+        text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        assert "python scripts/verify_release_artifacts.py --dist dist" in text, (
+            f"{workflow} does not run the shared release-artifact verifier"
+        )
+        build_position = text.index("python -m build")
+        twine_position = text.index("python -m twine check dist/*")
+        verifier_position = text.index("python scripts/verify_release_artifacts.py")
+        smoke_position = text.index("scripts/release_wheel_smoke.py --wheel")
+        assert build_position < twine_position < verifier_position < smoke_position, (
+            f"{workflow}: build → twine → verify_release_artifacts → smokes ordering violated"
+        )
+    # The duplicated inline verifier must stay gone: one implementation.
+    publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(encoding="utf-8")
+    assert "email.parser" not in publish, "publish.yml must not carry an inline artifact verifier"
+    assert "python - <<'PY'" not in publish, "publish.yml must delegate to the shared verifier"
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +165,17 @@ def _current_version_section_is_unreleased() -> bool:
     return bool(re.search(rf"^## \[{version}\] - Unreleased$", _changelog(), re.MULTILINE))
 
 
+def _readme_status_mentions(readme: str, version: str) -> bool:
+    """Whether the README status area carries *version* (release-stage
+    neutral: the maturity marker may change with the release stage)."""
+    return bool(re.search(rf"\*\*{re.escape(version)}\b", readme))
+
+
 def test_readme_release_status_is_truthful() -> None:
     version = _pyproject_version()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert f"**{version} (alpha)**" in readme
+    assert _readme_status_mentions(readme, version)
     assert "docs/pypi-usage.md" in readme
     assert "docs/migration-1.0.md" in readme
     # The unsupported availability claim must never come back: repository
@@ -158,6 +188,18 @@ def test_readme_release_status_is_truthful() -> None:
         # version is already published.
         assert "available on PyPI" not in readme
         assert "release is being prepared" in readme or "release candidate" in readme
+
+
+def test_readiness_status_logic_does_not_require_the_current_stage() -> None:
+    """The release-readiness logic is release-stage neutral: a hypothetical
+    future stable version would pass the same README status check without
+    rewriting the tests.  (The current project version and Development
+    Status classifier are intentionally NOT changed here — that belongs to
+    final release preparation.)"""
+    hypothetical_stable = "# dbfbridge\n\n> Status: **1.0.0 (stable)**.\n"
+    assert _readme_status_mentions(hypothetical_stable, "1.0.0")
+    hypothetical_future = "> Status: **9.9.9**.\n"
+    assert _readme_status_mentions(hypothetical_future, "9.9.9")
 
 
 def test_pypi_usage_guide_is_installed_distribution_only() -> None:

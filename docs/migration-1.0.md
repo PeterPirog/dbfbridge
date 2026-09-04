@@ -43,7 +43,12 @@ cancellation:
 from dbfbridge import iter_records
 
 def show(event):
-    print(event.operation, event.table, event.records_done)
+    print(
+        event.operation,
+        event.current,
+        event.total,
+        event.records,
+    )
 
 for record in iter_records("KLIENCI.DBF", progress=show, cancel_check=lambda: False):
     ...
