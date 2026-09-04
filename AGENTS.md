@@ -278,6 +278,32 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
   requirement justifies it. Do not begin CDX implementation to "finish" 1.x —
   the 1.x contract is code-complete with CDX presence-only reporting.
 
+## Future development policy (next-version research)
+
+- The **declared 1.x runtime is frozen**: the nine-operation public contract,
+  its error codes, and the canonical Phase 3 baseline do not change until an
+  explicit future release decision.
+- The **next planned feature research is Direct Write / `write_table`** — the
+  write-side counterpart of the Direct Read core. Direct Write belongs to a
+  **future additive version**; it is not part of the current 1.x public
+  contract and must not be declared stable prematurely.
+- The old `feat/phase-2-direct-write` branch was **historical research only**
+  (it diverged from `main` long before the 1.x closure). It is not a merge
+  base for anything. Its useful concepts were consolidated onto the
+  `research/direct-write-next` branch, rebuilt on top of current `main`.
+- **Future write work MUST start from current `main`** (or from
+  `research/direct-write-next` when it exists) — never from the deleted
+  historical branches.
+- The **current reconstruction writer is the correctness authority**: there is
+  exactly one shared physical DBF/FPT writer. **No second divergent physical
+  writer may be introduced** — any Direct Write implementation reuses the same
+  field coercion, memo-writing, NullFlags, and publication logic as the
+  reconstruction path, with machine-classified (structured-code) errors, never
+  English-message parsing.
+- Research status markers: `RESEARCH` / `NOT RELEASED` / `NOT PART OF THE
+  CURRENT 1.0 CONTRACT` must stay on every Direct Write surface until an
+  explicit version decision promotes it.
+
 ## Documentation map
 
 - `README.md` — quick start and navigation (user entry point);
