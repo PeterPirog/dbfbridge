@@ -21,7 +21,15 @@ def test_documentation_versions_and_entry_points_match_package_metadata() -> Non
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert metadata["version"] == __version__
-    assert f"**{__version__} (alpha)**" in readme
+    # The README status blockquote must carry the current package version
+    # (release-stage neutral: the maturity marker may change with the
+    # release stage — see test_release_readiness.py).
+    status_lines = [
+        line.strip()
+        for line in readme.splitlines()
+        if line.strip().startswith(">") and "Status" in line
+    ]
+    assert any(metadata["version"] in line for line in status_lines), readme.splitlines()[:14]
     for command in metadata["scripts"]:
         assert f"`{command}`" in readme
     for function in (
