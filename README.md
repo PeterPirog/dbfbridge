@@ -93,13 +93,15 @@ dbf-bridge --help
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
 > **Repository status:** the declared 1.x architecture is **code-complete on
-> `main`**.  **Release status:** not yet published — PyPI publication is
-> externally blocked by Trusted Publisher / account access, and the final
-> release version/tag has intentionally not been created yet.  Package
-> metadata remains `0.2.0` until the final release-preparation commit.
-> The install-profile extras documented here are the current 1.x contract
-> (not an upcoming one): `pip install dbfbridge` installs the minimal base
-> profile and the extras below are opt-in.
+> `main`**.  **Release status:** a historical GitHub Release/tag **v0.2.0
+> exists**, but its PyPI Trusted Publishing attempt did not complete
+> successfully — no successful PyPI publication is verified.  Current `main`
+> contains the code-complete declared 1.x contract; the final `1.0.0`
+> release/tag remains intentionally deferred until the PyPI publication path
+> is available.  Package metadata remains `0.2.0` until the final
+> release-preparation commit.  The install-profile extras documented here are
+> the current 1.x contract (not an upcoming one): `pip install dbfbridge`
+> installs the minimal base profile and the extras below are opt-in.
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
 stdlib `json` module; without `polars`, CSV conversion uses the Python
