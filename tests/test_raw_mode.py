@@ -409,8 +409,8 @@ def test_varchar_repair_failure_is_atomic(
 ) -> None:
     """A failing Varchar logical-layout repair leaves no published output and
     no staging residue, with a typed structured failure (Macro A contract)."""
-    from dbf_bridge.importer import writer as importer_writer
     from dbf_bridge.importer.writer import ReconstructionError
+    from dbf_bridge.write import backend as physical_writer
 
     source = _varchar_fixture(tmp_path)
     exported = tmp_path / "exp-fail"
@@ -421,7 +421,7 @@ def test_varchar_repair_failure_is_atomic(
         raise ReconstructionError("simulated Varchar layout repair failure")
 
     monkeypatch.setattr(
-        importer_writer, "_repair_varchar_logical_layout", _explode
+        physical_writer, "_repair_varchar_logical_layout", _explode
     )
     result = _reconstruct(exported, rebuilt)
     assert result.failed == 1

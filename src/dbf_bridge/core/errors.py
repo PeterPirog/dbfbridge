@@ -44,6 +44,14 @@ class ErrorCode(str, enum.Enum):
     RECONSTRUCTION_FAILED = "RECONSTRUCTION_FAILED"
     ROUNDTRIP_MISMATCH = "ROUNDTRIP_MISMATCH"
     OPERATION_FAILED = "OPERATION_FAILED"
+    # direct-write research codes (RESEARCH / NEXT VERSION — not stable 1.x;
+    # the write-conflict case reuses the stable OUTPUT_EXISTS code)
+    DESTINATION_IO_ERROR = "DESTINATION_IO_ERROR"
+    WRITE_SCHEMA_INVALID = "WRITE_SCHEMA_INVALID"
+    WRITE_FIELD_UNSUPPORTED = "WRITE_FIELD_UNSUPPORTED"
+    WRITE_VALUE_INVALID = "WRITE_VALUE_INVALID"
+    WRITE_MEMO_FAILED = "WRITE_MEMO_FAILED"
+    WRITE_PUBLICATION_FAILED = "WRITE_PUBLICATION_FAILED"
 
 
 def _json_safe(value: Any) -> Any:
@@ -200,6 +208,53 @@ class ReadCancelledError(DirectReadError):
     """
 
     code = ErrorCode.READ_CANCELLED
+
+
+# --- direct-write research errors (RESEARCH / NEXT VERSION — not stable 1.x) ---
+# The write-conflict case deliberately reuses the stable OUTPUT_EXISTS code
+# (OperationOutputExistsError) instead of a parallel vocabulary.  These typed
+# classes are classified from the structured machine code the shared physical
+# writer attaches to its failures — never from English message text.
+
+
+class DirectWriteError(DirectReadError):
+    """Base class for the typed direct-write failures (RESEARCH)."""
+
+
+class DestinationIoError(DirectWriteError):
+    """A filesystem failure around DBF/FPT staging or publication."""
+
+    code = ErrorCode.DESTINATION_IO_ERROR
+
+
+class WriteSchemaInvalidError(DirectWriteError):
+    """The schema is unusable for writing (no fields, bad combination)."""
+
+    code = ErrorCode.WRITE_SCHEMA_INVALID
+
+
+class WriteFieldUnsupportedError(DirectWriteError):
+    """A field type the shared writer backend cannot represent."""
+
+    code = ErrorCode.WRITE_FIELD_UNSUPPORTED
+
+
+class WriteValueInvalidError(DirectWriteError):
+    """A value (or record stream) does not fit or convert for its target field."""
+
+    code = ErrorCode.WRITE_VALUE_INVALID
+
+
+class WriteMemoFailedError(DirectWriteError):
+    """A memo payload could not be written or finalized."""
+
+    code = ErrorCode.WRITE_MEMO_FAILED
+
+
+class WritePublicationFailedError(DirectWriteError):
+    """Staging, fsync or the final publication replace failed."""
+
+    code = ErrorCode.WRITE_PUBLICATION_FAILED
 
 
 @dataclasses.dataclass(frozen=True)
@@ -370,7 +425,9 @@ __all__ = [
     "DbfPathError",
     "DbfRecordInvalidError",
     "DbfTruncatedError",
+    "DestinationIoError",
     "DirectReadError",
+    "DirectWriteError",
     "EncodingUnknownError",
     "ErrorCode",
     "FieldProjectionInvalidError",
@@ -383,4 +440,9 @@ __all__ = [
     "OperationPathError",
     "ReadCancelledError",
     "TextDecodeError",
+    "WriteFieldUnsupportedError",
+    "WriteMemoFailedError",
+    "WritePublicationFailedError",
+    "WriteSchemaInvalidError",
+    "WriteValueInvalidError",
 ]
