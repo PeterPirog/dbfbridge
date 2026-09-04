@@ -28,6 +28,11 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10: tomllib joined the stdlib in 3.11
+    import tomli as tomllib
+
 import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
