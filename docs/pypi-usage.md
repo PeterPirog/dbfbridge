@@ -10,11 +10,11 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 > **Availability note:** this guide describes the **code-complete declared
 > 1.x installed-distribution contract implemented on `main`** — the
 > install-profile extras documented here are the current contract, not an
-> upcoming one.  No PyPI availability is currently verified: publication is
-> externally blocked by Trusted Publisher / account access, and the final
-> release version/tag has intentionally not been created yet.  The
-> `pip install` instructions below show exactly how installation will work
-> for the final distribution.
+> upcoming one.  A historical GitHub Release/tag v0.2.0 exists, but
+> successful PyPI publication was **not completed** (the publish step failed
+> on Trusted Publisher verification); the final 1.0.0 publication lifecycle
+> is still deferred.  The `pip install` instructions below show exactly how
+> installation will work for the final distribution.
 
 ## Contents
 

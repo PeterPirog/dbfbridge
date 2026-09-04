@@ -295,7 +295,16 @@ def test_changelog_current_version_section_documents_the_release() -> None:
         re.MULTILINE | re.DOTALL,
     )
     assert match, f"no changelog section for {version}"
-    assert f"[{version}]: https://github.com/PeterPirog/dbfbridge/compare/" in changelog
+    # the version link must be a valid GitHub reference: a compare range for a
+    # released version, or the release/tag URL for the historically published
+    # v0.2.0 (compare vs a non-existent v0.1.0 would be a dead link)
+    assert (
+        f"[{version}]: https://github.com/PeterPirog/dbfbridge/compare/" in changelog
+        or f"[{version}]: https://github.com/PeterPirog/dbfbridge/releases/tag/v{version}"
+        in changelog
+        or f"[{version}]: https://github.com/PeterPirog/dbfbridge/releases/tag/{version}"
+        in changelog
+    )
 
 
 # ---------------------------------------------------------------------------
