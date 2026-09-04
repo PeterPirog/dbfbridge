@@ -24,15 +24,75 @@ jobs:
         run: |
           package_version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           test "$GITHUB_REF_NAME" = "v$package_version"
+      - name: Release final-state gate (rejects release-preparation state)
+        shell: bash
+        run: python scripts/check_release_state.py --tag "$GITHUB_REF_NAME"
       - run: python -m pip install -e ".[dev]"
       - run: python -m ruff check src tests benchmarks examples
       - run: python -m pytest
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: Verify built distributions (exact counts, wheel metadata, sdist sanity)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import email.parser, tarfile, tomllib, zipfile
+          from pathlib import Path
+
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          wheels = sorted(Path("dist").glob("dbfbridge-*.whl"))
+          sdists = sorted(Path("dist").glob("dbfbridge-*.tar.gz"))
+          assert len(wheels) == 1, f"expected exactly one wheel, found {wheels}"
+          assert len(sdists) == 1, f"expected exactly one sdist, found {sdists}"
+
+          # --- wheel metadata gate ---
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = set(archive.namelist())
+              metadata_path = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = email.parser.BytesParser().parsebytes(archive.read(metadata_path))
+          assert metadata["Version"] == version, (metadata["Version"], version)
+          assert "Typing :: Typed" in metadata.get_all("Classifier", []), metadata.get_all("Classifier")
+          for typed_marker in ("dbf_bridge/py.typed", "dbfbridge/py.typed"):
+              assert typed_marker in names, f"{typed_marker} missing from the wheel"
+          print(f"wheel metadata OK: version={metadata['Version']}, py.typed present, Typing :: Typed")
+
+          # --- sdist sanity gate (stdlib tarfile, root-prefix aware) ---
+          with tarfile.open(sdists[0]) as tar:
+              members = {member.name for member in tar.getmembers() if member.isfile()}
+              root = sdists[0].name[: -len(".tar.gz")]
+              def require(relative: str) -> None:
+                  assert f"{root}/{relative}" in members, f"sdist lacks {relative}"
+              pkg_info = f"{root}/PKG-INFO"
+              assert pkg_info in members, f"sdist lacks {pkg_info}"
+              pkg = email.parser.BytesParser().parsebytes(
+                  tar.extractfile(pkg_info).read()
+              )
+              assert pkg["Version"] == version, (pkg["Version"], version)
+              for required in (
+                  "README.md",
+                  "LICENSE",
+                  "pyproject.toml",
+                  "PUBLISHING.md",
+                  "docs/pypi-usage.md",
+                  "docs/api-1.0.md",
+                  "docs/migration-1.0.md",
+                  "docs/compatibility-vfp.md",
+                  "src/dbf_bridge/py.typed",
+                  "src/dbfbridge/py.typed",
+              ):
+                  require(required)
+          print(f"sdist sanity OK: PKG-INFO version={pkg['Version']}, required files present")
+          PY
       - name: Fresh-wheel smoke (reusable helper)
         run: |
           wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
-          python scripts/release_wheel_smoke.py --wheel "$wheel" --expected-version "0.2.0"
+          python scripts/release_wheel_smoke.py --wheel "$wheel"
+      - name: PyPI install-profile smoke (reusable helper)
+        run: |
+          wheel=$(find dist -maxdepth 1 -name 'dbfbridge-*.whl' -print -quit)
+          python scripts/pypi_install_smoke.py --wheel "$wheel"
       - name: Store release distributions
         uses: actions/upload-artifact@v5
         with:
