@@ -1,5 +1,7 @@
 # Phase 3 regression-CI calibration
 
+> **HISTORICAL PHASE EVIDENCE** — this document records the regression-policy calibration evidence. The current performance closure status is \docs/architecture-closure.md\.
+
 This document records the evidence behind the committed Phase 3 regression
 policy (`benchmarks/regression/phase-3-regression-policy-v1.json`).  Every
 threshold in the policy is derived from the measurements listed here — no

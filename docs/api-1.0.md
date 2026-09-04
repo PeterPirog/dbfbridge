@@ -3,7 +3,7 @@
 This document declares the **stable public API and guarantees** for the dbfbridge
 1.x line. It is the repository-side closure of architecture blocker **BLK-03 —
 1.0 API CONTRACT DECLARATION** (see `docs/architecture-closure.md`) under the
-immutable architecture contract `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`.
+immutable architecture contract `DBFBRIDGE_TARGET_ARCHITECTURE(20260904-052528).md`.
 
 The authoritative format-support matrix is `docs/compatibility-vfp.md`; this
 document does not extend, weaken, or reinterpret it.

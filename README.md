@@ -16,6 +16,19 @@
 > copy of production data before using it as an archival replacement. CDX
 > index definitions are not reconstructed.
 
+## Documentation
+
+| Document | Role |
+|---|---|
+| [docs/README.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/README.md) | documentation map / start here |
+| [docs/pypi-usage.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md) | complete installed-distribution user guide |
+| [docs/python-api-examples.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/python-api-examples.md) | complete Python API examples (all nine operations) |
+| [docs/tool-server-integration.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/tool-server-integration.md) | tool-server / MCP integration patterns |
+| [docs/api-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.0.md) | normative stable 1.x API contract |
+| [docs/compatibility-vfp.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/compatibility-vfp.md) | VFP format support truth |
+| [docs/migration-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-1.0.md) | migrating from 0.x to the 1.x API |
+| [docs/architecture-closure.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/architecture-closure.md) | maintainer evidence / architecture closure |
+
 ## Requirements
 
 - Python **3.10–3.14** (3.12 recommended)
@@ -396,9 +409,9 @@ console output unless a progress callback is supplied.
 | `verify_conversion()` | all four formats, `strict=True`, writes `<output>/verification_report.json`; set `write_report=False` for an in-memory check |
 | `check_conversion_quality()` | `overwrite=False`, `max_differences=20`; retains all three diagnostic trees |
 
-#### Direct read (Phase 1A)
+#### Direct read: inspection and schema
 
-`inspect_table()` and `read_schema()` implement the Phase 1A direct read core.
+`inspect_table()` and `read_schema()` implement the direct read inspection core.
 They are strictly read-only: the DBF read is bounded by the declared header
 length (independent of the record count, plus a companion-file lookup in the
 table's directory), they never create files, never open memo payloads, and
@@ -477,7 +490,7 @@ except DirectReadError as error:
     print(error.to_dict())  # JSON-safe: code, message, path, context
 ```
 
-Phase 1A scope notes:
+Direct read scope notes:
 
 - CDX presence is reported structurally (`has_structural_cdx`,
   `companion_cdx`); CDX tag expressions are **not** parsed;
@@ -490,9 +503,9 @@ Phase 1A scope notes:
 A complete executable example is in
 [`examples/inspect_table.py`](examples/inspect_table.py).
 
-#### Streaming direct record read (Phase 1B)
+#### Streaming direct record read
 
-Phase 1B adds read-only record streaming on top of the Phase 1A contracts.
+Read-only record streaming sits on top of the inspection contracts.
 The implementation is backed by the **dbfread reference backend** isolated in
 `dbf_bridge.core.backend` (the only module allowed to use private `dbfread`
 API); the migration exporter delegates its physical record loop to the same
@@ -525,7 +538,7 @@ print(page.offset, page.limit, page.scanned, page.next_offset, page.exhausted)
 raws = [(r.physical_index, r.deleted, r.raw_record) for r in iter_raw_records("K:/dbf_source/klienci.dbf")]
 ```
 
-#### Progress and cancellation (0.3)
+#### Progress and cancellation
 
 Direct Read functions accept two optional keyword-only callbacks:
 
@@ -605,13 +618,14 @@ Contract:
   `DBF_RECORD_INVALID`, `DBF_IO_ERROR`.
 
 The benchmark scenarios `direct_read_bounded`, `field_projection`, `memo_lazy`,
-and `raw_mode_none` are real `MEASURED` scenarios since Phase 1B (fast profile:
+and `raw_mode_none` are real `MEASURED` scenarios of the direct read record
+streaming (fast profile:
 19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`,
 with the versioned report identity `benchmark_contract:
 "phase-1-direct-read-v1"`). `field_projection` proves the same logical result
 with an O(1)-memory digest (the reference full read is computed once, outside
 the measured window); `memo_lazy` enforces zero operations on the real backend
-memo boundary. The full Phase 1 AFTER baseline has been measured on GitHub
+memo boundary. The historical Phase 1 AFTER baseline has been measured on GitHub
 Actions ([run 33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
 SUCCESS) at commit `df035de662f2d78a7a8d9d9a141a8235e1161382` (Windows Server
 2025, Python 3.12.10, runner `github-actions-windows-2025-python-3.12.10`,
@@ -737,10 +751,14 @@ except OptionalDependencyMissingError as error:
 The `[fast]` accelerators are different by contract: missing `orjson`/`polars`
 never raise — the stdlib/Python fallbacks are used instead.
 
-The lower-level modules under `dbf_bridge.exporter` and `dbf_bridge.importer` remain
-available for custom pipelines, but the functions above are the supported high-level API.
-A complete executable example is in
-[`examples/python_api.py`](https://github.com/PeterPirog/dbfbridge/blob/main/examples/python_api.py).
+Only `import dbfbridge` is the supported stable public boundary — the modules
+under `dbf_bridge.core`, `dbf_bridge.exporter` and `dbf_bridge.importer` are
+implementation details, not an integration surface, and may change between
+minor releases. A complete executable example is in
+[`examples/python_api.py`](https://github.com/PeterPirog/dbfbridge/blob/main/examples/python_api.py),
+and
+[`docs/tool-server-integration.md`](https://github.com/PeterPirog/dbfbridge/blob/main/docs/tool-server-integration.md)
+documents the recommended patterns for service/tool-server integrations.
 
 ## Development
 

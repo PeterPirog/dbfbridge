@@ -18,6 +18,13 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 
 ## Contents
 
+> **Further reading:** complete copy/paste examples for all nine public
+> operations are in [python-api-examples.md](python-api-examples.md), and the
+> transport-neutral integration patterns for tool servers and MCP backends
+> are in [tool-server-integration.md](tool-server-integration.md). The
+> normative stable API contract is [api-1.0.md](api-1.0.md); the
+> documentation map is [README.md](README.md).
+
 1. [Requirements](#requirements)
 2. [Create a virtual environment](#create-a-virtual-environment)
 3. [Install from PyPI](#install-from-pypi)
@@ -31,7 +38,7 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 11. [Memo policies](#memo-policies)
 12. [Raw reads](#raw-reads)
 13. [Export DBF data](#export-dbf-data)
-14. [JSON and CSV without the fast extras](#json-and-csv-without-the-fast-extras)
+14. [JSON and CSV without the fast extras](#json-and-csv-without-the-fast-extra)
 15. [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files)
 16. [XLSX](#xlsx)
 17. [Full installation](#full-installation)
