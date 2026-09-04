@@ -33,6 +33,18 @@ def test_distribution_import_exposes_the_documented_api() -> None:
     } <= set(dbfbridge.__all__)
 
 
+def test_current_stable_contract_does_not_include_direct_write() -> None:
+    """Direct Write / `write_table` is next-version RESEARCH and is not part
+    of the current stable 1.x public contract: it is not exported from the
+    package root. This is a snapshot of the CURRENT contract — if a future
+    explicit version decision promotes Direct Write, the contract documents
+    and this test change together (it is not a permanent rule)."""
+    assert not hasattr(dbfbridge, "write_table")
+    assert not hasattr(dbf_bridge, "write_table")
+    assert "write_table" not in dbfbridge.__all__
+    assert "write_table" not in dbf_bridge.__all__
+
+
 def test_public_api_runs_the_complete_workflow_silently(
     sample_input_dir: Path,
     tmp_path: Path,

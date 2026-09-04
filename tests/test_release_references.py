@@ -61,5 +61,60 @@ def test_release_history_distinguishes_github_release_from_pypi() -> None:
     assert "invalid-publisher" in closure
     assert "never released" in closure
     assert "not yet released" in closure
-    # the failed publish step is distinguished from the successful build
-    assert "build SUCCESS" in closure or "build SUCCESS" in closure.lower()
+    # The failed publish step is distinguished from the successful build
+    # (case-insensitive on purpose: the wording must not depend on casing).
+    lowered = closure.lower()
+    assert "build success" in lowered
+    assert "publish failed" in lowered
+
+
+def test_changelog_footer_links_only_real_refs() -> None:
+    """The changelog footer must keep the real v0.2.0 release link and must
+    never link to a tag that does not exist in Git (v0.1.0 / v0.3.0 /
+    v1.0.0)."""
+    changelog = CHANGELOG.read_text(encoding="utf-8")
+    assert (
+        "[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...HEAD"
+        in changelog
+    )
+    assert (
+        "[0.2.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.2.0"
+        in changelog
+    )
+    for nonexistent in ("v0.1.0", "v0.3.0", "v1.0.0"):
+        assert f"releases/tag/{nonexistent}" not in changelog
+        assert f"compare/{nonexistent}" not in changelog
+
+
+def test_maintained_docs_do_not_link_nonexistent_release_tags() -> None:
+    """No maintained document may point to a release page for a tag that was
+    never created (v0.1.0 / v0.3.0 / v1.0.0). Historical documents are out of
+    scope; this covers the current maintained set only."""
+    problems: list[str] = []
+    for path in MAINTAINED_DOCS:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for nonexistent in ("v0.1.0", "v0.3.0", "v1.0.0"):
+            marker = f"releases/tag/{nonexistent}"
+            if marker in text:
+                problems.append(f"{path.name}: references {marker}")
+            marker = f"compare/{nonexistent}"
+            if marker in text:
+                problems.append(f"{path.name}: references {marker}")
+    assert problems == []
+
+
+def test_no_doc_claims_the_deferred_releases_as_existing() -> None:
+    """The final 1.0.0 release/tag is intentionally deferred and v0.3.0 was
+    never created: no maintained document may claim the opposite. Narrow,
+    semantic assertions — prose is not frozen."""
+    for path in MAINTAINED_DOCS:
+        if not path.is_file():
+            continue
+        lowered = path.read_text(encoding="utf-8").lower()
+        assert "v0.3.0 is released" not in lowered, path.name
+        assert "v0.3.0 was published" not in lowered, path.name
+        assert "v1.0.0 is released" not in lowered, path.name
+        assert "v1.0.0 is published" not in lowered, path.name
+        assert "1.0 is currently available on pypi" not in lowered, path.name

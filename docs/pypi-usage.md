@@ -4,17 +4,30 @@ This is the canonical guide for the **installed** `dbfbridge` distribution —
 for a user who has Python, `pip`, and DBF/FPT files, and who does **not**
 have a repository checkout, a `src/` directory, or any development tools.
 
-Everything here works with a normal `pip install`; nothing requires Git, an
-`examples/` folder, or `PYTHONPATH`.
+Everything in this guide works with the installed distribution only: no Git,
+no `examples/` folder, no `PYTHONPATH`, no private-module imports.
 
-> **Availability note:** this guide describes the **code-complete declared
-> 1.x installed-distribution contract implemented on `main`** — the
-> install-profile extras documented here are the current contract, not an
-> upcoming one.  A historical GitHub Release/tag v0.2.0 exists, but
-> successful PyPI publication was **not completed** (the publish step failed
-> on Trusted Publisher verification); the final 1.0.0 publication lifecycle
-> is still deferred.  The `pip install` instructions below show exactly how
-> installation will work for the final distribution.
+> **Availability.** This guide defines the installed-distribution contract
+> implemented on `main`; the install-profile extras documented here are the
+> current contract, not an upcoming one. After an official PyPI publication,
+> the normal installation command is `python -m pip install dbfbridge`. The
+> historical GitHub Release/tag **v0.2.0 exists**, but its PyPI publication
+> did **not** complete successfully (the publish step failed on Trusted
+> Publisher verification), and the final `1.0.0` release lifecycle is still
+> deferred — therefore this document does **not** claim that the
+> code-complete 1.x repository state is already downloadable from PyPI.
+
+## Which operation do I need? (capability table)
+
+| Need | Operation | Install profile | Creates output? | Recommended starting point |
+|---|---|---|---|---|
+| inspect / read schema / stream records | `inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records` | base | no | [Inspect a DBF file](#inspect-a-dbf-file) |
+| migrate DBF data to JSONL/JSON/CSV | `export_dbf` | base | yes (data files + schemas + report) | [Export DBF data](#export-dbf-data) |
+| exchange with spreadsheet users | `export_dbf(formats=("xlsx",))` | `[xlsx]` | yes | [XLSX](#xlsx) |
+| rebuild DBF/FPT from exported JSONL/JSON/CSV | `reconstruct_dbf` | `[write]` | yes (DBF/FPT + report) | [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files) |
+| rebuild DBF/FPT from XLSX exports | `reconstruct_dbf` | `[write,xlsx]` | yes | [XLSX](#xlsx) |
+| verify exported files against sources | `verify_conversion` | base (+`[xlsx]` when checking XLSX) | only with `write_report=True` | [Command-line interface](#command-line-interface) (`dbf-bridge-verify`) |
+| diagnostic DBF → JSONL → DBF round trip | `check_conversion_quality` | `[write]` | yes (retained workspace) | [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files) |
 
 ## Contents
 
@@ -27,26 +40,28 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 
 1. [Requirements](#requirements)
 2. [Create a virtual environment](#create-a-virtual-environment)
-3. [Install from PyPI](#install-from-pypi)
-4. [Verify the installation](#verify-the-installation)
-5. [Choose the install profile](#choose-the-install-profile)
-6. [Inspect a DBF file](#inspect-a-dbf-file)
-7. [Read the full schema](#read-the-full-schema)
-8. [Stream records](#stream-records)
-9. [Page through records](#page-through-records)
-10. [Deleted records](#deleted-records)
-11. [Memo policies](#memo-policies)
-12. [Raw reads](#raw-reads)
-13. [Export DBF data](#export-dbf-data)
-14. [JSON and CSV without the fast extras](#json-and-csv-without-the-fast-extra)
-15. [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files)
-16. [XLSX](#xlsx)
-17. [Full installation](#full-installation)
-18. [Command-line interface](#command-line-interface)
-19. [Structured error handling](#structured-error-handling)
-20. [Progress and cancellation](#progress-and-cancellation)
-21. [Polish encodings](#polish-encodings)
-22. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
+3. [Installation](#installation)
+4. [Install profiles](#install-profiles)
+5. [Verify the installation](#verify-the-installation)
+6. [5-minute quick start](#5-minute-quick-start)
+7. [Inspect a DBF file](#inspect-a-dbf-file)
+8. [Read the full schema](#read-the-full-schema)
+9. [Stream records](#stream-records)
+10. [Page through records](#page-through-records)
+11. [Deleted records](#deleted-records)
+12. [Memo policies](#memo-policies)
+13. [Raw reads](#raw-reads)
+14. [Export DBF data](#export-dbf-data)
+15. [JSON and CSV without the fast extra](#json-and-csv-without-the-fast-extra)
+16. [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files)
+17. [XLSX](#xlsx)
+18. [Full installation](#full-installation)
+19. [Command-line interface](#command-line-interface)
+20. [Structured error handling](#structured-error-handling)
+21. [Progress and cancellation](#progress-and-cancellation)
+22. [Polish encodings](#polish-encodings)
+23. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
+24. [Further reading](#further-reading)
 
 ## Requirements
 
@@ -72,7 +87,9 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## Install from PyPI
+## Installation
+
+After an official PyPI publication, the normal installation command is:
 
 ```bash
 python -m pip install dbfbridge
@@ -82,24 +99,7 @@ The base installation has exactly **one** runtime dependency (`dbfread`) and
 covers: `import dbfbridge`, the complete read-only Direct Read surface, and
 DBF → JSONL/JSON/CSV migration.
 
-## Verify the installation
-
-```bash
-python -c "import dbfbridge; print(dbfbridge.__version__); print(dbfbridge.__file__)"
-python -m pip show dbfbridge
-dbf-bridge --help
-```
-
-- The **distribution name** is `dbfbridge`; the **recommended import** is
-  also `dbfbridge`.
-- `dbf_bridge` (with an underscore) is a **compatibility namespace** that
-  exports the same public symbols. User code should use
-  `from dbfbridge import ...` and should not import private modules such as
-  `dbf_bridge.core...` or `dbf_bridge.exporter...`.
-- `dbf-bridge` is an executable script installed into the active virtual
-  environment — it needs no repository checkout and no `PYTHONPATH`.
-
-## Choose the install profile
+## Install profiles
 
 | Command | Capabilities | When to use |
 |---|---|---|
@@ -122,6 +122,45 @@ Rules of thumb:
   **never** raise an error and never change the logical result.
 - `[all]` is the full user-facing feature set; it contains **no** development
   tooling (no `pytest`, `ruff`, `build`, `twine`, or benchmark tooling).
+
+## Verify the installation
+
+```bash
+python -c "import dbfbridge; print(dbfbridge.__version__); print(dbfbridge.__file__)"
+python -m pip show dbfbridge
+dbf-bridge --help
+```
+
+- The **distribution name** is `dbfbridge`; the **recommended import** is
+  also `dbfbridge`.
+- `dbf_bridge` (with an underscore) is a **compatibility namespace** that
+  exports the same public symbols. User code should use
+  `from dbfbridge import ...` and should not import private modules such as
+  `dbf_bridge.core...` or `dbf_bridge.exporter...`.
+- `dbf-bridge` is an executable script installed into the active virtual
+  environment — it needs no repository checkout and no `PYTHONPATH`.
+
+## 5-minute quick start
+
+Read the header, stream the records, export the tree — three calls, base
+install:
+
+```python
+from dbfbridge import inspect_table, iter_records, export_dbf
+
+info = inspect_table("data/customer.dbf")
+print(info.record_count, info.encoding, info.has_memo)
+
+for record in iter_records("data/customer.dbf", memo="skip"):
+    print(record.physical_index, record.values)
+
+result = export_dbf("data", "exported", formats=("jsonl",))
+result.raise_for_errors()
+```
+
+Then decide by need (see the capability table): add `[write]` to rebuild
+DBF/FPT files with `reconstruct_dbf`, `[xlsx]` for Excel output, or nothing
+at all for pure reading.
 
 ## Inspect a DBF file
 
@@ -330,6 +369,22 @@ result.raise_for_errors()
 - JSONL is the preferred format for reconstruction (streaming, inline memo,
   raw-record metadata).
 
+### Raw retention levels (`raw_mode`)
+
+`export_dbf(raw_mode=...)` chooses how much raw forensic data the
+JSONL/JSON intermediate retains (`RawMode = "none" | "metadata" |
+"full-record"`):
+
+| value | raw record images | canonical reconstruction | raw byte-identical reconstruction |
+|---|---|---|---|
+| `"full-record"` (**default**) | kept per record | yes | yes (raw-layout restoration) |
+| `"metadata"` | omitted (schema/memo metadata kept) | yes | no |
+| `"none"` | omitted (+ replay-only header blobs omitted) | yes | no |
+
+All modes preserve canonical reconstruction for supported cases — only
+`"full-record"` retains the per-record physical image needed for raw-layout
+restoration. CSV/XLSX outputs never carry raw fields regardless of `raw_mode`.
+
 ## JSON and CSV without the fast extra
 
 `[fast]` is **optional**. Without `orjson`, JSON conversion uses the stdlib
@@ -358,6 +413,11 @@ result.raise_for_errors()
 ```
 
 - `source` is the exported format tree (data files + `<table>_schema.json`);
+  the schema artifact is generated by `export_dbf` and is the **authority**
+  consumed by `reconstruct_dbf`;
+  `read_schema(...).to_dict()` is an inspection/service payload and is
+  **not** that migration artifact — never manufacture reconstruction input
+  from it;
 - `destination` must be a **separate** directory — the source is never
   modified and the default is `overwrite=False`;
 - the generated `reconstruction_report.jsonl` records canonical/raw checksums
@@ -635,3 +695,16 @@ carrying the offending `encoding`) — never a raw Python `LookupError`.
 - **Direct Read is read-only**: `inspect_table`, `read_schema`,
   `iter_records`, `read_records`, and `iter_raw_records` never create files,
   locks, reports, or partial artifacts, and never modify the source.
+
+## Further reading
+
+- [python-api-examples.md](python-api-examples.md) — copy/paste cookbook for
+  all nine stable public operations;
+- [tool-server-integration.md](tool-server-integration.md) — service/MCP
+  integration guide (bounded paging, JSON boundary, progress/cancellation
+  matrix, pinned deployment);
+- [api-1.0.md](api-1.0.md) — the normative stable 1.x API contract;
+- [migration-1.0.md](migration-1.0.md) — moving from an earlier 0.x release;
+- [compatibility-vfp.md](compatibility-vfp.md) — authoritative per-type
+  format support;
+- [docs/README.md](README.md) — the documentation map.

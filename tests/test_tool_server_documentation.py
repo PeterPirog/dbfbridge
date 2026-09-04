@@ -127,6 +127,42 @@ def test_adapter_capability_probe_is_fail_closed() -> None:
     assert "direct_read_ok = all(" in adapter
 
 
+def test_documented_progress_cancellation_matrix_matches_runtime_signatures() -> None:
+    """The documented progress/cancel_check capability matrix must equal the
+    actual public signatures — no documented fiction."""
+    import inspect
+
+    import dbfbridge
+
+    doc = DOC.read_text(encoding="utf-8")
+    section = doc.split("### Progress and cancellation capability matrix", 1)[1]
+    table = section.split("## 16. Path security", 1)[0]
+    documented: dict[str, tuple[bool, bool]] = {}
+    for line in table.splitlines():
+        match = re.fullmatch(
+            r"\|\s*`(\w+)`\s*\|\s*(YES|NO)\s*\|\s*(YES|NO)\s*\|", line.strip()
+        )
+        if match:
+            documented[match.group(1)] = (match.group(2) == "YES", match.group(3) == "YES")
+
+    expected_operations = {
+        "inspect_table",
+        "read_schema",
+        "iter_records",
+        "read_records",
+        "iter_raw_records",
+        "export_dbf",
+        "reconstruct_dbf",
+        "verify_conversion",
+        "check_conversion_quality",
+    }
+    assert set(documented) == expected_operations, documented.keys()
+    for name, (documented_progress, documented_cancel) in documented.items():
+        parameters = inspect.signature(getattr(dbfbridge, name)).parameters
+        assert ("progress" in parameters) == documented_progress, name
+        assert ("cancel_check" in parameters) == documented_cancel, name
+
+
 # ---------------------------------------------------------------------------
 # executable adapter examples
 # ---------------------------------------------------------------------------

@@ -97,7 +97,10 @@ def _make_sdist(directory: Path, version: str = VERSION, *, missing: tuple[str, 
         "LICENSE": "MIT\n",
         "pyproject.toml": '[project]\nname = "dbfbridge"\nversion = "9.9.9"\n',
         "PUBLISHING.md": "# Publishing\n",
+        "docs/README.md": "# Documentation map\n",
         "docs/pypi-usage.md": "# PyPI usage\n",
+        "docs/python-api-examples.md": "# Python API examples\n",
+        "docs/tool-server-integration.md": "# Tool-server integration\n",
         "docs/api-1.0.md": "# API contract\n",
         "docs/migration-1.0.md": "# Migration\n",
         "docs/compatibility-vfp.md": "# Compatibility\n",
@@ -285,7 +288,10 @@ def test_wrong_sdist_name_fails(tmp_path: Path) -> None:
             "LICENSE": "MIT\n",
             "pyproject.toml": "",
             "PUBLISHING.md": "",
+            "docs/README.md": "",
             "docs/pypi-usage.md": "",
+            "docs/python-api-examples.md": "",
+            "docs/tool-server-integration.md": "",
             "docs/api-1.0.md": "",
             "docs/migration-1.0.md": "",
             "docs/compatibility-vfp.md": "",
@@ -301,12 +307,24 @@ def test_wrong_sdist_name_fails(tmp_path: Path) -> None:
 
 
 def test_missing_required_public_doc_fails(tmp_path: Path) -> None:
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    _make_wheel(dist)
-    _make_sdist(dist, missing=("docs/migration-1.0.md",))
-    violations = _verify(dist)
-    assert any("sdist lacks docs/migration-1.0.md" in violation for violation in violations)
+    """Every required public document (all three primary guides included)
+    must be enforced by the verifier — a future release artifact must fail
+    verification when one of them disappears from the sdist."""
+    for missing in (
+        "docs/migration-1.0.md",
+        "docs/README.md",
+        "docs/pypi-usage.md",
+        "docs/python-api-examples.md",
+        "docs/tool-server-integration.md",
+        "docs/api-1.0.md",
+        "docs/compatibility-vfp.md",
+    ):
+        dist = tmp_path / f"dist-{missing.replace('/', '-')}"
+        dist.mkdir()
+        _make_wheel(dist)
+        _make_sdist(dist, missing=(missing,))
+        violations = _verify(dist)
+        assert any(f"sdist lacks {missing}" in violation for violation in violations)
 
 
 def test_missing_pkg_info_fails(tmp_path: Path) -> None:

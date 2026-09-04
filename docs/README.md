@@ -7,8 +7,8 @@ document is authoritative for.
 
 | Document | Role |
 |---|---|
-| [README.md](../README.md) | project overview, install profiles, quick starts |
-| [pypi-usage.md](pypi-usage.md) | complete installed-distribution user guide |
+| [README.md](../README.md) | **LANDING PAGE** — project overview, install profiles, quick starts |
+| [pypi-usage.md](pypi-usage.md) | **USER GUIDE** — complete installed-distribution guide (profiles, Direct Read, migration, reconstruction, XLSX, CLI, errors, progress/cancellation) |
 
 ## Complete Python API examples
 
@@ -18,7 +18,8 @@ all nine stable public operations (`inspect_table`, `read_schema`,
 `reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`), the
 install profiles, progress/cancellation, and the JSON-safe boundary.
 
-**USER GUIDE** — describes how the installed package is used.
+**COPY/PASTE API COOKBOOK** — describes how the installed package is used;
+the normative guarantees live in `api-1.0.md`.
 
 ## Tool-server and MCP integration
 
@@ -52,7 +53,7 @@ earlier 0.x release to the declared 1.x API.
 
 | Document | Role |
 |---|---|
-| [architecture-closure.md](architecture-closure.md) | architecture closure matrix, final main lineage, blocker list — **MAINTAINER EVIDENCE** |
+| [architecture-closure.md](architecture-closure.md) | architecture closure matrix, closure-checkpoint lineage, blocker list — **MAINTAINER EVIDENCE** |
 | [architecture/phase-0-audit.md](architecture/phase-0-audit.md) | historical Phase 0 technical audit (0.1.0 state) |
 | [architecture/phase-1-direct-read.md](architecture/phase-1-direct-read.md) | historical Phase 1A/1B direct read design evidence |
 | [architecture/phase-3-performance-baseline.md](architecture/phase-3-performance-baseline.md) | canonical Phase 3 performance baseline history |

@@ -48,6 +48,11 @@ No Git, no source checkout, and no compiler are needed for normal use.
 
 ## Installing from PyPI
 
+The command below is the normal installation path **after an official PyPI
+publication** — the current publication status is stated in the release
+blockquote above and in
+[docs/pypi-usage.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md).
+
 ### 1. Create a virtual environment
 
 Windows PowerShell:
