@@ -9,7 +9,12 @@
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
-> Status: **0.2.0 (alpha)**. The next release is being prepared. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
+> **Status: 0.2.0 (alpha)** — the declared 1.x architecture is code-complete
+> on `main`; the package is not yet published (PyPI publication is externally
+> blocked by Trusted Publisher / account access, and the final release
+> version/tag has intentionally not been created yet).  Test the result on a
+> copy of production data before using it as an archival replacement. CDX
+> index definitions are not reconstructed.
 
 ## Requirements
 
@@ -65,13 +70,14 @@ dbf-bridge --help
 | `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
-> **Availability note:** the GitHub release **v0.2.0** exists, but the PyPI
-> publication of 0.2.0 is currently **pending** (external account recovery /
-> Trusted Publisher setup).  The install-profile extras documented here are
-> the upcoming **0.3** contract; once the corresponding release is on PyPI,
-> `pip install dbfbridge` installs the minimal base profile and the extras
-> below become opt-in.  Until that publication, installation from PyPI is
-> not yet possible.
+> **Repository status:** the declared 1.x architecture is **code-complete on
+> `main`**.  **Release status:** not yet published — PyPI publication is
+> externally blocked by Trusted Publisher / account access, and the final
+> release version/tag has intentionally not been created yet.  Package
+> metadata remains `0.2.0` until the final release-preparation commit.
+> The install-profile extras documented here are the current 1.x contract
+> (not an upcoming one): `pip install dbfbridge` installs the minimal base
+> profile and the extras below are opt-in.
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
 stdlib `json` module; without `polars`, CSV conversion uses the Python

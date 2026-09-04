@@ -166,9 +166,27 @@ def _current_version_section_is_unreleased() -> bool:
 
 
 def _readme_status_mentions(readme: str, version: str) -> bool:
-    """Whether the README status area carries *version* (release-stage
+    """Whether the README status blockquote carries *version* (release-stage
     neutral: the maturity marker may change with the release stage)."""
-    return bool(re.search(rf"\*\*{re.escape(version)}\b", readme))
+    for line in readme.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">") and "Status" in stripped and version in stripped:
+            return True
+    return False
+
+
+#: Truthful unreleased/publication-state phrases the README may communicate
+#: while the current version has no dated changelog section.  At least ONE
+#: must be present; no exact English phrase is forced (the wording stays
+#: truthful without making the tests brittle).
+_UNRELEASED_STATE_MARKERS = (
+    "not yet published",
+    "publication blocked",
+    "publication pending",
+    "Trusted Publisher",
+    "code-complete",
+    "externally blocked",
+)
 
 
 def test_readme_release_status_is_truthful() -> None:
@@ -183,11 +201,30 @@ def test_readme_release_status_is_truthful() -> None:
     assert "resolves to the previous published" not in readme
 
     if _current_version_section_is_unreleased():
-        # While the release is only prepared, the README must carry an
-        # explicit release-preparation marker and must not claim the
-        # version is already published.
+        # While the current version is unreleased, the README must NOT claim
+        # it is available on PyPI and MUST communicate at least one truthful
+        # unreleased/publication-blocked state (code-complete + unpublished
+        # is a legitimate final-closure state, not only an active release
+        # candidate).
         assert "available on PyPI" not in readme
-        assert "release is being prepared" in readme or "release candidate" in readme
+        assert any(marker in readme for marker in _UNRELEASED_STATE_MARKERS), (
+            "README must state a truthful unreleased/publication-blocked status"
+        )
+
+
+def test_user_facing_docs_do_not_carry_stale_0_3_development_claims() -> None:
+    """After repository architecture closure the user-facing current-state
+    docs must not imply that an 0.3 release is still the active development
+    target (the declared 1.x contract is the reached state).  Scope: current
+    user-facing docs only — CHANGELOG history and historical documents stay
+    untouched."""
+    for relative in ("README.md", "docs/pypi-usage.md"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        lowered = text.lower()
+        assert "upcoming **0.3** contract" not in text, relative
+        assert "upcoming 0.3 contract" not in lowered, relative
+        assert "0.3 contract" not in lowered, relative
+        assert "the next release is being prepared" not in lowered, relative
 
 
 def test_readiness_status_logic_does_not_require_the_current_stage() -> None:

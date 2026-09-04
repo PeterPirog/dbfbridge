@@ -1,8 +1,8 @@
 # dbfbridge 1.0 Architecture Closure Matrix
 
-**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md` (immutable upstream document; this file is the working repository status and does not replace it).
-**Audit baseline:** `main` = `c84a611aac6e7beb4a48f5044e62c6a7d10aefeb` (PR #14 merged) → closure-audit merge `61042944873899735edffe6acf7def01cc1053b1` (PR #15) → Macro A branch `feat/1.0-public-contract-stabilization`.
-**Audit date:** 2026-09-03 (Macro A update same day). **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
+**Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260904-052528).md` (immutable upstream document; this file is the working repository status and does not replace it).
+**Final main lineage:** `main` = `b712ce59631d20015360f4f6fd26bc9be10214fa` — reached through PR #14 (`c84a611`) → closure-audit PR #15 (`6104294`) → **Macro A** PR #16 (`90f8362`) → **Macro B** PR #17 (`197c986`) → **Macro C** PR #18 (final head `e173ec6`, merge `b712ce5`) → final repository-closure docs PR. Post-Macro-C main CI 33843870158 SUCCESS (package job incl. the shared artifact verifier).
+**Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
 
 Exact test evidence: closure-audit `main` suite = 432 passed, 1 skipped (433 collected, CI 33772195304); Macro A branch after the correctness gate = 505 passed locally (Windows; includes the 55 contract tests + 17 Varchar-gate tests); `release/0.3.0` = exact-head release CI SUCCESS (454 passed, 2 skipped, release CI 33756842901).
 
@@ -61,6 +61,25 @@ by Macro B (`docs/api-1.0.md` + `tests/test_api_1_0_contract.py`, PR #17
 `197c986`). **Zero repository-controlled architecture blockers remain.** The
 sole remaining blocker is external: **PyPI Trusted Publisher verification
 (EXB-01)**.
+
+## Repository code-complete checkpoint
+
+Repository `main` is **code-complete for the declared 1.x architecture**.
+
+- Repository-controlled blockers: **0**
+- Known correctness blockers in supported VFP DBF/FPT cases: **0**
+- External publication blockers: **1** — **EXB-01: PyPI Trusted Publisher /
+  account access**
+- Version/tag/publication: **intentionally deferred to the final release
+  lifecycle** — package metadata remains `0.2.0`, no tag exists, and nothing
+  is published; the final release-preparation commit (final version, dated
+  CHANGELOG entry, timeless docs, stable classifier) belongs to the future
+  release-only task after PyPI access is restored.
+
+Historical status for future reference: `release/0.3.0` and its draft PR #12
+are **SUPERSEDED / HISTORICAL** — the generic release hardening from that
+branch was converged onto `main` by Macro C (PR #18); no 0.3.0 publication
+was performed.
 
 ### Closure-accounting correction (Macro C)
 
@@ -157,7 +176,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
-| R-26 | §12 | Repository packaging readiness: semver, metadata, SPDX, wheels/sdist, 3.10–3.14, Windows CI, changelog, migration guide, `py.typed`, side-effect-free import, examples, documented VFP/CDX limits | CLOSED_FROZEN | **Macro C convergence (this branch):** version-neutral CI package job (`build` + `twine check` + `release_wheel_smoke` + `pypi_install_smoke` on the exact wheel, no expected-version literals), hardened `publish.yml` (release-final-state gate `scripts/check_release_state.py`, wheel/sdist count gates, wheel METADATA + `py.typed` gate, sdist PKG-INFO gate, build-once/same-artifact publish, Trusted Publishing OIDC), `docs/migration-1.0.md`, public docs in the sdist (`MANIFEST.in`) — evidence on the current `main` lineage, tested by `tests/test_release_state.py` / `test_release_readiness.py` / `test_migration_guide.py` / `test_packaging.py` | exact-head Macro C CI (package job) | `main` still at 0.2.0 — intentional release lifecycle (§41) | NO | none | — |
+| R-26 | §12 | Repository packaging readiness: semver, metadata, SPDX, wheels/sdist, 3.10–3.14, Windows CI, changelog, migration guide, `py.typed`, side-effect-free import, examples, documented VFP/CDX limits | CLOSED_FROZEN | **Macro C merged on main (`b712ce5`):** version-neutral CI package job (`build` + `twine check` + shared `scripts/verify_release_artifacts.py` + `release_wheel_smoke` + `pypi_install_smoke` on the exact wheel, no expected-version literals), hardened `publish.yml` (release-final-state gate `scripts/check_release_state.py`, wheel/sdist count gates, wheel METADATA + `py.typed` gate, sdist PKG-INFO gate, build-once/same-artifact publish, Trusted Publishing OIDC), `docs/migration-1.0.md` + `docs/api-1.0.md` + `docs/compatibility-vfp.md` + public docs in the sdist (`MANIFEST.in`), tested by `tests/test_release_state.py` / `test_release_readiness.py` / `test_migration_guide.py` / `test_release_artifacts.py` / `test_packaging.py` | **post-merge main CI 33843870158 SUCCESS @ `b712ce5`** — package job: build PASS, twine PASS, shared artifact verifier PASS (`ARTIFACTS: PASS (one wheel, one sdist, expected version 0.2.0)`), fresh-wheel smoke PASS, install-profile smoke PASS (base/write/xlsx/write,xlsx/fast/all/import) | `main` still at 0.2.0 — intentional release lifecycle (§41) | NO | none | — |
 | R-27 | §12 | Actual PyPI publication (Trusted Publishing) | **EXTERNAL_BLOCKER** | publish run 33487949133: build SUCCESS, publish FAILURE `invalid-publisher`; OIDC claims correct; PyPI-side Trusted Publisher missing/mismatched | v0.2.0 publish run | blocked outside repository | **YES (EXB-01)** | external verification only; no repo action | Macro C |
 
 ### §13 Benchmarks / §14 Performance policy
@@ -427,7 +446,7 @@ Evidence: `tests/test_public_error_contract.py::test_mcp_machine_readable_classi
 ### §56 — finite numbered answer (after Macro B)
 
 If dbfbridge 1.0 were released today, **zero repository-controlled facts** would
-prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260903-164824).md`.
+prevent truthful compliance with `DBFBRIDGE_TARGET_ARCHITECTURE(20260904-052528).md`.
 
 All former items are closed with evidence: BLK-01 (machine-readable public error
 contract — `tests/test_public_error_contract.py`), BLK-02 (RawMode split with
@@ -459,14 +478,18 @@ verification pending (`invalid-publisher`) — see External blockers.
 - **Forbidden scope honoured:** no runtime behaviour change, no new public symbols, no benchmark changes, no release-branch changes.
 - **What becomes FROZEN upon merge:** the 1.x public API contract and guarantees (this matrix + `docs/api-1.0.md` become the release record).
 
-### Macro C — Publication + post-publish verification (externally gated)
+### Macro C — Stable Release Infrastructure Convergence — **MERGED on main (PR #18, final head `e173ec6`, merge `b712ce5`)**
 
-- **Objective:** execute the 1.0 publication sequence once EXB-01 is resolved externally.
+- **Objective:** converge the proven generic release infrastructure from the superseded 0.3 release-preparation branch onto current `main` (version-neutral CI smokes, release-final-state validator, shared artifact verifier, hardened publish pipeline, migration-1.0 guide).
+- **Delivered:** `scripts/check_release_state.py`, `scripts/verify_release_artifacts.py` (ONE shared gate run by the CI package job AND the publish build job), version-neutral `ci.yml`/smoke contracts, hardened `publish.yml` (release-state gate → build once → twine → artifact verifier → fresh-wheel smoke → install-profile smoke → single artifact → OIDC publish), hardened `PUBLISHING.md`, `MANIFEST.in` public docs, `docs/migration-1.0.md`.
+- **Evidence on main:** post-merge CI 33843870158 SUCCESS @ `b712ce5` — package job: build PASS, twine PASS, shared artifact verifier PASS (`ARTIFACTS: PASS (one wheel, one sdist, expected version 0.2.0)`), fresh-wheel smoke PASS, install-profile smoke PASS (base/write/xlsx/write,xlsx/fast/all/import).
+- **Definition of Done met:** repository-controlled blockers 0; publication remains externally gated (EXB-01).
+
+### Final release lifecycle (externally gated — NOT started)
+
+- **Objective:** when PyPI access / Trusted Publisher verification is restored: verify the publisher, prepare the final release commit (final version, dated CHANGELOG entry, timeless docs), run the release-state validator, exact-main CI, annotated tag, GitHub Release, Trusted Publishing, post-publication installed-PyPI verification (per `PUBLISHING.md`).
 - **Included blocker IDs:** EXB-01 (external; not a code blocker).
-- **Forbidden scope:** no code changes; publishing actions only per `PUBLISHING.md` after the PyPI-side Trusted Publisher is verified.
-- **Tests/CI:** post-publication install-profile smokes on the exact published wheel.
-- **Definition of Done:** 1.0 published + provenance verified; EXTERNAL_BLOCKER cleared.
-- **What becomes FROZEN afterward:** 1.0 release artifact.
+- **Current truth:** intentionally not started — no version bump, no tag, no publication.
 
 ---
 
