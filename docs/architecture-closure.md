@@ -62,6 +62,19 @@ by Macro B (`docs/api-1.0.md` + `tests/test_api_1_0_contract.py`, PR #17
 sole remaining blocker is external: **PyPI Trusted Publisher verification
 (EXB-01)**.
 
+## Documentation integration hardening (post-closure note)
+
+After the repository code-complete checkpoint, a documentation-quality and
+integration-readiness pass was performed as a NEW user requirement. It did
+not change the runtime architecture or the public API. Documentation now
+additionally covers: the installed API cookbook for all nine operations
+(\docs/python-api-examples.md\), the JSON/tool-server boundary and generic
+MCP integration patterns (\docs/tool-server-integration.md\),
+path-security responsibility, machine-readable error mapping, bounded
+paging, progress/cancellation bridging, offline/vendored deployment, and a
+documentation map (\docs/README.md\). English-language convergence and
+link/anchor validation were added for maintained documentation.
+
 ## Repository code-complete checkpoint
 
 Repository `main` is **code-complete for the declared 1.x architecture**.

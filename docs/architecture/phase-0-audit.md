@@ -1,5 +1,7 @@
 # dbfbridge — Phase 0 technical audit
 
+> **HISTORICAL PHASE EVIDENCE** — this document describes the repository state at audit time (dbfbridge 0.1.0, commit addbadb). For the CURRENT architecture status see \docs/architecture-closure.md\.
+
 - Baseline commit: `addbadb9281914661bf742924f45039e46a895cd` (== `origin/main` at audit time)
 - Package: `dbfbridge 0.1.0` (alpha), Python >= 3.10, MIT
 - Audited environment: CPython 3.14.0 on Windows 11 (10.0.26200), x64, 32 logical CPUs, 63 GiB RAM

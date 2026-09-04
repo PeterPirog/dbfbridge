@@ -1,0 +1,376 @@
+# Using dbfbridge in tool servers and MCP backends
+
+This guide describes transport-neutral patterns for exposing the dbfbridge
+public API from **application/service layers**: MCP servers, JSON-RPC
+services, agent tools, local service backends, web APIs, and job workers.
+
+> **Scope:** this is an application adapter guide. It documents how a host
+> application should use the stable public `dbfbridge` API. It is **not** an
+> MCP protocol implementation, and it does not reference any specific
+> downstream MCP project.
+
+## 1. Fundamental integration rule
+
+```text
+Transport adapter        (MCP / JSON-RPC / HTTP / job queue)
+        |
+        v
+application/service layer        (path policy, authorization, paging limits)
+        |
+        v
+public `dbfbridge` API           (import dbfbridge)
+```
+
+**Never:**
+
+```text
+MCP handler
+        |
+        v
+dbf_bridge.core / private implementation modules
+```
+
+The transport adapter owns:
+
+- tool registration and request validation;
+- authorization and data-access policy;
+- path policy (see [Path security](#15-path-security-host-responsibility));
+- response-envelope shape;
+- async scheduling, timeouts, request-cancellation mapping.
+
+dbfbridge owns:
+
+- DBF/FPT parsing (exactly one physical record loop);
+- migration/export, schema-driven reconstruction;
+- verification and quality diagnostics;
+- typed result/error semantics (machine codes + JSON-safe `to_dict()`).
+
+The adapter must stay **thin**: do not reimplement DBF parsing, RawMode
+semantics, schema logic, or memo decoding, and never parse English exception
+messages. All of that is the library's job.
+
+## 2. Installation for service hosts
+
+A server decides its capabilities at **deployment time**. dbfbridge never
+installs missing dependencies at request time — a missing extra is a typed,
+fail-before-output error.
+
+| Server capability | Install |
+|---|---|
+| read/schema/data server | `pip install dbfbridge` |
+| read + reconstruction | `pip install "dbfbridge[write]"` |
+| XLSX support | `pip install "dbfbridge[xlsx]"` |
+| full-feature service | `pip install "dbfbridge[all]"` |
+
+## 3. Import / capability probe
+
+`import dbfbridge` is side-effect free: it registers no codecs, creates no
+files, and loads no CLI/reporting modules or heavy dependencies. A cheap
+startup probe uses public metadata only — **never perform a DBF read merely
+for service discovery**:
+
+```python
+import dbfbridge
+
+def backend_status():
+    return {
+        "available": True,
+        "version": dbfbridge.__version__,
+        "direct_read": all(
+            hasattr(dbfbridge, name)
+            for name in (
+                "inspect_table",
+                "read_schema",
+                "read_records",
+            )
+        ),
+    }
+```
+
+## 4. Bounded reads at the tool boundary
+
+For a remote/tool boundary, prefer `read_records()` over returning an
+unbounded `iter_records()` stream from a single tool call:
+
+```python
+from dbfbridge import read_records
+
+def read_table_page(path, *, offset=0, limit=100, fields=None):
+    limit = min(limit, 1000)  # HOST POLICY maximum, not a dbfbridge limit
+    page = read_records(
+        path,
+        offset=offset,
+        limit=limit,
+        fields=fields,
+        memo="skip",
+    )
+    return page.to_dict()
+```
+
+Drive paging with `offset` / `limit` / `next_offset` / `exhausted` from
+`page.to_dict()`. The server-side page-size cap is **host policy**;
+dbfbridge only guarantees that `read_records` is bounded by its `limit`.
+
+## 5. Field projection
+
+When the caller needs only selected columns, pass `fields=[...]`:
+
+- less parsing (unselected fields are never parsed);
+- smaller responses and lower serialization cost;
+- a lower chance of exposing data the caller did not ask for.
+
+Field projection is **not** an authorization mechanism — data-access policy
+remains a host responsibility.
+
+## 6. Memo policy for tool servers
+
+- `memo="skip"` — best for discovery/listing calls where memo content is not
+  needed; the FPT is never opened.
+- `memo="lazy"` — useful inside local Python code: memo fields are returned
+  as `LazyMemoValue` handles. A `LazyMemoValue` is a pointer/reference
+  contract, **not** remote memo content — do not send the handle object over
+  a transport.
+- `memo="inline"` — when the response explicitly needs memo values.
+
+For large remote results, avoid blindly inlining every memo.
+
+## 7. Raw data policy
+
+For ordinary service calls, `raw=False` (Direct Read) and migration exports
+with `raw_mode="none"` are generally appropriate when physical forensic bytes
+are not required. `raw_mode="full-record"` (the **library default**, which
+this guide does not change) serves forensic/raw-layout/round-trip needs and
+increases payload and storage cost. This is a host-level recommendation, not
+a change to the API contract.
+
+## 8. JSON boundary
+
+Public models expose `to_dict()` as the supported JSON-safe boundary —
+`TableInfo`, `TableSchema`, `DirectRecord`, `RecordPage`,
+`ExportRunResult`, `ReconstructionRunResult`, `VerificationRunResult`,
+`QualityRunResult`, and every public error. Do not use
+`dataclasses.asdict(...)`, `obj.__dict__`, or `repr(obj)` as the integration
+contract.
+
+`DirectRecord.raw_record` is **bytes** in Python, but
+`DirectRecord.to_dict()` serializes it as Base64 — so a tool adapter should
+pass `record.to_dict()` to a JSON transport, never the raw Python bytes.
+
+## 9. Run-result and failure policy
+
+High-level operations (`export_dbf`, `reconstruct_dbf`,
+`verify_conversion`, `check_conversion_quality`) return complete run
+results. Two valid host strategies:
+
+**Strategy A — preserve partial results:**
+
+```python
+result = export_dbf("data", "exported", formats=("jsonl",))
+return result.to_dict()
+```
+
+The transport layer can inspect `exit_code`, `failed`, `warnings`, and the
+per-table `error_details`.
+
+**Strategy B — fail the tool when any table failed:**
+
+```python
+result = export_dbf("data", "exported", formats=("jsonl",))
+result.raise_for_errors()  # raises DBFBridgeRunError
+return result.to_dict()
+```
+
+Do not treat a warning state (`exit_code == 2`) as identical to a hard
+failure — the run result carries both.
+
+## 10. Machine-readable error mapping
+
+Classify failures by **`error.code`**, never by the English message. Use
+`to_dict()` on any public exception:
+
+```python
+from dbfbridge import DBFBridgeRunError, DirectReadError
+
+def error_payload(exc):
+    if hasattr(exc, "to_dict"):
+        return exc.to_dict()
+    raise exc
+```
+
+The error payload **families differ intentionally** (see
+[docs/api-1.0.md](api-1.0.md) §4 for the normative contract):
+
+- Direct Read errors: `{code, message, path, context}`;
+- high-level `OperationError` family: `{code, message, operation, path, table, context}`;
+- `OptionalDependencyMissingError`: `{code, dependency, extra, operation, install_command, purpose?}`;
+- `DBFBridgeRunError`: `{code, message, details: [...]}`.
+
+## 11. Complete transport-neutral example
+
+```python
+"""Thin application adapter over the public dbfbridge API.
+
+This is an application adapter example. It is NOT an MCP protocol
+implementation — a real server maps its own transport (MCP, JSON-RPC, HTTP)
+onto these plain JSON-safe dictionaries.
+"""
+
+import dbfbridge
+
+
+def backend_status() -> dict:
+    return {
+        "available": True,
+        "version": dbfbridge.__version__,
+        "direct_read": all(
+            hasattr(dbfbridge, name)
+            for name in ("inspect_table", "read_schema", "read_records")
+        ),
+    }
+
+
+def inspect_table_tool(path: str) -> dict:
+    info = dbfbridge.inspect_table(path)
+    return {"ok": True, "data": info.to_dict()}
+
+
+def read_table_page_tool(path: str, *, offset: int = 0, limit: int = 100,
+                         fields: list[str] | None = None) -> dict:
+    try:
+        page = dbfbridge.read_records(
+            path,
+            offset=offset,
+            limit=min(limit, 1000),  # host policy
+            fields=fields,
+            memo="skip",
+        )
+        return {"ok": True, "data": page.to_dict()}
+    except dbfbridge.DirectReadError as exc:
+        return {"ok": False, "error": exc.to_dict()}
+
+
+def export_tool(source: str, output: str) -> dict:
+    result = dbfbridge.export_dbf(source, output, formats=("jsonl",))
+    return {"ok": result.ok > 0, "data": result.to_dict()}
+
+
+def reconstruct_tool(source: str, output: str) -> dict:
+    result = dbfbridge.reconstruct_dbf(source, output, input_format="jsonl")
+    return {"ok": result.ok > 0, "data": result.to_dict()}
+```
+
+Everything above imports only `dbfbridge` / `from dbfbridge import ...` and
+returns plain JSON-safe dictionaries.
+
+## 12. Synchronous API / async host
+
+dbfbridge API calls are **synchronous filesystem operations**. The library
+creates no event loops, threads, background workers, or global request
+state. If the hosting MCP/web framework is asynchronous, **the host owns
+thread/process offloading and scheduling** (for example running blocking
+calls in a worker pool). This guide does not claim universal thread safety
+for the library and dbfbridge intentionally contains no asyncio.
+
+## 13. Cancellation bridging
+
+Direct Read operations accept `cancel_check: Callable[[], bool]`. A hosting
+server can map its request-cancellation state into that callable:
+
+```python
+cancelled = False
+
+def should_cancel():
+    return cancelled
+
+for record in iter_records(path, cancel_check=should_cancel):
+    ...
+```
+
+When the callable returns `True`, the read stops at the next record boundary
+and raises `ReadCancelledError` (`READ_CANCELLED`) — a normal,
+machine-classifiable outcome carrying the resume context. High-level write
+operations do not expose `cancel_check`; do not invent cancellation for them.
+
+## 14. Progress bridging
+
+Direct Read and long-running operations accept `progress=` callbacks
+receiving `ProgressEvent` objects with the public fields
+`operation`, `current`, `total`, `table`, `format`, `records`, `message`:
+
+```python
+def on_progress(event):
+    queue_or_transport_progress(event.to_dict())
+```
+
+The hosting adapter may map `ProgressEvent` to its own
+progress/notification mechanism (for example an MCP progress notification);
+dbfbridge does not assume any protocol-specific progress API.
+
+## 15. Path security (host responsibility)
+
+dbfbridge accepts filesystem paths. It is **not an authorization sandbox**.
+The hosting server **must** define and enforce policies such as:
+
+- allowed read roots;
+- allowed output roots / workspace roots;
+- maximum page size;
+- allowed file extensions and operations;
+- overwrite policy;
+- authentication and authorization.
+
+Canonicalize paths in the host and reject path traversal or
+symlink/junction escapes according to the deployment model. Do not assume
+that dbfbridge itself implements any of these server policies.
+
+## 16. Source immutability vs write operations
+
+**Source-read-only** (never create outputs, never touch source bytes):
+
+- `inspect_table`, `read_schema`, `iter_records`, `read_records`,
+  `iter_raw_records`.
+
+**Write outputs / reports** (to the declared output/report locations):
+
+- `export_dbf`, `reconstruct_dbf`, `check_conversion_quality`;
+- `verify_conversion` writes a report only when `write_report=True`.
+
+"Write operation" is not the same as "source mutation": dbfbridge writes
+only to its declared output/report locations and never mutates its sources.
+For a tool server, expose write-capable operations as **explicit
+tools/actions** (never as read-only resources), require the caller to
+provide a separate output path, and never infer write permission merely
+because an OS path is writable.
+
+## 17. CDX limitation in server integration
+
+dbfbridge **reports structural CDX presence**. It does **not** provide an
+authoritative CDX tag/expression engine and does **not** rebuild CDX
+indexes. A system that modifies indexed DBF data must use a separate
+index-aware/VFP-capable layer where valid CDX output is required — do not
+present a copied/stale CDX file as valid after changing indexed data.
+
+## 18. Offline / vendored deployment
+
+Normal deployment is a **pinned package installation**. For a controlled
+offline/vendored deployment:
+
+- vendor/package the **whole dbfbridge distribution** (wheel or sdist);
+- record the version, upstream source, commit/tag when applicable, license,
+  and hash/provenance;
+- import **only** `dbfbridge`.
+
+Never copy individual `dbf_bridge.core` files, fork private parser modules
+into the host, or treat private modules as a stable contract — that
+guarantees architectural drift when dbfbridge evolves.
+
+## 19. Adapter anti-drift rules
+
+The adapter must remain thin:
+
+- reimplementing DBF parsing: **NO**;
+- reimplementing RawMode semantics: **NO**;
+- parsing English exception messages: **NO** (classify by `code`);
+- duplicating schema or memo decoding logic: **NO**.
+
+All DBF/FPT domain knowledge stays inside dbfbridge; the transport owns only
+transport concerns.
