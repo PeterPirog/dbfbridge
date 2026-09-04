@@ -18,7 +18,7 @@ Repository: <https://github.com/PeterPirog/dbfbridge>
 
 License: MIT
 
-Current package metadata: version and Development Status classifier live in \pyproject.toml\ (0.2.0, Alpha at the time of the 1.x architecture closure) and \__version__\ in \src/dbf_bridge/__init__.py\ — do not duplicate the values here. The declared 1.x architecture is code-complete on \main\; publication is externally blocked (PyPI Trusted Publisher / account access). Authoritative status documents: \docs/api-1.0.md\ (stable API contract), \docs/architecture-closure.md\ (architecture closure matrix and final main lineage), \CHANGELOG.md\ (release history).
+Current package metadata: version and Development Status classifier live in `pyproject.toml` (0.2.0, Alpha at the time of the 1.x architecture closure) and \__version__\ in `src/dbf_bridge/__init__.py` — do not duplicate the values here. The declared 1.x architecture is code-complete on `main`; publication is externally blocked (PyPI Trusted Publisher / account access). Authoritative status documents: `docs/api-1.0.md` (stable API contract), `docs/architecture-closure.md` (architecture closure matrix and final main lineage), `CHANGELOG.md` (release history).
 
 ## Architecture
 
@@ -200,16 +200,24 @@ possible instead of creating a second behavior path.
 
 ## Dependencies
 
-Runtime dependencies are installed by default:
+The dependency model is defined by `pyproject.toml` (the authoritative
+source — versions are not duplicated here):
 
-- `dbfread` — DBF/FPT reading;
-- `dbf` — DBF/FPT reconstruction and fixture generation;
-- `orjson` — JSONL parsing/validation;
-- `polars` — streaming CSV conversion;
-- `xlsxwriter` — constant-memory XLSX writing;
-- `openpyxl` — read-only XLSX reconstruction.
+- **base (default)**: `dbfread` — DBF/FPT reading; Direct Read plus
+  JSONL/JSON/CSV migration and verification;
+- **`[write]`**: `dbf` — DBF/FPT reconstruction and fixture generation;
+- **`[xlsx]`**: `xlsxwriter` (XLSX export) and `openpyxl` (XLSX-format
+  reading/verification) — this extra is NOT empty;
+- **`[fast]`**: optional accelerators — `orjson` (JSON) and `polars` (CSV);
+  absence never raises and never changes logical results;
+- **`[write,xlsx]`**: XLSX → DBF/FPT reconstruction (both extras together);
+- **`[all]`**: the complete user-facing optional feature set;
+- **`[import]`**: historical compatibility alias of `[write]`;
+- **`[benchmark]`**: `psutil` (process sampling for benchmark runs);
+- **`[dev]`**: test/lint/build/publish environment.
 
-The empty `import` and `xlsx` extras are compatibility aliases. Development setup is:
+There is no runtime installation, no runtime network access, and no VFP/COM
+requirement; `import dbfbridge` has no side effects. Development setup is:
 
 ```powershell
 python -m venv .venv
@@ -262,22 +270,22 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 ## Documentation map
 
 - \README.md\ — quick start and navigation (user entry point);
-- \docs/README.md\ — documentation index (which document is authoritative for what);
-- \docs/pypi-usage.md\ — installed-distribution user guide;
-- \docs/python-api-examples.md\ — complete Python API examples (all nine stable operations);
-- \docs/tool-server-integration.md\ — transport-neutral tool-server / MCP integration guide;
-- \docs/api-1.0.md\ — normative stable 1.x API contract;
-- \docs/compatibility-vfp.md\ — per-type VFP format support truth;
-- \docs/migration-1.0.md\ — migration from 0.x to the 1.x API;
-- \docs/architecture-closure.md\ — architecture closure matrix and final main lineage;
-- \docs/architecture/*\, \enchmarks/README.md\, \PUBLISHING.md\ — maintainer and historical evidence.
+- `docs/README.md\ — documentation index (which document is authoritative for what);
+- `docs/pypi-usage.md\ — installed-distribution user guide;
+- `docs/python-api-examples.md` — complete Python API examples (all nine stable operations);
+- `docs/tool-server-integration.md\ — transport-neutral tool-server / MCP integration guide;
+- `docs/api-1.0.md` — normative stable 1.x API contract;
+- `docs/compatibility-vfp.md` — per-type VFP format support truth;
+- `docs/migration-1.0.md` — migration from 0.x to the 1.x API;
+- `docs/architecture-closure.md` — architecture closure matrix and final main lineage;
+- `docs/architecture/*`, \enchmarks/README.md\, `PUBLISHING.md` — maintainer and historical evidence.
 
 ## Frozen public boundary
 
 The stable public surface is \import dbfbridge\ (\dbf_bridge\ is a compatibility
 alias with identical symbols). \dbf_bridge.core.*\, \dbf_bridge.exporter.*\,
 \dbf_bridge.importer.*\ are implementation details — never an integration
-surface. The frozen contract is documented in \docs/api-1.0.md\ and enforced by
+surface. The frozen contract is documented in `docs/api-1.0.md` and enforced by
 \	ests/test_api_1_0_contract.py\ (baseline symbols, nine operations,
 RawMode choices, ErrorCode stability baseline, signature baselines, JSON-safe
 run results, alias parity).
@@ -285,13 +293,13 @@ run results, alias parity).
 ## Maintenance rules
 
 - Any change to public API surface, semantics, defaults, or error codes must
-  update: \docs/api-1.0.md\, \docs/python-api-examples.md\,
-  \docs/pypi-usage.md\, \docs/tool-server-integration.md\ (when integration
+  update: `docs/api-1.0.md`, `docs/python-api-examples.md`,
+  `docs/pypi-usage.md\, `docs/tool-server-integration.md\ (when integration
   semantics change), and the tests enforcing documentation/API parity
   (\	ests/test_api_1_0_contract.py\, \	ests/test_documented_public_examples.py\,
   \	ests/test_documentation.py\).
 - Keep README user-facing content navigation-first: deep implementation and
-  historical evidence belongs in \docs/architecture/*\,
-  \docs/architecture-closure.md\, and \enchmarks/README.md\.
+  historical evidence belongs in `docs/architecture/*`,
+  `docs/architecture-closure.md`, and \enchmarks/README.md\.
 - Do not put transient CI test counts into this file; they belong to the PR/CI
   evidence of the moment.

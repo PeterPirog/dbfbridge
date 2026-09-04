@@ -201,10 +201,22 @@ Public exception families (all superclass-compatible, tested):
 
 The documented result objects expose JSON-safe `to_dict()`:
 `TableInfo`, `TableSchema`, `FieldInfo`, `DirectRecord`, `RecordPage`,
-`TableResult`, `ReconstructionResult`, `ExportRunResult`,
-`ReconstructionRunResult`, `VerificationRunResult`, `QualityRunResult`,
-`FileCheck`, `TableCheck`, `OperationError`, every `DirectReadError` family
-member, `OptionalDependencyMissingError`, and `DBFBridgeRunError`.
+`ReconstructionResult`, `ExportRunResult`, `ReconstructionRunResult`,
+`VerificationRunResult`, `QualityRunResult`, `FileCheck`, `TableCheck`,
+`OperationError`, every `DirectReadError` family member,
+`OptionalDependencyMissingError`, and `DBFBridgeRunError`.
+
+**Intentional serialization exceptions** (frozen runtime contract):
+
+- `TableResult` exposes **`to_report_dict()`** — not `to_dict()`. For the
+  normal integration path, serialize the containing
+  `ExportRunResult.to_dict()` (its per-table results are already rendered
+  through `to_report_dict()`); use `TableResult.to_report_dict()` directly
+  only when serializing that one object.
+- `ProgressEvent` is a public **typed event object** and has **no
+  `to_dict()`** — hosts serialize its documented public fields
+  (`operation`, `current`, `total`, `table`, `format`, `records`,
+  `message`) themselves.
 
 1.x key policy: **existing documented keys are not removed or repurposed
 without a major version; new additive keys may appear**. No stronger key
@@ -238,7 +250,8 @@ context (`offset`, `next_physical_index`, `scanned`, `yielded`,
 |---|---|
 | base | Direct Read + JSONL/JSON/CSV migration (stdlib/Python engines) |
 | `[write]` | DBF/FPT reconstruction (`dbf`) |
-| `[xlsx]` | XLSX conversion (xlsxwriter) and XLSX reconstruction (openpyxl) |
+| `[xlsx]` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) |
+| `[write,xlsx]` | XLSX → DBF/FPT reconstruction (both extras together) |
 | `[fast]` | optional accelerators (`orjson`, `polars`) — never required |
 | `[all]` | full optional feature set |
 | `[import]` | compatibility alias of `[write]` |

@@ -1,6 +1,7 @@
 # dbfbridge
 
-`dbfbridge` is a migration toolkit for Visual FoxPro DBF/FPT data:
+`dbfbridge` is a standalone, loss-aware migration toolkit for Visual FoxPro
+DBF/FPT data:
 
 - read DBF/FPT files directly — inspection, schema, streaming records (read-only);
 - export DBF directory trees to CSV, JSON, JSONL, and XLSX;
@@ -8,6 +9,14 @@
 - verify exported files and run diagnostic DBF → JSONL → DBF round trips;
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
+
+![dbfbridge overview — Visual FoxPro DBF/FPT inspection, export, reconstruction and verification](https://raw.githubusercontent.com/PeterPirog/dbfbridge/main/docs/assets/dbfbridge-overview.png)
+
+The diagram is a conceptual overview: `inspect_table()` itself is header-only,
+while record contents are read through `iter_records()` / `read_records()`;
+reconstruction guarantees and CDX/raw-layout limitations are documented in the
+compatibility guide, and the encoding labels are selected legacy Polish
+examples rather than an exhaustive codec list.
 
 > **Status: 0.2.0 (alpha)** — the declared 1.x architecture is code-complete
 > on `main`; the package is not yet published (PyPI publication is externally
