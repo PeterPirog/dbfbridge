@@ -18,7 +18,14 @@ Repository: <https://github.com/PeterPirog/dbfbridge>
 
 License: MIT
 
-Current package metadata: version and Development Status classifier live in `pyproject.toml` (0.2.0, Alpha at the time of the 1.x architecture closure) and `__version__` in `src/dbf_bridge/__init__.py` — do not duplicate the values here. The declared 1.x architecture is code-complete on `main`; publication is externally blocked (PyPI Trusted Publisher / account access). Authoritative status documents: `docs/api-1.0.md` (stable API contract), `docs/architecture-closure.md` (architecture closure matrix and final main lineage), `CHANGELOG.md` (release history).
+Current package version and Development Status are authoritative in
+`pyproject.toml`; `__version__` in `src/dbf_bridge/__init__.py` must remain
+synchronized with it. Do not duplicate current metadata values in this file.
+The declared 1.x architecture is code-complete on `main`; publication is
+externally blocked (PyPI Trusted Publisher / account access). Authoritative
+status documents: `docs/api-1.0.md` (stable API contract),
+`docs/architecture-closure.md` (architecture closure matrix and final main
+lineage), `CHANGELOG.md` (release history).
 
 ## Architecture
 
@@ -263,9 +270,13 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 - Keep `src/dbfbridge/__init__.py`, `src/dbf_bridge/__init__.py`, their `__all__` lists,
   type markers, README API tables, and API tests synchronized.
 
-## Known follow-up work
+## Explicitly deferred / conditional future work
 
-- index-aware CDX reconstruction, if a reliable source of tag definitions is added.
+- **CDX reconstruction is NOT a blocker of the declared 1.x architecture.**
+  Full index-aware CDX reconstruction may only be reconsidered if a reliable
+  source of CDX tag definitions becomes available AND a future explicit
+  requirement justifies it. Do not begin CDX implementation to "finish" 1.x —
+  the 1.x contract is code-complete with CDX presence-only reporting.
 
 ## Documentation map
 

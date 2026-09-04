@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -117,36 +116,28 @@ def test_install_profile_documentation_distinguishes_xlsx_reconstruction() -> No
     assert 'dbfbridge[write,xlsx]' in readme
 
 
-def test_exportrunresult_to_dict_includes_nested_table_results() -> None:
+def test_exportrunresult_to_dict_includes_nested_table_results(
+    tmp_path: Path,
+) -> None:
     """`ExportRunResult.to_dict()` serializes nested TableResult objects
-    through `to_report_dict()` — the normal integration boundary."""
-    import tempfile
-
+    through `to_report_dict()` — the normal aggregate integration boundary
+    (to_dict() is NOT an exception here; only the nested TableResult rendering
+    uses to_report_dict())."""
     import dbfbridge
 
-    source_dir = Path(tempfile.mkdtemp())
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
     _make_fixture(source_dir / "KLIENCI.DBF")
+    output_dir = tmp_path / "output"
     result = dbfbridge.export_dbf(
-        source_dir, "dist_export_probe", formats=("jsonl",), overwrite=True
+        source_dir, output_dir, formats=("jsonl",), overwrite=True
     )
-    try:
-        payload = result.to_dict()
-        json.dumps(payload)
-        assert payload["results"], "expected at least one table result"
-    finally:
-        shutil.rmtree("dist_export_probe", ignore_errors=True)
-
-
-def _make_fixture(path: Path) -> None:
-    import dbf as dbf_lib
-
-    table = dbf_lib.Table(
-        str(path), "KOD N(3,0); NAZWA C(10)", dbf_type="vfp", codepage=0xC8
-    )
-    table.open(dbf_lib.READ_WRITE)
-    table.append({"KOD": 1, "NAZWA": "abc"})
-    table.append({"KOD": 2, "NAZWA": "def"})
-    table.close()
+    payload = result.to_dict()
+    json.dumps(payload)  # JSON-safe aggregate boundary
+    assert payload["results"], "expected at least one table result"
+    # nested TableResult objects are serialized through to_report_dict()
+    first_table = payload["results"][0]
+    assert "status" in first_table and "table" in first_table
 
 
 def _make_fixture(path: Path) -> None:

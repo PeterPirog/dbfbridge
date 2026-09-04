@@ -305,13 +305,13 @@ Ordinary result models expose `to_dict()` — `TableInfo`, `TableSchema`,
 every public error. Always serialize through `to_dict()`; never use
 `dataclasses.asdict`, `__dict__`, or `repr` as an integration boundary.
 
-Two frozen runtime exceptions (see
-[docs/api-1.0.md](api-1.0.md) §5):
+## Special serialization cases (see
+[docs/api-1.0.md](api-1.0.md) §5)
 
-- `ExportRunResult.to_dict()` is the normal run boundary — its nested
-  `TableResult` objects are already serialized through
-  `TableResult.to_report_dict()`;
-- a standalone `TableResult` exposes `to_report_dict()` (not `to_dict()`).
+`ExportRunResult.to_dict()` is the normal aggregate run boundary — its nested
+`TableResult` objects are already serialized through
+`TableResult.to_report_dict()`; a standalone `TableResult` exposes
+`to_report_dict()` (not `to_dict()`).
 
 `ProgressEvent` is a typed public event object without `to_dict()` — the host
 serializes its documented fields explicitly (see the progress example above).
