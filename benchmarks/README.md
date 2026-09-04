@@ -472,6 +472,26 @@ The full profile generates the 1,000,000-record flat fixture and the
 generous `--timeout` (default 600 s per scenario) so fixture generation does not
 time out.
 
+### `phase2` research profile (Direct Write — RESEARCH, not released)
+
+`phase2` is a **separate research profile** for the next-version Direct Write
+API (`write_table`, see `docs/architecture/direct-write-next.md`).  It is
+deliberately **not** part of the Phase 0/1/3 frozen scenario contracts and is
+**never** compared against the canonical Phase 3 baseline (there is no
+comparable BEFORE and no acceptance threshold).  Its reports carry the
+research contract string `direct-write-research-v0` and are permanently
+ineligible for the `--baseline` gate.  Scenarios:
+
+- `direct_read_write_roundtrip` — `read_schema` + `iter_records` ->
+  `write_table` over the 190k fixture; architecture assertion:
+  **intermediate JSONL bytes = 0**;
+- `direct_write_character_heavy` — character-heavy 190k write;
+- `direct_write_memo_heavy` — memo-heavy 2,000-record DBF/FPT pair.
+
+```powershell
+python -m benchmarks.run_benchmark --profile phase2 --warmup 1 --repetitions 3
+```
+
 ## Legacy JSONL conversion benchmark
 
 The original `benchmark_jsonl_conversion.py` remains available and unchanged:

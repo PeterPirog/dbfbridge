@@ -70,6 +70,13 @@ def contract_for_profile(profile: str) -> str:
         from benchmarks.contract import CONTRACT_PHASE_3
 
         return CONTRACT_PHASE_3
+    if profile == "phase2":
+        # RESEARCH profile (Direct Write): a distinct non-versioned research
+        # contract string keeps its reports self-describing and permanently
+        # ineligible for the versioned baseline gate.
+        from benchmarks.contract import CONTRACT_PHASE2_RESEARCH
+
+        return CONTRACT_PHASE2_RESEARCH
     return CONTRACT_PHASE_1
 
 
@@ -605,7 +612,9 @@ def _fixture_manifest(work_dir: Path) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=["fast", "full", "phase3"], default="fast")
+    parser.add_argument(
+        "--profile", choices=["fast", "full", "phase2", "phase3"], default="fast"
+    )
     parser.add_argument(
         "--work-dir",
         type=Path,

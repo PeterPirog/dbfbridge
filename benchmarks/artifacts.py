@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from .contract import (
+    CONTRACT_PHASE2_RESEARCH,
     CONTRACT_PHASE_1,
     CONTRACT_PHASE_3,
     build_manifest,
@@ -114,6 +115,10 @@ def contract_report_prefix(contract: Any) -> str:
         return "phase-1-direct-read"
     if contract == CONTRACT_PHASE_3:
         return "phase-3-performance"
+    if contract == CONTRACT_PHASE2_RESEARCH:
+        # RESEARCH (phase2 / Direct Write) reports are named but never
+        # published as baselines (no validator exists for this contract).
+        return "phase2-research"
     if contract in (None, "", "phase-0"):
         return "phase-0"
     raise UnknownBenchmarkContractError(

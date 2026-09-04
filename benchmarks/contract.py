@@ -36,6 +36,12 @@ from typing import Any
 #: Versioned identity of the Phase 1 benchmark report contract.
 CONTRACT_PHASE_1 = "phase-1-direct-read-v1"
 
+#: Non-versioned RESEARCH contract of the ``phase2`` profile (Direct Write).
+#: Its reports are self-describing but NEVER baseline-eligible: no saved
+#: artifact validator exists for this contract on purpose (research runs
+#: carry no acceptance threshold and are never compared to Phase 3).
+CONTRACT_PHASE2_RESEARCH = "direct-write-research-v0"
+
 #: The four scenarios that were NOT_IMPLEMENTED in the Phase 0 BEFORE
 #: baseline.  Only these names may ever be reported NEWLY_MEASURED.
 PHASE0_PLACEHOLDER_NAMES = frozenset(
@@ -187,6 +193,7 @@ CONTRACT_PHASE_3 = "phase-3-performance-v1"
 __all__ = [
     "CONTRACT_PHASE_3",
     "CONTRACT_PHASE_1",
+    "CONTRACT_PHASE2_RESEARCH",
     "FROZEN_PHASE0_MEASURED_NAMES",
     "FROZEN_SCENARIO_NAMES",
     "MEMO_RECONSTRUCTION_SCENARIO",
