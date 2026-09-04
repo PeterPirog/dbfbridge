@@ -121,7 +121,11 @@ def test_example_reconstruct_dbf(workspace: Path) -> None:
     _run(_one_block(r"result = export_dbf\("), {"__name__": "example_export"})
     namespace: dict[str, Any] = {"__name__": "example"}
     _run(_one_block(r"result = reconstruct_dbf\("), namespace)
-    rebuilt = list((workspace / "rebuilt").rglob("*.dbf"))
+    rebuilt = [
+        path
+        for path in (workspace / "rebuilt").rglob("*")
+        if path.is_file() and path.suffix.lower() == ".dbf"
+    ]
     assert rebuilt, "the documented reconstruction produced no DBF output"
 
 
