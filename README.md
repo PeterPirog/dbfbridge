@@ -77,8 +77,8 @@ dbf-bridge --help
 |---|---|---|
 | `pip install dbfbridge` | `import dbfbridge`, full Direct Read (`inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`), DBF → JSONL/JSON/CSV migration (stdlib/Python engines) | reading and exporting DBF data |
 | `pip install "dbfbridge[write]"` | everything above + DBF/FPT reconstruction (`reconstruct_dbf`) and quality round trips (`check_conversion_quality`) | rebuilding DBF files from exported data |
-| `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX input reading (`openpyxl`) | spreadsheet exchange |
-| `pip install "dbfbridge[write,xlsx]"` | reconstruction from XLSX exports too | XLSX → DBF round trips |
+| `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) | spreadsheet exchange |
+| `pip install "dbfbridge[write,xlsx]"` | XLSX → DBF/FPT reconstruction (`[write]` + `[xlsx]` together) | XLSX → DBF round trips |
 | `pip install "dbfbridge[fast]"` | optional accelerators (`orjson`, `polars`); identical logical results, faster conversions | large conversion jobs |
 | `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
@@ -617,32 +617,15 @@ Contract:
   `FPT_REQUIRED_MISSING`, `FPT_INVALID`, `TEXT_DECODE_ERROR`,
   `DBF_RECORD_INVALID`, `DBF_IO_ERROR`.
 
-The benchmark scenarios `direct_read_bounded`, `field_projection`, `memo_lazy`,
-and `raw_mode_none` are real `MEASURED` scenarios of the direct read record
-streaming (fast profile:
-19 `MEASURED` / 0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`,
-with the versioned report identity `benchmark_contract:
-"phase-1-direct-read-v1"`). `field_projection` proves the same logical result
-with an O(1)-memory digest (the reference full read is computed once, outside
-the measured window); `memo_lazy` enforces zero operations on the real backend
-memo boundary. The historical Phase 1 AFTER baseline has been measured on GitHub
-Actions ([run 33405475850](https://github.com/PeterPirog/dbfbridge/actions/runs/33405475850),
-SUCCESS) at commit `df035de662f2d78a7a8d9d9a141a8235e1161382` (Windows Server
-2025, Python 3.12.10, runner `github-actions-windows-2025-python-3.12.10`,
-storage `github-actions-windows-temp`, one warm-up + three measured
-repetitions per scenario, zero temporary residue) and is versioned under
-`benchmarks/baselines/phase-1-direct-read-full.{json,md,manifest.json}`, with
-the comparison pair `benchmarks/baselines/phase-0-vs-phase-1.{json,md}`.
-The preserved `benchmarks/baselines/phase-0-full.{json,md}` is the Phase 0
-BEFORE reference and stays byte-identical. The recorded BEFORE/AFTER verdict
-is **PARTIALLY_COMPARABLE**: runtime/dependency versions match, but the
-legacy Phase 0 carries no storage/runner descriptors, so the numbers may be
-read diagnostically without proving a performance improvement, and the four
-Direct Read scenarios are NEWLY_MEASURED (the BEFORE listed them as
-`NOT_IMPLEMENTED` — there is no BEFORE number to compare against). The
-Direct Read Core remains a transport-independent (no MCP adapter), bounded,
-read-only library returning stable JSON-serializable data. A complete
-executable example is in
+The four direct read benchmark scenarios (`direct_read_bounded`,
+`field_projection`, `memo_lazy`, `raw_mode_none`) are real `MEASURED`
+scenarios of the record streaming (fast profile: 19 `MEASURED` /
+0 `NOT_IMPLEMENTED` / 0 `FAILED`; full contract: 24 `MEASURED`). The
+historical Phase 1 AFTER baseline (measured on GitHub Actions) and the
+preserved Phase 0 BEFORE reference stay byte-identical under
+`benchmarks/baselines/`; the full evidence narrative is in
+[`benchmarks/README.md`](https://github.com/PeterPirog/dbfbridge/blob/main/benchmarks/README.md).
+A complete executable example is in
 [`examples/read_records.py`](examples/read_records.py).
 
 #### Export and incremental export

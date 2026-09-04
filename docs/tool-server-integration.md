@@ -62,30 +62,47 @@ fail-before-output error.
 | XLSX support | `pip install "dbfbridge[xlsx]"` |
 | full-feature service | `pip install "dbfbridge[all]"` |
 
-## 3. Import / capability probe
+## 3. Import / capability probe (fail-closed)
 
 `import dbfbridge` is side-effect free: it registers no codecs, creates no
 files, and loads no CLI/reporting modules or heavy dependencies. A cheap
 startup probe uses public metadata only — **never perform a DBF read merely
-for service discovery**:
+for service discovery**.
+
+The probe must be **fail-closed**: a transport/service adapter must not
+report a backend as available merely because `import dbfbridge` succeeded if
+the public operations it requires are missing.
 
 ```python
 import dbfbridge
 
+DIRECT_READ_API = (
+    "inspect_table",
+    "read_schema",
+    "iter_records",
+    "read_records",
+    "iter_raw_records",
+)
+
+
 def backend_status():
+    direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
+
     return {
-        "available": True,
+        "available": direct_read_ok,
         "version": dbfbridge.__version__,
-        "direct_read": all(
-            hasattr(dbfbridge, name)
-            for name in (
-                "inspect_table",
-                "read_schema",
-                "read_records",
-            )
-        ),
+        "direct_read": direct_read_ok,
+        "public_api": {
+            name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
+        },
     }
 ```
+
+For write/XLSX capability discovery, do **not** perform destructive test
+calls. Treat the deployment configuration / install profile as the capability
+declaration and let the operation's typed `OptionalDependencyMissingError`
+provide the authoritative runtime failure. dbfbridge intentionally exposes no
+capability-registry API — do not invent one.
 
 ## 4. Bounded reads at the tool boundary
 
@@ -183,6 +200,34 @@ return result.to_dict()
 Do not treat a warning state (`exit_code == 2`) as identical to a hard
 failure — the run result carries both.
 
+### Aggregate success semantics for multi-table runs
+
+`result.ok` is a **count** of OK table results, and `result.failed` is a
+count of FAILED table results — `ok > 0` is therefore **not** an aggregate
+success signal for a multi-table run (1 OK + 1 FAILED would yield
+`ok == 1`). Use the absence of failures:
+
+```python
+def export_tool(source: str, output: str) -> dict:
+    result = dbfbridge.export_dbf(
+        source,
+        output,
+        formats=("jsonl",),
+        raw_mode="none",  # service-friendly raw-retention level (see §7)
+    )
+    return {
+        "ok": result.failed == 0,
+        "exit_code": result.exit_code,
+        "data": result.to_dict(),
+    }
+```
+
+For result types with a different counter layout, rely on the documented
+`exit_code` / `successful` property / structured payload of that result type
+instead of inventing one uniform attribute. A forensic/round-trip tool can
+explicitly request `raw_mode="full-record"` when it needs the physical
+images.
+
 ## 10. Machine-readable error mapping
 
 Classify failures by **`error.code`**, never by the English message. Use
@@ -217,15 +262,25 @@ onto these plain JSON-safe dictionaries.
 
 import dbfbridge
 
+DIRECT_READ_API = (
+    "inspect_table",
+    "read_schema",
+    "iter_records",
+    "read_records",
+    "iter_raw_records",
+)
+
 
 def backend_status() -> dict:
+    # Fail-closed: availability is DERIVED, never hardcoded.
+    direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
     return {
-        "available": True,
+        "available": direct_read_ok,
         "version": dbfbridge.__version__,
-        "direct_read": all(
-            hasattr(dbfbridge, name)
-            for name in ("inspect_table", "read_schema", "read_records")
-        ),
+        "direct_read": direct_read_ok,
+        "public_api": {
+            name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
+        },
     }
 
 
@@ -250,13 +305,22 @@ def read_table_page_tool(path: str, *, offset: int = 0, limit: int = 100,
 
 
 def export_tool(source: str, output: str) -> dict:
-    result = dbfbridge.export_dbf(source, output, formats=("jsonl",))
-    return {"ok": result.ok > 0, "data": result.to_dict()}
+    result = dbfbridge.export_dbf(
+        source,
+        output,
+        formats=("jsonl",),
+        raw_mode="none",  # service-friendly; a forensic tool may use "full-record"
+    )
+    # `ok` must be the ABSENCE OF FAILURES, never `ok > 0`:
+    # result.ok is a COUNT of OK tables, so 1 OK + 1 FAILED would yield 1.
+    return {"ok": result.failed == 0, "exit_code": result.exit_code,
+            "data": result.to_dict()}
 
 
 def reconstruct_tool(source: str, output: str) -> dict:
     result = dbfbridge.reconstruct_dbf(source, output, input_format="jsonl")
-    return {"ok": result.ok > 0, "data": result.to_dict()}
+    return {"ok": result.failed == 0, "exit_code": result.exit_code,
+            "data": result.to_dict()}
 ```
 
 Everything above imports only `dbfbridge` / `from dbfbridge import ...` and
@@ -298,8 +362,26 @@ receiving `ProgressEvent` objects with the public fields
 `operation`, `current`, `total`, `table`, `format`, `records`, `message`:
 
 ```python
+def progress_payload(event):
+    """Host-side serializer for one progress event.
+
+    `ProgressEvent` is a public typed event object, but unlike the documented
+    result/error models it currently does NOT expose a `to_dict()` method.
+    The adapter owns the conversion of the event into its transport
+    notification shape."""
+    return {
+        "operation": event.operation,
+        "current": event.current,
+        "total": event.total,
+        "table": event.table,
+        "format": event.format,
+        "records": event.records,
+        "message": event.message,
+    }
+
+
 def on_progress(event):
-    queue_or_transport_progress(event.to_dict())
+    queue_or_transport_progress(progress_payload(event))
 ```
 
 The hosting adapter may map `ProgressEvent` to its own
@@ -341,6 +423,44 @@ tools/actions** (never as read-only resources), require the caller to
 provide a separate output path, and never infer write permission merely
 because an OS path is writable.
 
+## 16a. Operation / side-effect matrix for server authors
+
+| Operation | Typical server role | Install profile | Source mutation | Writes output/report | Bounded/streaming | JSON result boundary |
+|---|---|---|---|---|---|---|
+| `inspect_table` | table overview / discovery | base | none | no | O(header) | `TableInfo.to_dict()` |
+| `read_schema` | full schema metadata | base | none | no | O(fields) | `TableSchema.to_dict()` |
+| `iter_records` | local streaming read | base | none | no | streaming O(1) | `DirectRecord.to_dict()` |
+| `read_records` | preferred bounded remote/tool call | base | none | no | O(limit) page | `RecordPage.to_dict()` |
+| `iter_raw_records` | forensic stream | base | none | no | streaming, never opens the FPT | `DirectRecord.to_dict()` (Base64 raw) |
+| `export_dbf` | migration/export action | base (+`[xlsx]` for XLSX) | none | yes (JSONL/JSON/CSV/XLSX + schema + reports) | streams; per-table results | `ExportRunResult.to_dict()` |
+| `reconstruct_dbf` | reconstruction action | `[write]` (+`[xlsx]` for XLSX input) | none | yes (DBF/FPT + report) | per-table results | `ReconstructionRunResult.to_dict()` |
+| `verify_conversion` | consistency check | base (+`[xlsx]` for XLSX) | none | **only when `write_report=True`** | per-file checks | `VerificationRunResult.to_dict()` |
+| `check_conversion_quality` | diagnostic round-trip action | `[write]` | none | yes (retained workspace) | per-table | `QualityRunResult.to_dict()` |
+
+Server-authors' notes:
+
+- `verify_conversion(write_report=False)` writes **no** verification report
+  (the response payload is the report);
+- `read_records` is the preferred bounded remote/tool call;
+  `iter_records` is a local streaming API — do not map one unbounded iterator
+  to a single remote response;
+- resource-vs-tool guidance (transport-neutral, no specific framework):
+  read-only schema/page operations suit read tools or read-only resource
+  implementations; write/report operations must be explicit tools/actions.
+
+## 16b. Request-scope object ownership
+
+Do not share across unrelated requests:
+
+- open `iter_records` iterators;
+- `LazyMemoValue` objects;
+- mutable request-cancellation state.
+
+`read_records()` avoids long-lived iterator ownership and is therefore
+preferred for bounded RPC/tool calls. This guide makes no global
+thread-safety claims for the library — the host owns offloading and
+request isolation (see §12).
+
 ## 17. CDX limitation in server integration
 
 dbfbridge **reports structural CDX presence**. It does **not** provide an
@@ -349,15 +469,23 @@ indexes. A system that modifies indexed DBF data must use a separate
 index-aware/VFP-capable layer where valid CDX output is required — do not
 present a copied/stale CDX file as valid after changing indexed data.
 
-## 18. Offline / vendored deployment
+## 18. Offline / pinned deployment
 
-Normal deployment is a **pinned package installation**. For a controlled
-offline/vendored deployment:
+Normal service deployment is a **pinned package installation**:
 
-- vendor/package the **whole dbfbridge distribution** (wheel or sdist);
-- record the version, upstream source, commit/tag when applicable, license,
-  and hash/provenance;
-- import **only** `dbfbridge`.
+```bash
+python -m pip install "dbfbridge==<version>"
+```
+
+For a controlled offline/vendored deployment, install a complete pinned
+wheel/wheelhouse — never copy implementation modules:
+
+- during **deployment preparation** (never from a request handler): build or
+  download the wheel; record version, hash, license, and upstream
+  provenance; install that exact wheel into the service environment;
+- import **only** `dbfbridge`;
+- a request handler must never run `pip install`, `git clone`, or fetch
+  "latest" at runtime.
 
 Never copy individual `dbf_bridge.core` files, fork private parser modules
 into the host, or treat private modules as a stable contract — that
