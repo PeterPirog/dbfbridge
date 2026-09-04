@@ -69,15 +69,17 @@ Other important paths:
 
 - `examples/` — thin executable wrappers and PowerShell examples;
 - `examples/python_api.py` — complete programmatic API example;
-- `examples/inspect_table.py` — Phase 1A read-only inspection example;
-- `examples/read_records.py` — Phase 1B streaming record-read example;
-- `docs/architecture/phase-1-direct-read.md` — Phase 1A/1B direct read contract;
-- `tests/test_direct_read_schema.py` — Phase 1A direct read integration tests;
-- `tests/test_direct_read_records.py` — Phase 1B streaming record tests;
+- `examples/inspect_table.py` — read-only inspection example (historical: Phase 1A);
+- `examples/read_records.py` — streaming record-read example (historical: Phase 1B);
+- `docs/architecture/phase-1-direct-read.md` — historical Phase 1A/1B direct
+  read evidence (current contract: `docs/api-1.0.md`);
+- `tests/test_direct_read_schema.py` — direct read integration tests (historical: Phase 1A);
+- `tests/test_direct_read_records.py` — streaming record tests (historical: Phase 1B);
 - `tests/fixtures/generate_sample_dbf.py` — deterministic fixture generator;
 - `tests/conftest.py` — generates fixtures in pytest temporary storage;
-- `benchmarks/` — Phase 0/1 benchmark runner (fast = 19 MEASURED scenarios,
-  full = 24; Phase 0 baseline unchanged, Phase 1 AFTER baseline recorded);
+- `benchmarks/` — benchmark runner (fast = 19 MEASURED scenarios, full = 24;
+  the historical Phase 0/Phase 1 baselines and the canonical Phase 3 baseline
+  are recorded in `benchmarks/baselines/` with policy in `benchmarks/regression/`);
 - `.github/workflows/ci.yml` — Linux/Windows compatibility checks;
 - `.github/workflows/publish.yml` — release build and PyPI Trusted Publishing;
 - `PUBLISHING.md` — release checklist and one-time PyPI configuration;
@@ -85,8 +87,8 @@ Other important paths:
 
 ## Command-line interfaces
 
-All real-data commands require explicit source/output paths except the verifier, whose
-defaults point at generated test fixtures.
+All real-data commands require explicit `--source` and `--output` paths
+(verified by the CLI documentation regression tests).
 
 ```powershell
 dbf-bridge --source "K:\dbf_source" --output "K:\dbf_output" --formats csv,json,jsonl,xlsx

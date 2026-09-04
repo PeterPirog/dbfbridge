@@ -105,8 +105,8 @@ dbf-bridge --help
 |---|---|---|
 | `pip install dbfbridge` | `import dbfbridge`; Direct Read: `inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`; DBF → JSONL/JSON/CSV migration (stdlib/Python engines); verification | reading and exporting DBF data |
 | `pip install "dbfbridge[write]"` | everything above **plus** DBF/FPT reconstruction (`reconstruct_dbf`) and quality round trips (`check_conversion_quality`) | rebuilding DBF files from exported formats |
-| `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX input reading (`openpyxl`) | Excel interchange |
-| `pip install "dbfbridge[write,xlsx]"` | reconstruction from XLSX exports as well | XLSX → DBF round trips |
+| `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) | Excel interchange |
+| `pip install "dbfbridge[write,xlsx]"` | XLSX → DBF/FPT reconstruction (`[write]` + `[xlsx]` together) | XLSX → DBF round trips |
 | `pip install "dbfbridge[fast]"` | optional accelerators: `orjson` (JSON) and `polars` (CSV) | large conversion jobs; identical logical results, only faster |
 | `pip install "dbfbridge[all]"` | the complete feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install (not a development environment) |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | scripts written against the pre-0.3 extras |

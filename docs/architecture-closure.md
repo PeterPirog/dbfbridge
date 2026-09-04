@@ -114,7 +114,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
-| R-01 | §1 | Standalone Python library; single DBF/FPT implementation; no copy into `mcp-vfp9sp2-toolchain` | CLOSED_FROZEN | Single implementation in `src/dbf_bridge/`; `src/dbfbridge/` is a lazy alias package | `tests/test_public_api.py::test_distribution_import_exposes_the_documented_api` | none | NO | none | — |
+| R-01 | §1 | Standalone Python library; single DBF/FPT implementation; no copy into downstream MCP/tool-server projects (generic integration contract: `docs/tool-server-integration.md`) | CLOSED_FROZEN | Single implementation in `src/dbf_bridge/`; `src/dbfbridge/` is a lazy alias package | `tests/test_public_api.py::test_distribution_import_exposes_the_documented_api` | none | NO | none | — |
 | R-02 | §1 | Loss-aware engine capability set (inspect / schema / direct read / raw metadata / migration / reconstruction / verification) | CLOSED_FROZEN | Public API exposes all six capability areas | exact-head CI 33772195304: 432 passed, 1 skipped (433 collected) | none | NO | none | — |
 | R-03 | §1 | Two consumer classes: PyPI users; MCP `PURE_READ` backend without VFP | CLOSED_FROZEN | `core/` reads via `dbfread` only; no COM/VFP/network imports (`git grep` evidence) | CI (Ubuntu 3.10–3.14 + Windows 3.12) runs without any VFP runtime | none | NO | none | — |
 
