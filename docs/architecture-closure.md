@@ -78,21 +78,25 @@ link/anchor validation were added for maintained documentation.
 ## Repository code-complete checkpoint
 
 Repository `main` is **code-complete for the declared 1.x architecture**.
+Git history (not this document) is authoritative for the current `main` SHA.
 
 - Repository-controlled blockers: **0**
 - Known correctness blockers in supported VFP DBF/FPT cases: **0**
 - External publication blockers: **1** — **EXB-01: PyPI Trusted Publisher /
   account access**
 - Version/tag/publication: **intentionally deferred to the final release
-  lifecycle** — package metadata remains `0.2.0`, no tag exists, and nothing
-  is published; the final release-preparation commit (final version, dated
-  CHANGELOG entry, timeless docs, stable classifier) belongs to the future
-  release-only task after PyPI access is restored.
+  lifecycle** — package metadata remains `0.2.0` and the final
+  `1.0.0` tag/GitHub Release has not been created.  The historical
+  **GitHub Release/tag v0.2.0 EXISTS** (annotated tag, target commit
+  `2d0ad653edbdb9341c96c19f323f893678819550`); its PyPI Trusted Publishing
+  attempt (workflow run 33487949133 — build SUCCESS, publish FAILED
+  `invalid-publisher`) did not complete, so no successful PyPI publication
+  is proven.  `v0.3.0` was never released; `v1.0.0` is not yet released.
 
-Historical status for future reference: `release/0.3.0` and its draft PR #12
-are **SUPERSEDED / HISTORICAL** — the generic release hardening from that
-branch was converged onto `main` by Macro C (PR #18); no 0.3.0 publication
-was performed.
+Historical status for future reference: the `release/0.3.0` release
+candidate and its draft PR #12 are **SUPERSEDED / HISTORICAL** — the generic
+release hardening from that branch was converged onto `main` by Macro C
+(PR #18); no 0.3.0 publication was performed.
 
 ### Closure-accounting correction (Macro C)
 
@@ -168,7 +172,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
 | R-19 | §9 | Backend abstraction isolating `dbfread` (reference backend), incl. its private-API touchpoint | CLOSED_FROZEN | `core/backend.py` protocols + `dbfread_backend` adapter; one physical record loop | Direct Read suites; PR #12 phase-3 CI | none | NO | none | — |
-| R-20 | §9 | Second backend only with benchmark + type-matrix evidence | CLOSED_FROZEN | No native backend exists; Direct Write research isolated in `feat/phase-2-direct-write` (untouched) | — | none | NO | none | — |
+| R-20 | §9 | Second backend only with benchmark + type-matrix evidence | CLOSED_FROZEN | No native backend exists; Direct Write is **deferred future-version research** — NOT part of the stable 1.x contract and NOT a prerequisite for it; any future work must start from current `main` and revalidate the old prototype | — | none | NO | none | — |
 
 ### §10 Writer / reconstruction
 
@@ -183,7 +187,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 |---|---|---|---|---|---|---|---|---|---|
 | R-23 | §11 | Extras split: base = direct read + JSONL/JSON/CSV; `[write]`, `[xlsx]`, `[fast]`, `[all]`, `[import]` | CLOSED_FROZEN | `optional_deps.py` contract (fail-before-output, `[fast]` never raises) | `tests/test_optional_dependencies.py`; PR #12 wheel METADATA evidence | none | NO | none | — |
 | R-24 | §11 | Package name `dbfbridge` retained | CLOSED_FROZEN | pyproject name; `import dbfbridge` preferred surface | `test_distribution_import_exposes_the_documented_api` | none | NO | none | — |
-| R-25 | §11 | Normal PyPI package, no `git+` dependencies | CLOSED_FROZEN | pyproject deps are PyPI-only | PR #12 `twine check` + fresh-venv wheel smokes PASS (CI 33756842901, release/0.3.0) | none | NO | none | — |
+| R-25 | §11 | Normal PyPI package, no `git+` dependencies | CLOSED_FROZEN | pyproject deps are PyPI-only | exact-main CI package job (run 33868367595): build + `twine check` + shared artifact verifier + fresh-wheel + install-profile smokes PASS | none | NO | none | — |
 
 ### §12 Package quality
 
@@ -242,7 +246,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
 | R-43 | §20 | 0.2.0 Direct Read Core delivered | CLOSED_FROZEN | Phase 1 direct-read baseline; merged milestones | CI history | none | NO | none | — |
-| R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | release/0.3.0 candidate frozen at `d690d33`; PR #12 | release exact-head CI 33756842901 + perf 33756842945 SUCCESS | publication blocked externally (R-27) | NO | none | — |
+| R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | 0.3-era capabilities were integrated into the current main lineage (Macro C, PR #18); the 0.3.0 release candidate was superseded and never published as v0.3.0 (historical provenance: PR #12) | exact-main CI (33843870158 / 33868367595) + performance smoke 33866186898 SUCCESS on current main | publication blocked externally (R-27) | NO | none | — |
 | R-45 | §20 | 0.4.x reconstruction hardening only if benchmarks/bugs justify | CLOSED_FROZEN | PR #13 + PR #14 correctness closures (evidence-driven); no open justified item | FPT/NullFlags suites green | none | NO | none | — |
 | R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | CLOSED_FROZEN | BLK-03 closed by Macro B: the 1.0 public API contract is declared in `docs/api-1.0.md` (import boundary, nine frozen operations, guarantees, machine-code vocabulary, RawMode contract, JSON boundary, SemVer + deprecation policy, aliases, accepted limitations) and enforced mechanically by `tests/test_api_1_0_contract.py` | all other §20 items CLOSED_FROZEN; matrix + benchmarks + packaging closed | none | NO | none | done (Macro B) |
 
@@ -426,9 +430,28 @@ Evidence: `tests/test_public_error_contract.py::test_mcp_machine_readable_classi
 
 ## 8. Packaging / PyPI (§40/§41)
 
-- **REPOSITORY PACKAGING READINESS: CLOSED_FROZEN** — evidenced on `release/0.3.0` @ `d690d33` (PR #12): `python -m build`, `twine check`, fresh-venv `release_wheel_smoke`, multi-profile `pypi_install_smoke` on the exact built wheel; release-state gate; Python 3.10-3.14 × Windows CI. Release exact-head CI 33756842901 (8/8 jobs) + perf 33756842945 SUCCESS.
-- **ACTUAL PYPI PUBLICATION: EXTERNAL_BLOCKER (EXB-01)** — publish run 33487949133: build SUCCESS, publish FAILURE `invalid-publisher` (OIDC claims correct; PyPI-side Trusted Publisher missing/mismatched). No repository code can close it.
-- **Version state (§41, intentional):** `main` = `0.2.0` (`pyproject.toml:7`, `__init__.py:83`); `release/0.3.0` = `0.3.0` release preparation. Recorded as branch lifecycle; not "fixed".
+## 8. Packaging / PyPI (§40/§41)
+
+- **REPOSITORY PACKAGING READINESS: CLOSED_FROZEN** — evidenced on the current
+  `main` lineage: `python -m build`, `twine check`, the shared artifact
+  verifier (`scripts/verify_release_artifacts.py`), fresh-venv
+  `release_wheel_smoke`, multi-profile `pypi_install_smoke` on the exact built
+  wheel; release-state gate (`scripts/check_release_state.py`); Python
+  3.10–3.14 × Windows CI. Post-merge main CI 33868367595 (8/8 jobs) SUCCESS
+  with the package job verified step-by-step.
+- **RELEASE HISTORY (verified from Git/GitHub, not docs):** the annotated tag
+  **v0.2.0 exists** (target `2d0ad653edbdb9341c96c19f323f893678819550`) with
+  the GitHub Release "dbfbridge 0.2.0 — Direct Read Core"; its publish workflow
+  run 33487949133 had build SUCCESS but the PyPI publish step FAILED
+  (`invalid-publisher`) — no successful PyPI publication is proven. `v0.3.0`
+  was never released; `v1.0.0` is not yet released.
+- **ACTUAL PYPI PUBLICATION: EXTERNAL_BLOCKER (EXB-01)** — publish run
+  33487949133: build SUCCESS, publish FAILURE `invalid-publisher` (OIDC claims
+  correct; PyPI-side Trusted Publisher missing/mismatched). No repository code
+  can close it.
+- **Version state (§41, intentional):** package metadata remains `0.2.0`
+  (authoritative in `pyproject.toml`); the final `1.0.0` tag/release remains
+  deferred to the release-only lifecycle.
 
 ---
 
