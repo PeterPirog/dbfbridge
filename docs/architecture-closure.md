@@ -1,7 +1,7 @@
 # dbfbridge 1.0 Architecture Closure Matrix
 
 **Contract:** `DBFBRIDGE_TARGET_ARCHITECTURE(20260904-052528).md` (immutable upstream document; this file is the working repository status and does not replace it).
-**Final main lineage:** `main` = `b712ce59631d20015360f4f6fd26bc9be10214fa` — reached through PR #14 (`c84a611`) → closure-audit PR #15 (`6104294`) → **Macro A** PR #16 (`90f8362`) → **Macro B** PR #17 (`197c986`) → **Macro C** PR #18 (final head `e173ec6`, merge `b712ce5`) → final repository-closure docs PR. Post-Macro-C main CI 33843870158 SUCCESS (package job incl. the shared artifact verifier).
+**Architecture-closure checkpoint:** `main` = `b712ce59631d20015360f4f6fd26bc9be10214fa` — reached through PR #14 (`c84a611`) → closure-audit PR #15 (`6104294`) → **Macro A** PR #16 (`90f8362`) → **Macro B** PR #17 (`197c986`) → **Macro C** PR #18 (final head `e173ec6`, merge `b712ce5`) → final repository-closure docs PR. Post-Macro-C main CI 33843870158 SUCCESS (package job incl. the shared artifact verifier). Git history is authoritative for the current `main` HEAD — later documentation/hygiene PRs continue the lineage without changing this architecture checkpoint.
 **Status vocabulary:** CLOSED_FROZEN / BLOCKER / ACCEPTED_LIMITATION / INTENTIONALLY_UNSUPPORTED / EXTERNAL_BLOCKER / DEFERRED / NOT_YET_AUDITED (this final matrix contains **no** `NOT_YET_AUDITED` rows).
 
 Exact test evidence: closure-audit `main` suite = 432 passed, 1 skipped (433 collected, CI 33772195304); Macro A branch after the correctness gate = 505 passed locally (Windows; includes the 55 contract tests + 17 Varchar-gate tests); `release/0.3.0` = exact-head release CI SUCCESS (454 passed, 2 skipped, release CI 33756842901).
@@ -68,11 +68,11 @@ After the repository code-complete checkpoint, a documentation-quality and
 integration-readiness pass was performed as a NEW user requirement. It did
 not change the runtime architecture or the public API. Documentation now
 additionally covers: the installed API cookbook for all nine operations
-(\docs/python-api-examples.md\), the JSON/tool-server boundary and generic
-MCP integration patterns (\docs/tool-server-integration.md\),
+(`docs/python-api-examples.md`), the JSON/tool-server boundary and generic
+MCP integration patterns (`docs/tool-server-integration.md`),
 path-security responsibility, machine-readable error mapping, bounded
 paging, progress/cancellation bridging, offline/vendored deployment, and a
-documentation map (\docs/README.md\). English-language convergence and
+documentation map (`docs/README.md`). English-language convergence and
 link/anchor validation were added for maintained documentation.
 
 ## Repository code-complete checkpoint
@@ -246,7 +246,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
 | R-43 | §20 | 0.2.0 Direct Read Core delivered | CLOSED_FROZEN | Phase 1 direct-read baseline; merged milestones | CI history | none | NO | none | — |
-| R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | 0.3-era capabilities were integrated into the current main lineage (Macro C, PR #18); the 0.3.0 release candidate was superseded and never published as v0.3.0 (historical provenance: PR #12) | exact-main CI (33843870158 / 33868367595) + performance smoke 33866186898 SUCCESS on current main | publication blocked externally (R-27) | NO | none | — |
+| R-44 | §20 | 0.3.0 performance + backend abstraction + progress/cancellation + regression CI | CLOSED_FROZEN | 0.3-era capabilities were integrated into the Macro-C lineage (PR #18); the 0.3.0 release candidate was superseded and never published as v0.3.0 (historical provenance: PR #12) | exact-main CI (33843870158 / 33868367595) + performance smoke 33866186898 SUCCESS on the exact audited main heads | publication blocked externally (R-27) | NO | none | — |
 | R-45 | §20 | 0.4.x reconstruction hardening only if benchmarks/bugs justify | CLOSED_FROZEN | PR #13 + PR #14 correctness closures (evidence-driven); no open justified item | FPT/NullFlags suites green | none | NO | none | — |
 | R-46 | §20 | 1.0.0 = stable direct-read API, stable migration/reconstruction API, documented compatibility matrix, benchmark suite, robust packaging, no known correctness gaps in supported cases | CLOSED_FROZEN | BLK-03 closed by Macro B: the 1.0 public API contract is declared in `docs/api-1.0.md` (import boundary, nine frozen operations, guarantees, machine-code vocabulary, RawMode contract, JSON boundary, SemVer + deprecation policy, aliases, accepted limitations) and enforced mechanically by `tests/test_api_1_0_contract.py` | all other §20 items CLOSED_FROZEN; matrix + benchmarks + packaging closed | none | NO | none | done (Macro B) |
 

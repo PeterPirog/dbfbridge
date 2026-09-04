@@ -3,11 +3,19 @@
 Complete, copy/paste examples for the nine stable public operations of the
 declared 1.x contract (see
 [docs/api-1.0.md](api-1.0.md) for the normative guarantees). These examples
-describe usage **after a normal installation**:
+describe the **code-complete declared 1.x installed-distribution contract**;
+the command shown is the normal installation path **after an official PyPI
+publication**:
 
 ```bash
 python -m pip install dbfbridge
 ```
+
+This document itself does **not** claim that the current `main` state is
+already downloadable from PyPI — the historical GitHub Release v0.2.0 exists,
+but its PyPI publication did not complete successfully. See
+[pypi-usage.md](pypi-usage.md) for the publication/install-status note and
+the install profiles in full detail.
 
 or the appropriate extra (see the install-profile table below). No example
 requires Git, a `src/` directory, `PYTHONPATH`, `sys.path` manipulation, or
@@ -18,6 +26,24 @@ The examples use small synthetic file names:
 - `KLIENCI.DBF` — a single DBF table (with `KLIENCI.FPT` when a memo field is present);
 - `data/` — a source directory tree holding `*.dbf` files (with optional `.fpt` companions);
 - `exported/`, `rebuilt/`, `quality/` — output directories created by the examples.
+
+## API at a glance
+
+| # | Operation | Install | Result | Memory | Writes output? |
+|---|---|---|---|---|---|
+| 1 | `inspect_table()` | base | `TableInfo` | O(header) | no |
+| 2 | `read_schema()` | base | `TableSchema` | O(fields) | no |
+| 3 | `iter_records()` | base | iterator of `DirectRecord` | O(1) streaming | no |
+| 4 | `read_records()` | base | `RecordPage` | O(limit) | no |
+| 5 | `iter_raw_records()` | base | iterator of `DirectRecord` | streaming, never opens the FPT | no |
+| 6 | `export_dbf()` | base (+`[xlsx]` for XLSX) | `ExportRunResult` | streaming per table | yes (declared output tree) |
+| 7 | `reconstruct_dbf()` | `[write]` (+`[xlsx]` for XLSX input) | `ReconstructionRunResult` | streaming per table | yes (declared output tree) |
+| 8 | `verify_conversion()` | base (+`[xlsx]` for XLSX) | `VerificationRunResult` | per-file checks | report only with `write_report=True` |
+| 9 | `check_conversion_quality()` | `[write]` | `QualityRunResult` | per-table round trip | yes (retained diagnostic workspace) |
+
+This table is navigation only — the normative guarantees (signatures, error
+contracts, JSON boundary, SemVer policy) live in
+[docs/api-1.0.md](api-1.0.md).
 
 ## Install profiles
 
@@ -50,7 +76,11 @@ except OptionalDependencyMissingError as error:
 
 ## 1. `inspect_table()` — cheap table header overview
 
-Install: base. Input: one DBF path.
+**Install:** base.
+**Input:** one DBF path.
+**Result:** `TableInfo` — JSON-safe through `to_dict()`.
+**Side effects:** none (strictly read-only; header-only read).
+**Best use:** cheap discovery/listing of a table's shape.
 
 ```python
 from dbfbridge import inspect_table
@@ -67,7 +97,11 @@ data and never touches the memo file.
 
 ## 2. `read_schema()` — full safe table schema inspection
 
-Install: base. Input: one DBF path.
+**Install:** base.
+**Input:** one DBF path.
+**Result:** `TableSchema` — JSON-safe through `to_dict()`.
+**Side effects:** none (strictly read-only).
+**Best use:** full header/field/companion metadata for inspection and services.
 
 ```python
 from dbfbridge import read_schema
@@ -97,8 +131,13 @@ companion metadata.
 
 ## 3. `iter_records()` — streaming records (O(1) memory)
 
-Install: base. Options: `fields` (projection), `memo` (`skip`/`lazy`/`null`/`inline`),
-`include_deleted`, `raw`, `progress`, `cancel_check`.
+**Install:** base.
+**Input:** one DBF path; options: `fields` (projection), `memo`
+(`skip`/`lazy`/`null`/`inline`), `include_deleted`, `raw`, `progress`,
+`cancel_check`.
+**Result:** iterator of `DirectRecord` in physical order.
+**Side effects:** none (read-only); close the iterator explicitly on early exit.
+**Best use:** local full-table/streaming processing with O(1) memory.
 
 ```python
 from dbfbridge import iter_records
@@ -119,9 +158,17 @@ is ever opened.
 
 ## 4. `read_records()` — bounded paging (service-friendly)
 
-Install: base. `read_records` never materializes the whole table — it is the
-recommended pattern for services, tools, and remote/agent boundaries (see
+**Install:** base.
+**Input:** one DBF path; `offset` (physical record index), `limit`,
+`fields`, `include_deleted`, `memo`, `progress`, `cancel_check`.
+**Result:** one `RecordPage` — JSON-safe through `to_dict()`
+(`offset`/`limit`/`scanned`/`next_offset`/`exhausted`/`records`).
+**Side effects:** none (read-only).
+**Best use:** the recommended bounded pattern for services, tools, and
+remote/agent boundaries (see
 [docs/tool-server-integration.md](tool-server-integration.md)).
+
+`read_records` never materializes the whole table.
 
 ```python
 from dbfbridge import read_records
@@ -151,8 +198,13 @@ frames consumed.
 
 ## 5. `iter_raw_records()` — forensic stream
 
-Install: base. Yields **every physical record** (deleted included) in
-physical order and **never reads the FPT**.
+**Install:** base.
+**Input:** one DBF path; options: `progress`, `cancel_check`.
+**Result:** iterator of `DirectRecord` — every physical record (deleted
+included), physical order, `values` empty, `raw_record` bytes.
+**Side effects:** none (read-only); the FPT is never opened.
+**Best use:** forensic/byte-level inspection where decoded values are not
+needed.
 
 ```python
 from dbfbridge import iter_raw_records
@@ -174,7 +226,14 @@ Always pass `record.to_dict()` — not raw Python bytes — to a JSON transport.
 
 ## 6. `export_dbf()` — DBF tree → JSONL/JSON/CSV/XLSX
 
-Install: base (JSONL/JSON/CSV) or `[xlsx]` for XLSX output.
+**Install:** base (JSONL/JSON/CSV); `[xlsx]` for XLSX output.
+**Input:** one DBF file or a source directory tree; an output directory
+outside the source tree; format and policy options.
+**Result:** `ExportRunResult` — aggregate run payload; JSON-safe through
+`to_dict()`.
+**Side effects:** creates the declared output tree (data files +
+`<table>_schema.json` + reports) with atomic publication.
+**Best use:** loss-aware DBF migration into modern exchange formats.
 
 ```python
 from dbfbridge import export_dbf
@@ -201,6 +260,12 @@ if result.failed:
 details). Treat it as an explicit host policy — the run result alone already
 contains everything needed to report partial success.
 
+`result.ok` is a **count** of OK table results, not an aggregate-success
+boolean — a multi-table run with one OK and one FAILED table has `ok == 1`.
+Aggregate success for a multi-table run is the **absence of failures**:
+`result.failed == 0` (the tool-server guide's adapter examples use exactly
+that).
+
 `raw_mode` chooses the raw-retention level of the JSONL/JSON intermediate:
 `"full-record"` (default, forensic), `"metadata"`, or `"none"`. All modes
 preserve canonical reconstruction for supported cases; only `full-record`
@@ -208,7 +273,14 @@ retains the per-record physical image.
 
 ## 7. `reconstruct_dbf()` — JSONL/JSON/CSV/XLSX → DBF/FPT
 
-Install: `[write]` for JSONL/JSON/CSV input; `[write,xlsx]` for XLSX input.
+**Install:** `[write]` for JSONL/JSON/CSV input; `[write,xlsx]` for XLSX input.
+**Input:** an exported format tree (data files + `<table>_schema.json`
+generated by `export_dbf`) and an output directory separate from the source.
+**Result:** `ReconstructionRunResult` — per-table canonical/raw match data;
+JSON-safe through `to_dict()`.
+**Side effects:** creates the rebuilt DBF/FPT tree + reconstruction report,
+published atomically (a failed table leaves no published output).
+**Best use:** schema-driven DBF/FPT rebuilding from exported migration data.
 
 ```python
 from dbfbridge import reconstruct_dbf
@@ -233,7 +305,15 @@ published output and no staging residue.
 
 ## 8. `verify_conversion()` — exported files vs DBF sources
 
-Install: base (XLSX verification needs `[xlsx]`).
+**Install:** base; `[xlsx]` when XLSX outputs are checked.
+**Input:** the DBF source tree and the exported output tree; format list;
+`strict`, `write_report`.
+**Result:** `VerificationRunResult` — JSON-safe through `to_dict()`.
+**Side effects:** none when `write_report=False`; with the default
+`write_report=True` a verification report JSON is written next to the
+outputs (the call is then not side-effect-free).
+**Best use:** integrity checking of a completed migration (the response can
+be the report when `write_report=False`).
 
 ```python
 from dbfbridge import verify_conversion
@@ -258,7 +338,14 @@ the outputs, so the call is not side-effect-free.
 
 ## 9. `check_conversion_quality()` — retained DBF → JSONL → DBF round trip
 
-Install: `[write]`.
+**Install:** `[write]`.
+**Input:** a DBF source tree and a quality workspace directory.
+**Result:** `QualityRunResult` — per-table canonical/raw match data and a
+bounded difference list; JSON-safe through `to_dict()`.
+**Side effects:** creates retained diagnostic output (forward export,
+reconstructed DBF/FPT, re-export, quality report).
+**Best use:** a dedicated diagnostic round trip — more expensive than Direct
+Read, not a lightweight table-read request.
 
 ```python
 from dbfbridge import check_conversion_quality

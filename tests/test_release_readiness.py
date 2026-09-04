@@ -347,3 +347,32 @@ def test_install_profile_smoke_has_an_import_alias_venv() -> None:
     assert "import_extra_smoke" in source
     # The orchestrator self-checks every canonical profile reported PASS.
     assert "p not in profiles_passed" in source
+
+
+def test_sdist_gate_requires_the_three_primary_docs() -> None:
+    """The shared release-artifact verifier must require the three primary
+    maintained documents (plus the contract/migration/compatibility docs) in
+    the sdist, so a future release artifact fails verification when one of
+    them disappears. Release infrastructure only — no runtime impact."""
+    import importlib.util
+
+    script = ROOT / "scripts" / "verify_release_artifacts.py"
+    spec = importlib.util.spec_from_file_location("verify_release_artifacts_ready", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    required = module.REQUIRED_SDIST_FILES
+    for document in (
+        "docs/README.md",
+        "docs/pypi-usage.md",
+        "docs/python-api-examples.md",
+        "docs/tool-server-integration.md",
+        "docs/api-1.0.md",
+        "docs/migration-1.0.md",
+        "docs/compatibility-vfp.md",
+    ):
+        assert document in required, f"verifier does not require {document}"
+    # MANIFEST.in keeps shipping the public documentation in the sdist.
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include docs *.md" in manifest

@@ -43,11 +43,44 @@ dbfbridge owns:
 - DBF/FPT parsing (exactly one physical record loop);
 - migration/export, schema-driven reconstruction;
 - verification and quality diagnostics;
-- typed result/error semantics (machine codes + JSON-safe `to_dict()`).
+- typed result/error semantics with machine codes and documented JSON-safe
+  serialization boundaries.
 
 The adapter must stay **thin**: do not reimplement DBF parsing, RawMode
 semantics, schema logic, or memo decoding, and never parse English exception
 messages. All of that is the library's job.
+
+## Production integration at a glance
+
+The operating model in one table (consolidated from the detailed sections
+below; the full per-operation matrix is in
+[Operation / side-effect matrix](#18-operation-side-effect-matrix-for-server-authors)):
+
+| Use case | Public API | Install | Bounded? | Writes? | JSON boundary | Recommended server exposure |
+|---|---|---|---|---|---|---|
+| discovery / listing | `inspect_table` | base | O(header) | no | `TableInfo.to_dict()` | read tool or read-only resource |
+| schema metadata | `read_schema` | base | O(fields) | no | `TableSchema.to_dict()` | read tool or read-only resource |
+| bounded page read | `read_records` | base | O(limit) | no | `RecordPage.to_dict()` | read tool (preferred remote read) |
+| local streaming read | `iter_records` | base | streaming O(1) | no | `DirectRecord.to_dict()` | local streaming (not one remote response) |
+| forensic byte access | `iter_raw_records` | base | streaming, no FPT | no | `DirectRecord.to_dict()` (Base64 raw) | read tool / admin-only exposure |
+| migration export | `export_dbf` | base (+`[xlsx]` for XLSX) | streams per table | **yes** — explicit action | `ExportRunResult.to_dict()` | explicit tool/action + output authorization |
+| reconstruction | `reconstruct_dbf` | `[write]` (+`[xlsx]` for XLSX input) | per-table | **yes** — explicit tool/action + output authorization | `ReconstructionRunResult.to_dict()` | explicit tool/action + output authorization |
+| verification | `verify_conversion` | base (+`[xlsx]` for XLSX) | per-file | only with `write_report=True` | `VerificationRunResult.to_dict()` | read-type tool (report optional) |
+| diagnostic round trip | `check_conversion_quality` | `[write]` | per-table | **yes** — retained workspace | `QualityRunResult.to_dict()` | explicit tool/action + output authorization |
+
+Progress/cancellation availability is NOT uniform — the exact matrix
+(enforced against the runtime signatures) is in the
+[progress-bridging section](#15-progress-bridging). Serialization has three
+intentional cases — normal result/error objects expose `to_dict()`, a
+standalone `TableResult` exposes `to_report_dict()`, and `ProgressEvent` is
+serialized by an explicit host-side serializer (see the
+[JSON boundary](#9-json-boundary) and [progress bridging](#15-progress-bridging)).
+
+> **Direct Write firewall.** Direct Write / `write_table` is
+> experimental/unreleased next-version research and is **NOT** part of the
+> current stable 1.x public API. Production adapters must not depend on or
+> expose it until a future public contract explicitly promotes it — the
+> stable surface is the nine documented operations above.
 
 ## 2. Installation for service hosts
 
@@ -406,6 +439,28 @@ The hosting adapter may map `ProgressEvent` to its own
 progress/notification mechanism (for example an MCP progress notification);
 dbfbridge does not assume any protocol-specific progress API.
 
+### Progress and cancellation capability matrix
+
+Verified against the current public signatures (narrow regressions protect
+it). `NO` means the parameter does not exist on that operation — do not pass
+it and do not simulate it in the adapter:
+
+| Operation | `progress=` | `cancel_check=` |
+|---|---|---|
+| `inspect_table` | NO | NO |
+| `read_schema` | NO | NO |
+| `iter_records` | YES | YES |
+| `read_records` | YES | YES |
+| `iter_raw_records` | YES | YES |
+| `export_dbf` | YES | NO |
+| `reconstruct_dbf` | YES | NO |
+| `verify_conversion` | NO | NO |
+| `check_conversion_quality` | YES | NO |
+
+Cancellation is read-side only (`ReadCancelledError` at a physical record
+boundary); the high-level write operations report progress but expose no
+`cancel_check` — do not invent cancellation for them.
+
 ## 16. Path security (host responsibility)
 
 dbfbridge accepts filesystem paths. It is **not an authorization sandbox**.
@@ -503,10 +558,22 @@ present a copied/stale CDX file as valid after changing indexed data.
 
 ## 22. Offline / pinned deployment with provenance
 
-Normal service deployment is a **pinned package installation**:
+Deployment states differ; document both explicitly.
+
+**After an official PyPI publication** the normal pinned deployment is:
 
 ```bash
-python -m pip install "dbfbridge==<version>"
+python -m pip install "dbfbridge==X.Y.Z"
+```
+
+**Controlled pre-publication / offline validation** (also the honest state
+today: the historical v0.2.0 GitHub Release exists, but its PyPI publication
+did not complete successfully, so this guide does not claim that any
+specific version is currently downloadable from PyPI): install an exact,
+trusted wheel instead — never a "latest" fetch:
+
+```bash
+python -m pip install /trusted/wheelhouse/dbfbridge-X.Y.Z-py3-none-any.whl
 ```
 
 For a controlled offline/vendored deployment, install a complete pinned
