@@ -57,10 +57,20 @@ NOT_YET_AUDITED: 0
 Root-cause blockers: **Macro A 3 → Macro B 0**. BLK-01 (public error model) and
 BLK-02 (migration raw-mode split) are **CLOSED_FROZEN** (merged in Macro A,
 PR #16 `90f8362`); BLK-03 (1.0 API contract declaration) is **CLOSED_FROZEN**
-by Macro B (`docs/api-1.0.md` + `tests/test_api_1_0_contract.py`, branch
-`docs/1.0-api-contract`). **Zero repository-controlled architecture blockers
-remain.** The sole remaining blocker is external: **PyPI Trusted Publisher
-verification (EXB-01)**.
+by Macro B (`docs/api-1.0.md` + `tests/test_api_1_0_contract.py`, PR #17
+`197c986`). **Zero repository-controlled architecture blockers remain.** The
+sole remaining blocker is external: **PyPI Trusted Publisher verification
+(EXB-01)**.
+
+### Closure-accounting correction (Macro C)
+
+After Macro B, a final repository release-infrastructure convergence gap was
+identified: **R-26 had previously been treated as CLOSED using important
+evidence located only on the unmerged `release/0.3.0` branch** (hardened
+publish workflow, release-state validator, version-neutral smoke contracts,
+migration guide). Macro C converges that proven generic release infrastructure
+onto the current `main` lineage so R-26 evidence no longer cites an unmerged
+branch. No functional DBF/FPT blocker was reopened.
 
 ---
 
@@ -147,7 +157,7 @@ Columns: ID | architecture section | requirement | status | repository evidence 
 
 | ID | Section | Requirement | Status | Repository evidence | Test/CI evidence | Limitation | Blocker | Next action | Macro PR |
 |---|---|---|---|---|---|---|---|---|---|
-| R-26 | §12 | Repository packaging readiness: semver, metadata, SPDX, wheels/sdist, 3.10–3.14, Windows CI, changelog, migration guide, `py.typed`, side-effect-free import, examples, documented VFP/CDX limits | CLOSED_FROZEN | PR #12 (release/0.3.0): package job runs `python -m build` + `twine check` + `release_wheel_smoke` + `pypi_install_smoke` on the exact wheel; release-state gate; `docs/migration-0.3.md` | CI 33756842901 SUCCESS @ d690d33 (all 8 jobs) | `main` still at 0.2.0 — intentional release lifecycle (§41) | NO | none | — |
+| R-26 | §12 | Repository packaging readiness: semver, metadata, SPDX, wheels/sdist, 3.10–3.14, Windows CI, changelog, migration guide, `py.typed`, side-effect-free import, examples, documented VFP/CDX limits | CLOSED_FROZEN | **Macro C convergence (this branch):** version-neutral CI package job (`build` + `twine check` + `release_wheel_smoke` + `pypi_install_smoke` on the exact wheel, no expected-version literals), hardened `publish.yml` (release-final-state gate `scripts/check_release_state.py`, wheel/sdist count gates, wheel METADATA + `py.typed` gate, sdist PKG-INFO gate, build-once/same-artifact publish, Trusted Publishing OIDC), `docs/migration-1.0.md`, public docs in the sdist (`MANIFEST.in`) — evidence on the current `main` lineage, tested by `tests/test_release_state.py` / `test_release_readiness.py` / `test_migration_guide.py` / `test_packaging.py` | exact-head Macro C CI (package job) | `main` still at 0.2.0 — intentional release lifecycle (§41) | NO | none | — |
 | R-27 | §12 | Actual PyPI publication (Trusted Publishing) | **EXTERNAL_BLOCKER** | publish run 33487949133: build SUCCESS, publish FAILURE `invalid-publisher`; OIDC claims correct; PyPI-side Trusted Publisher missing/mismatched | v0.2.0 publish run | blocked outside repository | **YES (EXB-01)** | external verification only; no repo action | Macro C |
 
 ### §13 Benchmarks / §14 Performance policy

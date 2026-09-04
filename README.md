@@ -9,7 +9,7 @@
 - preserve Polish legacy text with cp1250 → cp852 → Mazovia fallback;
 - expose the same operations as a typed Python API through `from dbfbridge import ...`.
 
-> Status: **0.2.0 (alpha)**. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
+> Status: **0.2.0 (alpha)**. The next release is being prepared. Test the result on a copy of production data before using it as an archival replacement. CDX index definitions are not reconstructed.
 
 ## Requirements
 
@@ -146,6 +146,9 @@ same.
 The full guide for PyPI-installed usage (profiles, Direct Read, memo
 policies, pagination, reconstruction, XLSX, CLI, structured errors) is
 [docs/pypi-usage.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md).
+Migrating from an earlier 0.x release to the declared 1.x public API is
+described in
+[docs/migration-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-1.0.md).
 
 ## CLI quick start
 
