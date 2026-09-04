@@ -35,6 +35,7 @@ normal installation path for a user.
 | `python_api.py` | public API | complete flow through `from dbfbridge import ...` |
 | `inspect_table.py` | public API (historical: Phase 1A) | read-only header and schema inspection |
 | `read_records.py` | public API (historical: Phase 1B) | streaming record read (projection, memo policies, raw) |
+| `direct_copy.py` | RESEARCH API (`write_table`, next version — not released) | streaming DBF/FPT copy without any intermediate JSONL |
 
 ## Running in PowerShell
 

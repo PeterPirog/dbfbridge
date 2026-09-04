@@ -26,3 +26,6 @@ python examples/check_conversion_quality.py --source "K:\dbf_source_small" --out
 
 # Direct Read: streaming odczyt rekordow (Phase 1B)
 python examples/read_records.py --dbf "K:\dbf_source\klienci.dbf" --offset 0 --limit 20 --memo lazy --fields ID_KL,NAZWA,NOTATKA
+
+# Direct Write (RESEARCH, next version): streaming kopiowanie bez JSONL
+python examples/direct_copy.py --dbf "K:\dbf_source\klienci.dbf" --dest "K:\dbf_output\klienci_copy.dbf" --overwrite
