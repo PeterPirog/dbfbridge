@@ -18,7 +18,7 @@ Repository: <https://github.com/PeterPirog/dbfbridge>
 
 License: MIT
 
-Current package metadata: version and Development Status classifier live in `pyproject.toml` (0.2.0, Alpha at the time of the 1.x architecture closure) and \__version__\ in `src/dbf_bridge/__init__.py` — do not duplicate the values here. The declared 1.x architecture is code-complete on `main`; publication is externally blocked (PyPI Trusted Publisher / account access). Authoritative status documents: `docs/api-1.0.md` (stable API contract), `docs/architecture-closure.md` (architecture closure matrix and final main lineage), `CHANGELOG.md` (release history).
+Current package metadata: version and Development Status classifier live in `pyproject.toml` (0.2.0, Alpha at the time of the 1.x architecture closure) and `__version__` in `src/dbf_bridge/__init__.py` — do not duplicate the values here. The declared 1.x architecture is code-complete on `main`; publication is externally blocked (PyPI Trusted Publisher / account access). Authoritative status documents: `docs/api-1.0.md` (stable API contract), `docs/architecture-closure.md` (architecture closure matrix and final main lineage), `CHANGELOG.md` (release history).
 
 ## Architecture
 
@@ -269,24 +269,24 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 
 ## Documentation map
 
-- \README.md\ — quick start and navigation (user entry point);
-- `docs/README.md\ — documentation index (which document is authoritative for what);
-- `docs/pypi-usage.md\ — installed-distribution user guide;
+- `README.md` — quick start and navigation (user entry point);
+- `docs/README.md` — documentation index (which document is authoritative for what);
+- `docs/pypi-usage.md` — installed-distribution user guide;
 - `docs/python-api-examples.md` — complete Python API examples (all nine stable operations);
-- `docs/tool-server-integration.md\ — transport-neutral tool-server / MCP integration guide;
+- `docs/tool-server-integration.md` — transport-neutral tool-server / MCP integration guide;
 - `docs/api-1.0.md` — normative stable 1.x API contract;
 - `docs/compatibility-vfp.md` — per-type VFP format support truth;
 - `docs/migration-1.0.md` — migration from 0.x to the 1.x API;
 - `docs/architecture-closure.md` — architecture closure matrix and final main lineage;
-- `docs/architecture/*`, \enchmarks/README.md\, `PUBLISHING.md` — maintainer and historical evidence.
+- `docs/architecture/*`, `benchmarks/README.md`, `PUBLISHING.md` — maintainer and historical evidence.
 
 ## Frozen public boundary
 
-The stable public surface is \import dbfbridge\ (\dbf_bridge\ is a compatibility
-alias with identical symbols). \dbf_bridge.core.*\, \dbf_bridge.exporter.*\,
-\dbf_bridge.importer.*\ are implementation details — never an integration
+The stable public surface is `import dbfbridge` (`dbf_bridge` is a compatibility
+alias with identical symbols). `dbf_bridge.core.*`, `dbf_bridge.exporter.*`,
+`dbf_bridge.importer.*` are implementation details — never an integration
 surface. The frozen contract is documented in `docs/api-1.0.md` and enforced by
-\	ests/test_api_1_0_contract.py\ (baseline symbols, nine operations,
+`tests/test_api_1_0_contract.py` (baseline symbols, nine operations,
 RawMode choices, ErrorCode stability baseline, signature baselines, JSON-safe
 run results, alias parity).
 
@@ -294,12 +294,12 @@ run results, alias parity).
 
 - Any change to public API surface, semantics, defaults, or error codes must
   update: `docs/api-1.0.md`, `docs/python-api-examples.md`,
-  `docs/pypi-usage.md\, `docs/tool-server-integration.md\ (when integration
+  `docs/pypi-usage.md`, `docs/tool-server-integration.md` (when integration
   semantics change), and the tests enforcing documentation/API parity
-  (\	ests/test_api_1_0_contract.py\, \	ests/test_documented_public_examples.py\,
-  \	ests/test_documentation.py\).
+  (`tests/test_api_1_0_contract.py`, `tests/test_documented_public_examples.py`,
+  `tests/test_documentation.py`).
 - Keep README user-facing content navigation-first: deep implementation and
   historical evidence belongs in `docs/architecture/*`,
-  `docs/architecture-closure.md`, and \enchmarks/README.md\.
+  `docs/architecture-closure.md`, and `benchmarks/README.md`.
 - Do not put transient CI test counts into this file; they belong to the PR/CI
   evidence of the moment.

@@ -2,11 +2,14 @@
 
 Proves the exact runtime serialization boundary documented in
 ``docs/api-1.0.md`` §5 and that the maintained documentation no longer makes
-the two documented false claims.
+the documented false claims.
 """
 
 from __future__ import annotations
 
+import json
+import re
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -14,6 +17,8 @@ ROOT = Path(__file__).parents[1]
 API_DOC = ROOT / "docs" / "api-1.0.md"
 EXAMPLES_DOC = ROOT / "docs" / "python-api-examples.md"
 README = ROOT / "README.md"
+
+EMDASH = "\u2014"
 
 
 def test_tableresult_serializer_contract() -> None:
@@ -49,7 +54,7 @@ def test_normative_docs_describe_the_tableresult_contract() -> None:
     must not claim a `to_dict()` for it."""
     api_text = API_DOC.read_text(encoding="utf-8")
     assert "`TableResult` exposes **`to_report_dict()`**" in api_text
-    assert "has **no\n  `to_dict()`**" in api_text or "no `to_dict()`" in api_text
+    assert "no\n  `to_dict()`**" in api_text or "no `to_dict()`" in api_text
     # The old false claim must not return.
     assert "`TableResult`, `ReconstructionResult`" not in api_text
 
@@ -60,8 +65,9 @@ def test_documented_examples_distinguish_raw_keys() -> None:
     against manufacturing reconstruction input from `read_schema().to_dict()`."""
     examples = EXAMPLES_DOC.read_text(encoding="utf-8")
     assert "boundary key `raw_record`" in examples
+    assert "__dbfbridge_raw_record__" in examples
     assert "Do not" in examples and "conflate" in examples
-    assert "Warning — two different schema concepts" in examples
+    assert f"Warning {EMDASH} two different schema concepts" in examples
     assert "Never manufacture reconstruction input from" in examples
     # the read_schema heading must not call TableSchema the reconstruction authority
     assert "the full reconstruction authority" not in examples
@@ -70,8 +76,89 @@ def test_documented_examples_distinguish_raw_keys() -> None:
 def test_documented_examples_have_no_duplicate_xlsx_rows() -> None:
     """Exactly one XLSX reconstruction install-profile row exists."""
     examples = EXAMPLES_DOC.read_text(encoding="utf-8")
-    assert examples.count('XLSX → DBF/FPT reconstruction') == 1
-    assert examples.count('XLSX → DBF reconstruction') == 0
+    assert examples.count("XLSX \u2192 DBF/FPT reconstruction") == 1
+    assert examples.count("XLSX \u2192 DBF reconstruction") == 0
+
+
+def test_cookbook_json_boundary_excludes_tableresult_from_to_dict_group() -> None:
+    """The cookbook's final JSON-safe boundary section must NOT claim
+    `TableResult` exposes `to_dict()` and must unambiguously state the
+    `to_report_dict()` contract for it (runtime-verified)."""
+    from dbf_bridge.exporter.models import TableResult
+
+    assert hasattr(TableResult, "to_report_dict")
+    assert not hasattr(TableResult, "to_dict")
+
+    examples = EXAMPLES_DOC.read_text(encoding="utf-8")
+    boundary_start = examples.index("## JSON-safe boundary")
+    boundary = examples[boundary_start:]
+    to_dict_group = re.search(r"expose `to_dict\(\)`.*?(?=\n\n)", boundary, re.DOTALL)
+    if to_dict_group:
+        assert "TableResult" not in to_dict_group.group(0), (
+            "cookbook claims TableResult exposes to_dict()"
+        )
+    assert "to_report_dict" in boundary
+    assert "TableResult" in boundary
+    assert "ProgressEvent" in boundary and "to_dict()" in boundary
+
+
+def test_install_profile_documentation_distinguishes_xlsx_reconstruction() -> None:
+    """The normative operation table and the cookbook must NOT claim that
+    XLSX reconstruction needs only `[write]`, and must explicitly identify
+    `[write,xlsx]` for XLSX input."""
+    api_text = API_DOC.read_text(encoding="utf-8")
+    assert "`[write]` for JSONL/JSON/CSV input; `[write,xlsx]` for XLSX input" in api_text
+
+    examples = EXAMPLES_DOC.read_text(encoding="utf-8")
+    assert "XLSX input" in examples
+    assert "`[write,xlsx]`" in examples
+
+    readme = README.read_text(encoding="utf-8")
+    assert 'dbfbridge[write,xlsx]' in readme
+
+
+def test_exportrunresult_to_dict_includes_nested_table_results() -> None:
+    """`ExportRunResult.to_dict()` serializes nested TableResult objects
+    through `to_report_dict()` — the normal integration boundary."""
+    import tempfile
+
+    import dbfbridge
+
+    source_dir = Path(tempfile.mkdtemp())
+    _make_fixture(source_dir / "KLIENCI.DBF")
+    result = dbfbridge.export_dbf(
+        source_dir, "dist_export_probe", formats=("jsonl",), overwrite=True
+    )
+    try:
+        payload = result.to_dict()
+        json.dumps(payload)
+        assert payload["results"], "expected at least one table result"
+    finally:
+        shutil.rmtree("dist_export_probe", ignore_errors=True)
+
+
+def _make_fixture(path: Path) -> None:
+    import dbf as dbf_lib
+
+    table = dbf_lib.Table(
+        str(path), "KOD N(3,0); NAZWA C(10)", dbf_type="vfp", codepage=0xC8
+    )
+    table.open(dbf_lib.READ_WRITE)
+    table.append({"KOD": 1, "NAZWA": "abc"})
+    table.append({"KOD": 2, "NAZWA": "def"})
+    table.close()
+
+
+def _make_fixture(path: Path) -> None:
+    import dbf as dbf_lib
+
+    table = dbf_lib.Table(
+        str(path), "KOD N(3,0); NAZWA C(10)", dbf_type="vfp", codepage=0xC8
+    )
+    table.open(dbf_lib.READ_WRITE)
+    table.append({"KOD": 1, "NAZWA": "abc"})
+    table.append({"KOD": 2, "NAZWA": "def"})
+    table.close()
 
 
 def test_readme_references_the_committed_overview_asset() -> None:
