@@ -506,21 +506,21 @@ staging/spool, and **publishes nothing** — the previous pair stays intact
 under `overwrite=True`:
 
 ```python
-import dbfbridge
+from dbfbridge import WriteCancelledError, write_table
 
 cancelled = False
 
 
 def write_bounded(destination, schema, records, *, cancel_check, progress):
     try:
-        return dbfbridge.write_table(
+        return write_table(
             destination,
             schema=schema,
             records=records,
             cancel_check=cancel_check,  # host maps request cancellation here
             progress=progress,
         )
-    except dbfbridge.WriteCancelledError as exc:
+    except WriteCancelledError as exc:
         # normal, machine-classifiable outcome: nothing was published
         return {"ok": False, "error": exc.to_dict()}
 ```
@@ -630,7 +630,7 @@ Two transport-neutral host patterns — both keep the library API unchanged:
 **Pattern A — service-layer stream (the host creates the iterator):**
 
 ```python
-import dbfbridge
+from dbfbridge import write_table
 
 MAX_RECORDS_PER_WRITE = 50_000  # HOST POLICY, not a dbfbridge limit
 
@@ -647,7 +647,7 @@ def write_from_host_stream(schema, bounded_batches, *, destination):
                 produced += 1
                 yield row
 
-    return dbfbridge.write_table(destination, schema=schema, records=records())
+    return write_table(destination, schema=schema, records=records())
 
 
 def bounded_batches(bounded_batches_cap):
@@ -663,7 +663,7 @@ iterator over that bounded input and calls `write_table` inside its own
 worker:
 
 ```python
-import dbfbridge
+from dbfbridge import write_table
 
 
 def run_write_job(schema, job, *, destination, progress=None):
@@ -674,7 +674,7 @@ def run_write_job(schema, job, *, destination, progress=None):
         for row in iter_job_rows(job.records_path):
             yield row
 
-    return dbfbridge.write_table(
+    return write_table(
         destination,
         schema=schema,
         records=records(),

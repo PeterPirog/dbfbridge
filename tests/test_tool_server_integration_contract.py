@@ -21,6 +21,7 @@ Narrow, semantic contract tests protecting the Phase E maintained surfaces
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import re
@@ -32,6 +33,16 @@ import pytest
 ROOT = Path(__file__).parents[1]
 GUIDE = ROOT / "docs" / "tool-server-integration.md"
 SCHEMA = ROOT / "docs" / "schemas" / "write-result.schema.json"
+
+#: Maintained user-facing surfaces whose Direct Write invocation examples must
+#: follow the DBFB-DOC-001 import convention (public `dbfbridge` import).
+USER_FACING_EXAMPLE_DOCUMENTS = (
+    GUIDE,
+    ROOT / "README.md",
+    ROOT / "docs" / "pypi-usage.md",
+    ROOT / "docs" / "python-api-examples.md",
+    ROOT / "examples" / "direct_copy.py",
+)
 
 sys.path.insert(0, str(ROOT / "tests"))
 import vfp_fixture_factory as factory  # noqa: E402
@@ -58,8 +69,84 @@ def _adapter_block() -> str:
 
 
 # ---------------------------------------------------------------------------
-# public API only (DBFB-MCP-001 / DBFB-DOC-001)
+# DBFB-DOC-001: public import contract for Direct Write invocation examples
 # ---------------------------------------------------------------------------
+
+
+def _ast_source(document: Path) -> str:
+    """Python source of a doc's code blocks, or the file itself for .py."""
+    if document.suffix == ".py":
+        return document.read_text(encoding="utf-8")
+    return "\n\n".join(_blocks(document.read_text(encoding="utf-8")))
+
+
+def _write_table_call_style(tree: ast.AST) -> str | None:
+    """`imported_write_table` for bare ``write_table(...)`` calls,
+    `module_attribute_write_table` for ``dbfbridge.write_table(...)``."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
+            if isinstance(node.func, ast.Name) and node.func.id == "write_table":
+                return "imported_write_table"
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "write_table"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "dbfbridge"
+            ):
+                return "module_attribute_write_table"
+    return None
+
+
+def test_direct_write_examples_use_the_public_import_contract() -> None:
+    """DBFB-DOC-001 (AST-based, semantic): every maintained user-facing block
+    that INVOKES Direct Write must import ``write_table`` from the public
+    package and call it by the imported name — never
+    ``dbfbridge.write_table(...)``, never
+    ``from dbf_bridge.write import write_table``.  Capability-probe blocks
+    (which only test public symbol presence) are exempt."""
+    checked_documents = 0
+    for document in USER_FACING_EXAMPLE_DOCUMENTS:
+        tree = ast.parse(_ast_source(document))
+        style = _write_table_call_style(tree)
+        if style is None:
+            continue  # no Direct Write invocation on this surface
+        imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "dbfbridge"
+            for alias in node.names
+        }
+        assert "write_table" in imports, (
+            f"{document.name}: invokes write_table without 'from dbfbridge import write_table'"
+        )
+        assert style == "imported_write_table", (
+            f"{document.name}: DBFB-DOC-001 requires the imported public name,"
+            " not dbfbridge.write_table(...)"
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "dbf_bridge.write", (
+                    f"{document.name}: private write import is forbidden"
+                )
+        checked_documents += 1
+    # All five maintained surfaces carrying Direct Write invocation examples
+    # (guide, README, pypi-usage, python-api-examples, direct_copy) are under
+    # the rule.
+    assert checked_documents == 5, checked_documents
+
+
+def test_capability_probe_blocks_may_use_module_level_import_only() -> None:
+    """The capability probe legitimately inspects public symbol presence with
+    ``import dbfbridge`` and NEVER invokes Direct Write (DBFB-MCP-009)."""
+    for block in _blocks(_guide_text()):
+        if "def backend_status" not in block:
+            continue
+        tree = ast.parse(block)
+        assert _write_table_call_style(tree) is None, (
+            "the capability probe must not invoke Direct Write"
+        )
+        # and it must still test symbol presence mechanically
+        assert "hasattr(" in block
 
 
 def test_integration_examples_import_the_public_api_only() -> None:
