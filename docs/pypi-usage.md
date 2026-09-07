@@ -389,6 +389,31 @@ reconstruction from XLSX exports needs `[write,xlsx]`. Without the required
 extra the operation fails with a typed `OptionalDependencyMissingError`
 before any output is created.
 
+## Write DBF/FPT tables (write_table, v1.1)
+
+The `[write]` extra also unlocks the additive v1.1 Direct Write operation:
+
+```python
+from dbfbridge import iter_records, read_schema, write_table
+
+schema = read_schema("source/klienci.dbf")
+records = iter_records("source/klienci.dbf", memo="inline")
+result = write_table("output/klienci-copy.dbf", schema=schema, records=records)
+print(result.records_written, result.deleted_records, result.dbf_sha256)
+```
+
+`write_table()` accepts `DirectRecord` objects or plain mappings (with the
+`__deleted__` marker), consumes the iterable exactly once, defaults to
+`overwrite=False` (existing output raises the stable `OUTPUT_EXISTS` code),
+publishes the DBF/FPT pair atomically, and reports the canonical result
+through the JSON-safe `WriteResult.to_dict()`. Failures are typed in the
+separate `DirectWriteError` family (`DestinationIoError`,
+`WriteSchemaInvalidError`, `WriteFieldUnsupportedError`, `WriteValueInvalidError`,
+`WriteMemoFailedError`, `WritePublicationFailedError`, `WriteCancelledError`).
+Canonical equivalence does not imply raw byte identity; structural CDX
+indexes require an external rebuild (`index_rebuild_required=True`). See
+`docs/api-1.1.md` for the full contract.
+
 ## Full installation
 
 ```bash

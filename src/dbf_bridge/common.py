@@ -1,0 +1,223 @@
+"""Neutral shared primitives for the DBF/FPT physical writer and pipelines.
+
+This module is the dependency-neutral home for the small checksum and
+serialization primitives shared by the physical writer
+(:mod:`dbf_bridge.write.backend`), the reconstruction pipeline
+(:mod:`dbf_bridge.importer`) and the exporter (:mod:`dbf_bridge.exporter`).
+
+It exists so that ``write/`` depends only on ``core/``, ``optional_deps``
+and this neutral layer — never on ``importer``/``exporter`` — which keeps
+the shared-writer boundary free of import cycles
+(``importer/__init__.py`` eagerly imports the reconstruction orchestrator,
+which delegates to the shared writer).
+
+The code is moved verbatim from its original homes (``importer.checksum``,
+``exporter.validation``, ``exporter.serialization``); those modules re-export
+the same names so every existing import path keeps working.  Only the
+standard library and ``dbf_bridge.core`` are imported here.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import struct
+from collections.abc import Mapping
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+from dbf_bridge.core.nullflags import NullFlagsLayout, build_nullflags_layout, null_field_names
+
+__all__ = [
+    "BINARY_MEMO_FIELDS_KEY",
+    "CanonicalChecksum",
+    "RAW_RECORD_KEY",
+    "RAW_TEXT_FIELDS_KEY",
+    "canonical_record",
+    "canonical_value",
+    "nullable_null_fields",
+    "parse_iso_date",
+    "sha256_file",
+]
+
+# JSON/JSONL transport metadata keys shared by the exporter (producer) and
+# the reconstruction writer (consumer).  They are part of the on-disk export
+# contract and must stay byte-identical across releases.
+BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
+RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
+RAW_RECORD_KEY = "__dbfbridge_raw_record__"
+
+
+class CanonicalChecksum:
+    """Schema-aware checksum independent of JSON formatting and DBF headers."""
+
+    def __init__(self, schema: Mapping[str, Any]) -> None:
+        self.fields = list(schema.get("fields") or [])
+        self._nullflags_layout: NullFlagsLayout | None = build_nullflags_layout(self.fields)
+        self.schema_signature = [
+            [
+                field.get("ordinal"),
+                field.get("name"),
+                field.get("dbf_type"),
+                field.get("length"),
+                field.get("decimal_count"),
+                field.get("flags", 0),
+            ]
+            for field in self.fields
+            if field.get("dbf_type") != "0"
+        ]
+        self._active = hashlib.sha256()
+        self._deleted = hashlib.sha256()
+        self.active_records = 0
+        self.deleted_records = 0
+
+    def update(self, record: Mapping[str, Any]) -> None:
+        deleted = bool(record.get("__deleted__", False))
+        values = list(canonical_record(record, self.fields, self._nullflags_layout).values())
+        encoded = (
+            json.dumps(values, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        if deleted:
+            self._deleted.update(encoded)
+            self.deleted_records += 1
+        else:
+            self._active.update(encoded)
+            self.active_records += 1
+
+    @property
+    def record_count(self) -> int:
+        return self.active_records + self.deleted_records
+
+    def hexdigest(self) -> str:
+        envelope = {
+            "schema": self.schema_signature,
+            "active_records": self.active_records,
+            "deleted_records": self.deleted_records,
+            "active_sha256": self._active.hexdigest(),
+            "deleted_sha256": self._deleted.hexdigest(),
+        }
+        payload = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+
+def nullable_null_fields(
+    record: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+    layout: NullFlagsLayout | None = None,
+) -> set[str]:
+    """Resolve one record's logical NULL field names from its bitmap.
+
+    The bit allocation is the canonical VFP contract owned by
+    ``dbf_bridge.core.nullflags`` (``V``/``Q`` fields take a varlength bit
+    before their NULL bit; other NULLable fields take one bit; descriptor
+    order) — never a parallel ``enumerate(nullable)`` count.
+    """
+    if layout is None:
+        layout = build_nullflags_layout(fields)
+    if layout is None:
+        return set()
+    raw_value = record.get(layout.field_name)
+    if raw_value is None:
+        return set()
+    if isinstance(raw_value, (bytes, bytearray)):
+        bitmap = bytes(raw_value)
+    else:
+        try:
+            bitmap = base64.b64decode(str(raw_value), validate=True)
+        except ValueError:
+            return set()
+    return null_field_names(layout, bitmap)
+
+
+def canonical_record(
+    record: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+    layout: NullFlagsLayout | None = None,
+) -> dict[str, Any]:
+    if layout is None:
+        layout = build_nullflags_layout(fields)
+    null_names = nullable_null_fields(record, fields, layout)
+    return {
+        str(field["name"]): canonical_value(
+            None if field["name"] in null_names else record.get(field["name"]),
+            field,
+        )
+        for field in fields
+        if field.get("dbf_type") != "0"
+    }
+
+
+def parse_iso_date(value: Any) -> date:
+    """Parse an ISO date value deterministically on every supported Python.
+
+    Python 3.11 relaxed ``date.fromisoformat`` to accept additional ISO 8601
+    layouts; on 3.10 it rejects the compact ``YYYYMMDD`` form.  The DBF Date
+    column has no separator, so integrators legitimately supply that compact
+    form as a mapping value — accept both spellings on every supported
+    interpreter (the checksum and the physical writer share this helper so
+    both paths classify inputs identically).
+    """
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        if len(text) == 8 and text.isdigit():
+            return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+        raise
+
+
+def canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    dbf_type = str(field.get("dbf_type"))
+    decimals = int(field.get("decimal_count") or 0)
+    if dbf_type in {"N", "F", "I", "+", "Y"}:
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"Field {field.get('name')!r} is not numeric: {value!r}") from exc
+        if dbf_type == "Y":
+            return format(number.quantize(Decimal("0.0001")), "f")
+        if dbf_type in {"I", "+"} or decimals == 0:
+            return format(number.quantize(Decimal("1")), "f")
+        quantum = Decimal(1).scaleb(-decimals)
+        return format(number.quantize(quantum), "f")
+    if dbf_type in {"B", "O"} and not field.get("is_memo"):
+        return struct.pack("<d", float(value)).hex()
+    if dbf_type == "D":
+        if isinstance(value, datetime):
+            value = value.date()
+        return value.isoformat() if isinstance(value, date) else parse_iso_date(value).isoformat()
+    if dbf_type in {"T", "@"}:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        return parsed.isoformat(timespec="milliseconds")
+    if dbf_type == "L":
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"false", "f", "no", "n", "0"}:
+                return False
+            if lowered in {"true", "t", "yes", "y", "1"}:
+                return True
+        return bool(value)
+    return str(value) if not isinstance(value, str) else value
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as infile:
+        for chunk in iter(lambda: infile.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
