@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Public Direct Write API (additive v1.1 contract, `docs/api-1.1.md`):
+  `write_table()` writes a typed `TableSchema` + record stream as a fresh
+  DBF/FPT pair through the single shared physical writer — `overwrite`
+  defaults to `False` (stable `OUTPUT_EXISTS` code), the caller iterable is
+  consumed exactly once (bounded streaming; private bounded spool for the
+  Varchar/`_NullFlags` second pass), `progress=` uses the canonical
+  `ProgressEvent` (`operation="write"`), `cancel_check=` is honoured at
+  record boundaries and before final publication, and the DBF+FPT pair is
+  published as one transaction (staging + fsync + atomic `os.replace`,
+  previous pair restored after handled failures). The result is the
+  JSON-safe `WriteResult`; failures are typed in the separate
+  `DirectWriteError` family with additive structured codes
+  (`WRITE_*`/`DESTINATION_IO_ERROR`). Structural CDX is never fabricated
+  (`index_rebuild_required=True`); DBC semantics are not restored. The
+  package version stays governed by the controlled release lifecycle.
 - Optional dependency split: the base wheel installs with exactly one
   mandatory runtime dependency (`dbfread`) and covers `import dbfbridge`,
   the complete read-only Direct Read surface, and DBF → JSONL/JSON/CSV

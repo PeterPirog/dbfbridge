@@ -44,9 +44,9 @@ class ErrorCode(str, enum.Enum):
     RECONSTRUCTION_FAILED = "RECONSTRUCTION_FAILED"
     ROUNDTRIP_MISMATCH = "ROUNDTRIP_MISMATCH"
     OPERATION_FAILED = "OPERATION_FAILED"
-    # Direct Write (v1.1 internal contract — additive; existing 1.0 codes are
-    # frozen and never repurposed).  The write-conflict case reuses the stable
-    # OUTPUT_EXISTS code instead of a parallel vocabulary.
+    # Direct Write (additive since the v1.1 public contract; existing 1.0
+    # codes are frozen and never repurposed).  The write-conflict case reuses
+    # the stable OUTPUT_EXISTS code instead of a parallel vocabulary.
     DESTINATION_IO_ERROR = "DESTINATION_IO_ERROR"
     WRITE_SCHEMA_INVALID = "WRITE_SCHEMA_INVALID"
     WRITE_FIELD_UNSUPPORTED = "WRITE_FIELD_UNSUPPORTED"

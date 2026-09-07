@@ -424,6 +424,39 @@ that dbfbridge itself implements any of these server policies.
 
 ## 17. Source immutability vs write operations
 
+### 17.1 Direct Write capability (v1.1, opt-in and host-controlled)
+
+Since the v1.1 contract the public `write_table()` operation exists (see
+`docs/api-1.1.md`). Exposing it through a tool server is a **host decision**;
+the library imposes no transport and no default authorization:
+
+- **opt-in** - do not register a write tool unless the deployment wants one;
+  read-only servers simply never expose it;
+- **host-controlled authorization** - the host decides which callers may
+  write and under which policy;
+- **path allowlists** - the host validates destinations (and staging
+  directories) against its own allowlist; the library only enforces the
+  same-volume atomicity rule for `staging_directory`;
+- **source != destination** - Direct Write never reads or modifies a source
+  table (the source is not even an argument); hosts should still reject
+  destination paths that alias protected locations;
+- **overwrite policy** - `overwrite` defaults to `False` and returns the
+  stable `OUTPUT_EXISTS` code; a host may hard-code it to `False` for
+  append-only workflows;
+- **bounded workflows** - cap the record stream (the iterable is consumed
+  exactly once and streamed; flat tables are O(1)/O(batch) memory, and the
+  Varchar/`_NullFlags` second pass is fed from a bounded private spool);
+- **classify errors by `.code`** - map `DirectWriteError` subclasses and
+  their structured codes (`WRITE_*`, `DESTINATION_IO_ERROR`,
+  `WRITE_CANCELLED`, reused `OUTPUT_EXISTS` /
+  `OPTIONAL_DEPENDENCY_MISSING`) to your transport's error objects; never
+  parse the message text;
+- **serialize `WriteResult.to_dict()`** - the JSON-safe payload (POSIX
+  paths, counters, final SHA-256 digests, warnings list) is the intended
+  tool-result body.
+
+## 17a. Source immutability vs write operations (historical note)
+
 **Source-read-only** (never create outputs, never touch source bytes):
 
 - `inspect_table`, `read_schema`, `iter_records`, `read_records`,

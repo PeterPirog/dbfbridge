@@ -1,9 +1,10 @@
-"""Internal Direct Write entry point (v1.1 INTERNAL contract — Phase C).
+"""Direct Write entry point (dbfbridge v1.1 public contract).
 
-``dbf_bridge.write.write_table`` is the internal user-facing function of the
-shared physical writer.  It is deliberately NOT exported from the root public
-facades yet — Phase D owns that promotion (DBFB-WRITE-001 is out of scope
-here).
+``dbf_bridge.write.write_table`` is the promoted public Direct Write
+operation, exported from both public facades (``dbfbridge`` and
+``dbf_bridge``) since the additive v1.1 contract (see
+``docs/api-1.1.md``).  This module remains the single implementation home —
+the facades re-export it lazily without duplicating behaviour.
 
 Design:
 
@@ -173,9 +174,8 @@ def write_table(
 ) -> WriteResult:
     """Write a lazily consumed record stream as a fresh DBF/FPT pair.
 
-    INTERNAL contract (``dbf_bridge.write.write_table``) — not part of the
-    stable 1.x public surface.  See :mod:`dbf_bridge.write` for the full
-    behavioural contract.
+    Public since the additive v1.1 contract (``docs/api-1.1.md``).  See
+    :mod:`dbf_bridge.write` for the full behavioural contract.
     """
     from . import backend as backend_module
     from .records import RecordAdapter
