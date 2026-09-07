@@ -899,6 +899,35 @@ def _patch_fpt_metadata(path: Path, schema: Mapping[str, Any]) -> None:
         os.fsync(outfile.fileno())
 
 
+def _generated_record_offsets(dbf_path: Path, header_length: int) -> dict[str, int]:
+    """Field name -> in-record offset, from the GENERATED DBF's own descriptors.
+
+    The memo-pointer patching must look where the writer library actually put
+    each pointer: the staged table's own field descriptors carry the true
+    displacement values.  A caller-supplied schema ``address`` describes the
+    SOURCE layout (or, for a hand-built Direct Write schema, may be a
+    placeholder such as 0) — trusting it made a ``G``-field patch read a
+    Character payload as the block pointer and ``seek()`` the FPT far beyond
+    its end, extending the memo file to tens of gigabytes (ENOSPC on
+    space-limited volumes).
+    """
+    offsets: dict[str, int] = {}
+    with dbf_path.open("rb") as handle:
+        position = DBF_HEADER_SIZE
+        while position + FIELD_DESCRIPTOR_SIZE <= header_length:
+            handle.seek(position)
+            descriptor = handle.read(FIELD_DESCRIPTOR_SIZE)
+            if len(descriptor) < FIELD_DESCRIPTOR_SIZE or descriptor[0] == 0x0D:
+                break
+            name = (
+                descriptor[:11].split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
+            )
+            if name:
+                offsets[name.casefold()] = struct.unpack_from("<I", descriptor, 12)[0]
+            position += FIELD_DESCRIPTOR_SIZE
+    return offsets
+
+
 def _patch_fpt_block_types(
     dbf_path: Path,
     fpt_path: Path,
@@ -924,12 +953,16 @@ def _patch_fpt_block_types(
         header = dbf_file.read(DBF_HEADER_SIZE)
         record_count = struct.unpack_from("<I", header, 4)[0]
         header_length, record_length = struct.unpack_from("<HH", header, 8)
+        record_offsets = _generated_record_offsets(dbf_path, header_length)
         for record_index in range(record_count):
             record_offset = header_length + record_index * record_length
             patches = [(field, 2 if field.get("dbf_type") == "G" else 0) for field in binary_memos]
             patches.extend(overrides_by_record.get(record_index, []))
             for field, block_type in patches:
-                dbf_file.seek(record_offset + int(field["address"]))
+                in_record = record_offsets.get(
+                    str(field["name"]).casefold(), int(field["address"])
+                )
+                dbf_file.seek(record_offset + in_record)
                 pointer_data = dbf_file.read(4)
                 if len(pointer_data) != 4:
                     raise ReconstructionError(
