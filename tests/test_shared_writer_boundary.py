@@ -211,13 +211,16 @@ def test_fresh_interpreter_root_import_does_not_load_dbf() -> None:
 
 
 def test_no_direct_write_public_api_is_promoted() -> None:
-    """Phase B promotes nothing: no ``write_table``/``WriteResult`` on the
-    root facade, and the internal write package exposes no public API yet."""
-    assert "write_table" not in dbf_bridge.__all__
-    assert not hasattr(dbf_bridge, "write_table")
-    assert not hasattr(writer_backend, "write_table")
-    assert not hasattr(importer_writer, "write_table")
+    """Phase C keeps the promotion freeze: the INTERNAL write contract exists
+    in ``dbf_bridge.write`` only — never on the root public facades."""
     import importlib
 
+    assert "write_table" not in dbf_bridge.__all__
+    assert not hasattr(dbf_bridge, "write_table")
+    assert not hasattr(importer_writer, "write_table")
+
     write_ns = importlib.import_module("dbf_bridge.write")
-    assert "write_table" not in getattr(write_ns, "__all__", [])
+    # Internal namespace MAY expose the internal contract (Phase C); the root
+    # facades above must not (Phase D owns that promotion).
+    assert hasattr(write_ns, "write_table")
+    assert not hasattr(writer_backend, "write_table")

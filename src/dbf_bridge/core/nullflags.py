@@ -173,6 +173,27 @@ def null_field_names(layout: NullFlagsLayout, bitmap: bytes | bytearray | None) 
     }
 
 
+def encode_nullflags_bitmap(
+    layout: NullFlagsLayout, null_names: Iterable[str] | set[str]
+) -> bytes:
+    """Build one canonical ``_NullFlags`` bitmap for the given NULL field names.
+
+    The write-side counterpart of :func:`null_field_names`: the Direct Write
+    record adapter derives each record's bitmap from the logical ``None``
+    values here instead of allocating bits anywhere else, so this module
+    stays the ONLY place in the codebase that performs bitmap bit arithmetic.
+    Bits for names absent from *null_names* (and every varlength bit) are
+    written clear; varlength bits are re-derived later by the shared
+    writer's canonical Varchar layout pass.
+    """
+    bitmap = bytearray(layout.byte_count)
+    for name, bit in layout.null_bits.items():
+        if name in null_names:
+            byte, offset = divmod(bit, 8)
+            bitmap[byte] |= 1 << offset
+    return bytes(bitmap)
+
+
 def nullflags_capacity_error(
     declared_length: int, required_bytes: int
 ) -> errors.DbfHeaderInvalidError:
@@ -194,6 +215,7 @@ __all__ = [
     "NullFlagsLayout",
     "VARLENGTH_FIELD_TYPES",
     "build_nullflags_layout",
+    "encode_nullflags_bitmap",
     "null_field_names",
     "nullflags_capacity_error",
 ]

@@ -23,9 +23,11 @@ from typing import Literal
 
 #: Operations that can emit :class:`ProgressEvent` notifications.  ``read``
 #: is the Direct Read operation (``iter_records`` / ``read_records`` /
-#: ``iter_raw_records``).
+#: ``iter_raw_records``); ``write`` is the internal Direct Write contract
+#: (``dbf_bridge.write.write_table`` — internal until its public promotion).
 Operation = Literal[
     "read",
+    "write",
     "export",
     "convert",
     "reconstruct",
