@@ -33,6 +33,7 @@ from dbf_bridge.common import (
     RAW_TEXT_FIELDS_KEY,
     CanonicalChecksum,
     nullable_null_fields,
+    parse_iso_date,
     sha256_file,
 )
 from dbf_bridge.core.errors import ErrorCode
@@ -787,7 +788,11 @@ def _coerce_value(
             return (
                 value.date()
                 if isinstance(value, datetime)
-                else (value if isinstance(value, date) else date.fromisoformat(str(value)))
+                else (
+                    value
+                    if isinstance(value, date)
+                    else parse_iso_date(str(value))
+                )
             )
         if dbf_type in {"T", "@"}:
             return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))

@@ -319,6 +319,36 @@ def test_mapping_records_with_deleted_marker_round_trip(tmp_path: Path) -> None:
     assert [record.values["CODE"] for record in page.records] == ["A1", "B2"]
 
 
+def test_date_values_accept_both_iso_spellings_on_every_python(tmp_path: Path) -> None:
+    """Regression: compact ``YYYYMMDD`` mapping strings failed on Python 3.10.
+
+    ``date.fromisoformat`` rejects the compact DBF-style form only on 3.10
+    (relaxed in 3.11); the shared checksum and the physical writer now parse
+    both spellings through one helper, so mapping-input dates are
+    interpreter-independent (DBFB-REC-001/002, DBFB-VFP-001).
+    """
+    import datetime as dt
+
+    from dbf_bridge.common import parse_iso_date
+
+    assert parse_iso_date("20240101") == dt.date(2024, 1, 1)
+    assert parse_iso_date("2024-01-01") == dt.date(2024, 1, 1)
+    assert parse_iso_date(dt.date(2024, 1, 1)) == dt.date(2024, 1, 1)
+
+    destination = tmp_path / "dates.dbf"
+    schema = _schema(_PLAIN_FIELDS)
+    records = [
+        {"CODE": "A1", "AMOUNT": 1.5, "WHEN": "20240101", "FLAG": True},
+        {"CODE": "B2", "AMOUNT": 2.5, "WHEN": "2024-01-02", "FLAG": True},
+        {"CODE": "C3", "AMOUNT": 3.5, "WHEN": dt.date(2024, 1, 3), "FLAG": True},
+    ]
+    write_table(destination, schema=schema, records=records)
+    page = read_records(destination)
+    assert [record.values["WHEN"] for record in page.records] == [
+        dt.date(2024, 1, 1), dt.date(2024, 1, 2), dt.date(2024, 1, 3),
+    ]
+
+
 def test_unknown_field_key_is_rejected_with_field_metadata(tmp_path: Path) -> None:
     schema = _schema(_PLAIN_FIELDS)
     with pytest.raises(WriteValueInvalidError) as error:
