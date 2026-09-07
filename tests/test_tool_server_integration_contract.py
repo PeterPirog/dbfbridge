@@ -27,6 +27,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 GUIDE = ROOT / "docs" / "tool-server-integration.md"
 SCHEMA = ROOT / "docs" / "schemas" / "write-result.schema.json"
@@ -51,7 +53,7 @@ def _adapter_block() -> str:
     return next(
         block
         for block in _blocks(_guide_text())
-        if "def backend_status() -> dict:" in block
+        if "def backend_status(\n    *," in block and "-> dict:" in block
     )
 
 
@@ -81,27 +83,99 @@ def test_integration_examples_import_the_public_api_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_capability_probe_distinguishes_the_three_layers() -> None:
+def _adapter_namespace(monkeypatch=None, stub: bool = False) -> dict:
+    """Execute the guide's adapter block (with a stubbed ``dbfbridge`` when
+    *stub* is set) and return its namespace."""
+    namespace: dict = {"__name__": "adapter_example"}
+    if stub:
+        assert monkeypatch is not None
+        stub_module = type(sys.modules["dbfbridge"])("dbfbridge_stub")
+        stub_module.__version__ = "9.9.9"  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "dbfbridge", stub_module)
+    text = _guide_text()
+    block = next(
+        block
+        for block in _blocks(text)
+        if "def backend_status(\n    *," in block and "-> dict:" in block
+    )
+    exec(compile(block, str(GUIDE), "exec"), namespace)  # noqa: S102 - docs code
+    return namespace
+
+
+def test_capability_probe_distinguishes_the_four_layers() -> None:
     text = _guide_text()
     for anchor in (
-        "direct_write_api",
-        "write_enabled",
-        "host deployment policy decides; probe never enables",
-        "OptionalDependencyMissingError",
+        "write_api_available",
+        "write_capability_configured",
+        "write_enabled_by_policy",
+        "direct_write_available",
+        "fail-closed conjunction",
         "API surface available",
         "optional dependency actually usable at operation time",
+        "Configured capability is therefore **not** a",
     ):
         assert anchor in text, anchor
 
 
 def test_capability_probe_never_performs_destructive_discovery() -> None:
-    for block in _blocks(_guide_text()):
+    text = _guide_text()
+    for block in _blocks(text):
         assert "pip install" not in block, "no runtime install"
         assert "requests." not in block and "urllib" not in block
-        assert ".write_table(" not in block or block.count("write_table(") == 0 or (
-            "def backend_status" not in block
-        )
-    assert "never perform a DBF read merely" in _guide_text()
+        if "def backend_status" in block:
+            # the probe must never run a destructive test write
+            assert ".write_table(" not in block
+    assert "never perform a DBF read merely" in text
+
+
+def test_direct_write_capability_is_the_fail_closed_conjunction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r"""DBFB-MCP-009 truth table, executed against the DOCUMENTED adapter
+    example (mechanical, not word-matching):
+
+        api\cfg+policy -> direct_write_available
+        missing        +True +True  -> False
+        present        +False+True  -> False
+        present        +True +False -> False
+        present        +True +True   -> True
+    """
+    namespace = _adapter_namespace(monkeypatch)
+
+    # write_table MISSING: even configured + enabled stays unavailable.
+    stub_namespace = _adapter_namespace(monkeypatch, stub=True)
+    assert (
+        stub_namespace["backend_status"](
+            write_enabled=True, write_capability_configured=True
+        )["direct_write_available"]
+        is False
+    )
+
+    # write_table present, capability NOT configured -> unavailable.
+    assert (
+        namespace["backend_status"](
+            write_enabled=True, write_capability_configured=False
+        )["direct_write_available"]
+        is False
+    )
+    # write_table present, capability configured, policy NOT enabling ->
+    # unavailable.
+    assert (
+        namespace["backend_status"](
+            write_enabled=False, write_capability_configured=True
+        )["direct_write_available"]
+        is False
+    )
+    # present + configured + explicitly enabled -> the only True case.
+    enabled = namespace["backend_status"](
+        write_enabled=True, write_capability_configured=True
+    )
+    assert enabled["direct_write_available"] is True
+    assert enabled["write_api_available"] is True
+    assert enabled["write_capability_configured"] is True
+    assert enabled["write_enabled_by_policy"] is True
+    # defaults fail closed; the probe never hardcodes a writable result.
+    assert namespace["backend_status"]()["direct_write_available"] is False
 
 
 def test_probe_does_not_enable_write_from_an_import() -> None:
@@ -111,9 +185,13 @@ def test_probe_does_not_enable_write_from_an_import() -> None:
 
     assert hasattr(dbfbridge, "write_table")
     adapter = _adapter_block()
-    assert '"write_enabled": False' in adapter
-    assert "direct_write_api" in adapter
-    # the probe derives its facts, never hardcodes availability
+    assert "write_enabled: bool = False" in adapter
+    assert "write_capability_configured: bool = False" in adapter
+    assert (
+        "write_api_ok and write_capability_configured and write_enabled"
+        in adapter
+    )
+    # the probe derives its API facts, never hardcodes availability
     assert '"available": True' not in adapter
 
 
@@ -207,11 +285,49 @@ def test_maintained_write_result_schema_matches_the_runtime_contract(
 
 
 def test_schema_keys_are_a_subset_of_the_runtime_model_fields() -> None:
-    from dbf_bridge.write.api import WriteResult
+    from dbfbridge import WriteResult
 
     documented = set(json.loads(SCHEMA.read_text(encoding="utf-8"))["properties"])
     runtime_fields = {field.name for field in dataclasses.fields(WriteResult)}
     assert documented <= runtime_fields
+
+
+# ---------------------------------------------------------------------------
+# DirectWriteError JSON boundary (DBFB-MCP-008 / DBFB-ERR-004)
+# ---------------------------------------------------------------------------
+
+
+def test_directwriteerror_public_payload_shape(tmp_path: Path) -> None:
+    """The public Direct Write error boundary is exactly
+    ``{code, message, path, context}`` — JSON-safe, no record/memo values
+    (proven through the PUBLIC package boundary, not internals)."""
+    import dbfbridge
+
+    source = tmp_path / "fixture.dbf"
+    factory.build_vfp32_table(
+        source,
+        columns=[{"name": "CODE", "type": "C", "width": 5}],
+        rows=[{"CODE": "A1"}],
+    )
+    schema = dbfbridge.read_schema(source)
+
+    with pytest.raises(dbfbridge.DirectWriteError) as error:
+        dbfbridge.write_table(tmp_path / "out.dbf", schema=schema, records=[{}])
+    payload = error.value.to_dict()
+    assert set(payload) == {"code", "message", "path", "context"}
+    assert payload["code"] == "WRITE_VALUE_INVALID"
+    json.dumps(payload)  # JSON-safe boundary
+
+    # The reused families keep their OWN documented shapes.
+    dbfbridge.write_table(tmp_path / "out.dbf", schema=schema, records=[])
+    with pytest.raises(dbfbridge.OperationOutputExistsError) as exists:
+        dbfbridge.write_table(tmp_path / "out.dbf", schema=schema, records=[])
+    reused = exists.value.to_dict()
+    json.dumps(reused)
+    assert "operation" in reused and reused["code"] == "OUTPUT_EXISTS"
+    assert set(reused) != {"code", "message", "path", "context"} or (
+        "table" in reused
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +351,7 @@ def test_runtime_is_transport_neutral() -> None:
 
 
 def test_no_protocol_state_in_public_models() -> None:
-    from dbf_bridge.core.models import FieldInfo, TableSchema
-    from dbf_bridge.write.api import WriteResult
+    from dbfbridge import FieldInfo, TableSchema, WriteResult
 
     for model in (FieldInfo, TableSchema, WriteResult):
         names = {field.name for field in dataclasses.fields(model)}
