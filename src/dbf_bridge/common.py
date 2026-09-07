@@ -39,6 +39,7 @@ __all__ = [
     "canonical_record",
     "canonical_value",
     "nullable_null_fields",
+    "parse_iso_date",
     "sha256_file",
 ]
 
@@ -155,6 +156,27 @@ def canonical_record(
     }
 
 
+def parse_iso_date(value: Any) -> date:
+    """Parse an ISO date value deterministically on every supported Python.
+
+    Python 3.11 relaxed ``date.fromisoformat`` to accept additional ISO 8601
+    layouts; on 3.10 it rejects the compact ``YYYYMMDD`` form.  The DBF Date
+    column has no separator, so integrators legitimately supply that compact
+    form as a mapping value — accept both spellings on every supported
+    interpreter (the checksum and the physical writer share this helper so
+    both paths classify inputs identically).
+    """
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        if len(text) == 8 and text.isdigit():
+            return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+        raise
+
+
 def canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
     if value is None:
         return None
@@ -178,11 +200,7 @@ def canonical_value(value: Any, field: Mapping[str, Any]) -> Any:
     if dbf_type == "D":
         if isinstance(value, datetime):
             value = value.date()
-        return (
-            value.isoformat()
-            if isinstance(value, date)
-            else date.fromisoformat(str(value)).isoformat()
-        )
+        return value.isoformat() if isinstance(value, date) else parse_iso_date(value).isoformat()
     if dbf_type in {"T", "@"}:
         parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
         return parsed.isoformat(timespec="milliseconds")
