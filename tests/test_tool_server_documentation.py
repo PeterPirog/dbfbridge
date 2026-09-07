@@ -53,7 +53,11 @@ def _blocks() -> list[str]:
 
 
 def _adapter_module_block() -> str:
-    matches = [block for block in _blocks() if "def backend_status() -> dict:" in block]
+    matches = [
+        block
+        for block in _blocks()
+        if "def backend_status(\n    *," in block and "-> dict:" in block
+    ]
     assert len(matches) == 1, "expected exactly one complete adapter example"
     return matches[0]
 

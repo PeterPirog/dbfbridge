@@ -79,18 +79,24 @@ files, and loads no CLI/reporting modules or heavy dependencies. A cheap
 startup probe uses public metadata only — **never perform a DBF read merely
 for service discovery**.
 
-The probe must be **fail-closed** and must distinguish **three separate
-layers** that a successful import alone proves nothing about:
+The probe must be **fail-closed** and must separate **four layers**. Direct
+Write availability is the fail-closed conjunction of the first three — a
+successful `import dbfbridge` alone is never sufficient to declare a
+writable backend (DBFB-MCP-009):
 
 1. **API surface available** — the public operation symbols exist on
-   `import dbfbridge`;
-2. **host write deployment policy** — the host has *decided* to expose write
-   capability (`write_enabled` is a host flag, never inferred from an
-   import);
-3. **optional dependency actually usable at operation time** — `[write]`
-   provides the physical writer dependency lazily; its absence fails as a
-   typed `OptionalDependencyMissingError` when an operation runs, and only
-   then.
+   `import dbfbridge` (a *derived API fact*);
+2. **`[write]` capability configured** — the host *deployment
+   configuration* installed/targeted the write profile (a *host
+   configuration fact*; the probe never installs, imports `dbf`, or runs a
+   destructive test write to discover it);
+3. **write exposed by host policy** — the host explicitly decided to
+   expose write operations (an *authorization fact* owned by the host);
+4. **optional dependency actually usable at operation time** — `[write]`
+   provides the physical writer dependency lazily; a configured-but-broken
+   environment still fails as a typed `OptionalDependencyMissingError` when
+   an operation runs. Configured capability is therefore **not** a
+   destructive runtime probe.
 
 ```python
 import dbfbridge
@@ -106,21 +112,33 @@ DIRECT_READ_API = (
 WRITE_API = ("write_table", "WriteResult", "DirectWriteError")
 
 
-def backend_status():
-    # Fail-closed capability model (DBFB-MCP-009): every field is DERIVED,
-    # never hardcoded.  `direct_write_api` only reports symbol presence;
-    # `write_enabled` is the HOST's deployment decision; neither proves the
-    # optional `[write]` dependency is installed — that fails typed at
-    # operation time.
+def backend_status(
+    *,
+    write_enabled: bool = False,
+    write_capability_configured: bool = False,
+):
+    # Fail-closed capability model (DBFB-MCP-009).
+    # - API facts are DERIVED from public symbols;
+    # - deployment/profile capability comes from HOST CONFIGURATION
+    #   (defaults fail closed);
+    # - authorization/exposure comes from HOST POLICY;
+    # - the physical dependency may still fail typed at operation time
+    #   (`OptionalDependencyMissingError`) — configured capability is not
+    #   verified by a destructive runtime probe.
     direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
     write_api_ok = all(hasattr(dbfbridge, name) for name in WRITE_API)
+    direct_write_ok = (
+        write_api_ok and write_capability_configured and write_enabled
+    )
 
     return {
         "available": direct_read_ok,
         "version": dbfbridge.__version__,
         "direct_read": direct_read_ok,
-        "direct_write_api": write_api_ok,
-        "write_enabled": False,  # host deployment policy decides; probe never enables
+        "write_api_available": write_api_ok,
+        "write_capability_configured": bool(write_capability_configured),
+        "write_enabled_by_policy": bool(write_enabled),
+        "direct_write_available": direct_write_ok,
         "public_api": {
             name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
         },
@@ -348,8 +366,12 @@ def write_error_payload(exc: Exception) -> dict:
 
 The reused public codes (`OUTPUT_EXISTS` from `OperationOutputExistsError`,
 `OPTIONAL_DEPENDENCY_MISSING`) keep their 1.0 shape; the write-family codes
-come from `DirectWriteError.to_dict()` (`{code, message, context}`). No
-payload ever carries record or memo values.
+come from `DirectWriteError.to_dict()` —
+`{code, message, path, context}`, JSON-safe, with no record or memo values.
+The reused families (`OperationOutputExistsError`:
+`{code, message, path, operation, table, context}`,
+`OptionalDependencyMissingError`: `{code, dependency, extra, operation,
+install_command, purpose?}`) intentionally have their own shapes.
 
 ## 12. Complete transport-neutral example
 
@@ -374,18 +396,27 @@ DIRECT_READ_API = (
 WRITE_API = ("write_table", "WriteResult", "DirectWriteError")
 
 
-def backend_status() -> dict:
-    # Fail-closed: availability is DERIVED, never hardcoded.  Symbol
-    # presence is one layer; the optional `[write]` dependency and the host
-    # write policy are separate layers (see the capability-probe section).
+def backend_status(
+    *,
+    write_enabled: bool = False,
+    write_capability_configured: bool = False,
+) -> dict:
+    # Fail-closed: the direct-read fact is DERIVED from public symbols; the
+    # writable capability is the fail-closed conjunction of API presence,
+    # host configuration and host policy (see the capability-probe section).
     direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
     write_api_ok = all(hasattr(dbfbridge, name) for name in WRITE_API)
+    direct_write_ok = (
+        write_api_ok and write_capability_configured and write_enabled
+    )
     return {
         "available": direct_read_ok,
         "version": dbfbridge.__version__,
         "direct_read": direct_read_ok,
-        "direct_write_api": write_api_ok,
-        "write_enabled": False,  # host deployment policy decides; probe never enables
+        "write_api_available": write_api_ok,
+        "write_capability_configured": bool(write_capability_configured),
+        "write_enabled_by_policy": bool(write_enabled),
+        "direct_write_available": direct_write_ok,
         "public_api": {
             name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
         },

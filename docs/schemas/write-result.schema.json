@@ -21,13 +21,11 @@
   "properties": {
     "destination": {
       "type": "string",
-      "description": "Final published DBF path (POSIX form).",
-      "pattern": "^[^\\\\]*$"
+      "description": "Final published DBF path, serialized through the public POSIX-form boundary (Path.as_posix())."
     },
     "fpt_path": {
       "type": ["string", "null"],
-      "description": "Final published FPT path (POSIX form), or null when no memo companion was published.",
-      "pattern": "^[^\\\\]*$"
+      "description": "Final published FPT path (public POSIX-form serialization), or null when no memo companion was published."
     },
     "fpt_published": {
       "type": "boolean"
