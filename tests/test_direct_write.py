@@ -33,6 +33,7 @@ import pytest
 from vfp_fixture_factory import build_vfp32_table, mark_deleted
 
 from dbf_bridge import OptionalDependencyMissingError
+from dbf_bridge import write_table as dbf_bridge_write_table
 from dbf_bridge.core import iter_records, read_records, read_schema
 from dbf_bridge.core.errors import (
     DestinationIoError,
@@ -48,6 +49,7 @@ from dbf_bridge.core.errors import (
 )
 from dbf_bridge.core.models import FieldInfo, TableSchema
 from dbf_bridge.core.records import DirectRecord, LazyMemoValue
+from dbf_bridge.write import WriteResult as _WriteResultImplementation
 from dbf_bridge.write import backend as write_backend
 from dbf_bridge.write import write_table
 
@@ -148,10 +150,10 @@ def _plain_records() -> list[DirectRecord]:
 def test_internal_signature_is_exact() -> None:
     import inspect
 
-    import dbf_bridge as root
-    import dbf_bridge.write as write_ns
+    import dbf_bridge as alias
+    import dbfbridge as root
 
-    signature = inspect.signature(write_ns.write_table)
+    signature = inspect.signature(root.write_table)
     parameters = signature.parameters
     assert list(parameters) == [
         "destination",
@@ -169,18 +171,20 @@ def test_internal_signature_is_exact() -> None:
         parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
         for name in ("schema", "records", "overwrite", "progress", "cancel_check")
     )
-    # Phase D owns promotion: the root public facades stay frozen.
-    assert "write_table" not in root.__all__
-    assert not hasattr(root, "write_table")
+    # v1.1 promotion: both public facades expose the SAME promoted object,
+    # re-exported from the shared writer package (no parallel implementation).
+    assert "write_table" in root.__all__
+    assert root.write_table is alias.write_table
+    assert root.write_table is dbf_bridge_write_table
 
 
-def test_write_result_is_internal_and_immutable() -> None:
-    import dbf_bridge as root
-    from dbf_bridge.write import WriteResult
+def test_write_result_is_public_and_immutable() -> None:
+    import dbf_bridge as alias
+    import dbfbridge as root
 
-    assert "WriteResult" not in root.__all__
-    assert not hasattr(root, "WriteResult")
-    result = WriteResult(
+    assert "WriteResult" in root.__all__
+    assert root.WriteResult is alias.WriteResult is _WriteResultImplementation
+    result = _WriteResultImplementation(
         destination=Path("x/a.dbf"),
         fpt_path=None,
         fpt_published=False,
@@ -1033,8 +1037,9 @@ def test_fresh_interpreter_root_import_stays_lazy() -> None:
             "-c",
             "import sys; import dbfbridge; import dbf_bridge.write;"
             " assert 'dbf' not in sys.modules;"
-            " assert 'write_table' not in dbfbridge.__all__;"
-            " assert not hasattr(dbfbridge, 'write_table'); print('PASS')",
+            " assert 'dbf_bridge.write.backend' not in sys.modules;"
+            " assert 'write_table' in dbfbridge.__all__;"
+            " assert dbfbridge.write_table is not None; print('PASS')",
         ],
         capture_output=True,
         text=True,

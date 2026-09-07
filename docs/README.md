@@ -13,7 +13,7 @@ document is authoritative for.
 ## Complete Python API examples
 
 [python-api-examples.md](python-api-examples.md) — copy/paste examples for
-all nine stable public operations (`inspect_table`, `read_schema`,
+the stable public operations (`inspect_table`, `read_schema`,
 `iter_records`, `read_records`, `iter_raw_records`, `export_dbf`,
 `reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`), the
 install profiles, progress/cancellation, and the JSON-safe boundary.
@@ -31,10 +31,18 @@ is referenced.
 
 ## Stable 1.x API contract
 
-[api-1.0.md](api-1.0.md) — **NORMATIVE API CONTRACT**: import boundary, the
+[api-1.0.md](api-1.0.md) - **NORMATIVE API CONTRACT**: import boundary, the
 nine stable operations, RawMode contract, the machine-code error vocabulary
 and payload families, JSON boundary key policy, SemVer + deprecation policy,
 compatibility aliases.
+
+## v1.1 Direct Write contract
+
+[api-1.1.md](api-1.1.md) - **NORMATIVE ADDITIVE CONTRACT**: extends
+`api-1.0.md` with the public Direct Write operation (`write_table`), the
+`WriteResult` model, the separate `DirectWriteError` family, transactional
+DBF/FPT publication, bounded streaming, and the truthful CDX/DBC
+limitations.
 
 ## VFP compatibility
 

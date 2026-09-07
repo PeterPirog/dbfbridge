@@ -1,8 +1,8 @@
-"""Public Python API for Visual FoxPro migration and reconstruction.
+"""Public Python API for Visual FoxPro migration, reconstruction and writing.
 
 The preferred import after installing the ``dbfbridge`` distribution is::
 
-    from dbfbridge import export_dbf, reconstruct_dbf
+    from dbfbridge import export_dbf, reconstruct_dbf, write_table
 
 The historical ``dbf_bridge`` package name exports the same API.
 
@@ -65,11 +65,16 @@ if TYPE_CHECKING:
         TableInfo,
         TableSchema,
         TextDecodeError,
-        inspect_table,
-        iter_raw_records,
-        iter_records,
-        read_records,
-        read_schema,
+    )
+    from .core.errors import (
+        DestinationIoError,
+        DirectWriteError,
+        WriteCancelledError,
+        WriteFieldUnsupportedError,
+        WriteMemoFailedError,
+        WritePublicationFailedError,
+        WriteSchemaInvalidError,
+        WriteValueInvalidError,
     )
     from .exporter.models import (
         DecodeErrors,
@@ -83,7 +88,8 @@ if TYPE_CHECKING:
     )
     from .importer.models import InputFormat, ReconstructionResult
     from .optional_deps import OptionalDependencyMissingError
-    from .progress import CancellationCheck
+    from .progress import CancellationCheck  # noqa: F401 - public symbol
+    from .write import WriteResult, write_table
 
 __version__ = "0.2.0"
 
@@ -115,6 +121,18 @@ _LAZY_SYMBOLS: dict[str, str] = {
     # reconstruction option types
     "InputFormat": "dbf_bridge.importer.models",
     "ReconstructionResult": "dbf_bridge.importer.models",
+    # v1.1 Direct Write (additive; the shared physical writer backend)
+    "write_table": "dbf_bridge.write",
+    "WriteResult": "dbf_bridge.write",
+    # v1.1 write error family (separate from the DirectReadError family)
+    "DirectWriteError": "dbf_bridge.core.errors",
+    "DestinationIoError": "dbf_bridge.core.errors",
+    "WriteCancelledError": "dbf_bridge.core.errors",
+    "WriteFieldUnsupportedError": "dbf_bridge.core.errors",
+    "WriteMemoFailedError": "dbf_bridge.core.errors",
+    "WritePublicationFailedError": "dbf_bridge.core.errors",
+    "WriteSchemaInvalidError": "dbf_bridge.core.errors",
+    "WriteValueInvalidError": "dbf_bridge.core.errors",
     # Phase 1 direct read core
     "inspect_table": "dbf_bridge.core",
     "read_schema": "dbf_bridge.core",
@@ -167,8 +185,10 @@ __all__ = [
     "DbfPathError",
     "DbfRecordInvalidError",
     "DbfTruncatedError",
+    "DestinationIoError",
     "DirectReadError",
     "DirectRecord",
+    "DirectWriteError",
     "EncodingUnknownError",
     "ErrorCode",
     "ExportOptions",
@@ -203,6 +223,13 @@ __all__ = [
     "TableStatus",
     "TextDecodeError",
     "VerificationRunResult",
+    "WriteCancelledError",
+    "WriteFieldUnsupportedError",
+    "WriteMemoFailedError",
+    "WritePublicationFailedError",
+    "WriteResult",
+    "WriteSchemaInvalidError",
+    "WriteValueInvalidError",
     "__version__",
     "check_conversion_quality",
     "export_dbf",
@@ -213,6 +240,7 @@ __all__ = [
     "read_schema",
     "reconstruct_dbf",
     "verify_conversion",
+    "write_table",
     "CancellationCheck",
 ]
 

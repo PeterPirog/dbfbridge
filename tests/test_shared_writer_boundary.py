@@ -11,7 +11,9 @@ Deterministic evidence that:
 4. ``core/`` stays isolated (no write/importer/exporter/CLI/heavy deps);
 5. importing the writer boundary (and the root ``dbfbridge`` facade) in a
    FRESH interpreter never loads the optional ``dbf`` dependency;
-6. Phase D has not leaked: no public ``write_table`` is promoted.
+6. the v1.1 promotion wires ``write_table`` through the package boundary
+   (root facades re-export ``dbf_bridge.write``; the backend defines no
+   public API itself).
 """
 
 from __future__ import annotations
@@ -210,17 +212,15 @@ def test_fresh_interpreter_root_import_does_not_load_dbf() -> None:
     assert "PASS" in completed.stdout
 
 
-def test_no_direct_write_public_api_is_promoted() -> None:
-    """Phase C keeps the promotion freeze: the INTERNAL write contract exists
-    in ``dbf_bridge.write`` only — never on the root public facades."""
+def test_public_promotion_uses_the_package_boundary() -> None:
+    """Since the v1.1 promotion the root facades expose ``write_table``/
+    ``WriteResult``/write errors re-exported from ``dbf_bridge.write`` — the
+    backend module itself still defines no public write API and the shim
+    stays write-free."""
     import importlib
 
-    assert "write_table" not in dbf_bridge.__all__
-    assert not hasattr(dbf_bridge, "write_table")
-    assert not hasattr(importer_writer, "write_table")
-
     write_ns = importlib.import_module("dbf_bridge.write")
-    # Internal namespace MAY expose the internal contract (Phase C); the root
-    # facades above must not (Phase D owns that promotion).
+    assert "write_table" in dbf_bridge.__all__
     assert hasattr(write_ns, "write_table")
     assert not hasattr(writer_backend, "write_table")
+    assert not hasattr(importer_writer, "write_table")

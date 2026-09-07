@@ -87,7 +87,9 @@ def test_example_inspect_table(workspace: Path) -> None:
 
 def test_example_read_schema(workspace: Path) -> None:
     namespace: dict[str, Any] = {"__name__": "example"}
-    _run(_one_block(r"schema = read_schema\("), namespace)
+    # The quoted path distinguishes the 1.0 read-schema example from the
+    # additive v1.1 write_table example (which reads "source/klienci.dbf").
+    _run(_one_block(r'schema = read_schema\("KLIENCI\.DBF"\)'), namespace)
     assert namespace["schema"].path.name == "KLIENCI.DBF"
     assert any(field.name == "NOTATKA" for field in namespace["schema"].fields)
 
@@ -147,6 +149,20 @@ def test_example_check_conversion_quality(workspace: Path) -> None:
     _run(_one_block(r"result = check_conversion_quality\("), namespace)
     payload = namespace["payload"]
     assert "summary" in payload
+
+
+def test_example_write_table(workspace: Path) -> None:
+    """The v1.1 Direct Write example runs as documented: the typed schema and
+    the streamed records produce a fresh DBF/FPT pair with a JSON-safe
+    result (additive v1.1 contract)."""
+    namespace: dict[str, Any] = {"__name__": "example"}
+    _run(_one_block(r"result = write_table\("), namespace)
+    result = namespace["result"]
+    assert result.records_written == 2
+    assert result.deleted_records == 0
+    assert result.fpt_published is True
+    assert Path(str(result.destination)).is_file()
+    assert len(result.dbf_sha256) == 64
 
 
 def test_example_optional_dependency_error(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:

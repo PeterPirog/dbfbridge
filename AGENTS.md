@@ -61,6 +61,13 @@ src/dbf_bridge/
 │   ├── validation.py      output parsing and SHA-256
 │   ├── writer.py          atomic DBF → JSONL/schema export
 │   └── reporting.py       migration_report.jsonl/.csv
+├── write/
+│   ├── __init__.py       public Direct Write surface (write_table, WriteResult)
+│   ├── api.py            write_table: streaming adapter -> shared backend, WriteResult
+│   ├── schema_adapter.py deterministic TableSchema -> backend schema (+validation)
+│   ├── records.py        DirectRecord/mapping adapter (writer-managed _NullFlags)
+│   ├── spool.py          bounded private record spool (Varchar second pass)
+│   └── backend.py        THE single physical DBF/FPT writer (transactional publish)
 └── importer/
     ├── checksum.py        schema-aware canonical checksums
     ├── models.py          reconstruction configuration/results
@@ -111,6 +118,10 @@ Console entry points in `pyproject.toml` must stay synchronized with README and 
 - `dbf-bridge-verify` → `dbf_bridge.verifier:main`;
 - `dbf-bridge-import` → `dbf_bridge.import_cli:main`;
 - `dbf-bridge-quality` → `dbf_bridge.quality:main`.
+
+Since the v1.1 contract `write_table()` is additionally public from both
+facades (`docs/api-1.1.md`); it returns a `WriteResult` and uses the
+`DirectWriteError` family.
 
 The public Python interface must stay synchronized as well:
 
@@ -283,10 +294,11 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
 - The **declared 1.x runtime is frozen**: the nine-operation public contract,
   its error codes, and the canonical Phase 3 baseline do not change until an
   explicit future release decision.
-- The **next planned feature research is Direct Write / `write_table`** — the
-  write-side counterpart of the Direct Read core. Direct Write belongs to a
-  **future additive version**; it is not part of the current 1.x public
-  contract and must not be declared stable prematurely.
+- **Direct Write / `write_table` is the approved public v1.1 contract** —
+  the write-side counterpart of the Direct Read core, promoted additively
+  (see `docs/api-1.1.md`). The `RESEARCH` / `NOT RELEASED` markers were
+  removed from the promoted maintained surfaces when the public contract
+  was approved; historical research documents keep theirs.
 - The old `feat/phase-2-direct-write` branch was **historical research only**
   (it diverged from `main` long before the 1.x closure). It is not a merge
   base for anything. Its useful concepts were consolidated onto the
@@ -300,9 +312,9 @@ outputs, reports, `build/`, `dist/`, virtual environments, or user data.
   field coercion, memo-writing, NullFlags, and publication logic as the
   reconstruction path, with machine-classified (structured-code) errors, never
   English-message parsing.
-- Research status markers: `RESEARCH` / `NOT RELEASED` / `NOT PART OF THE
-  CURRENT 1.0 CONTRACT` must stay on every Direct Write surface until an
-  explicit version decision promotes it.
+- Research status markers belong to historical research documents only;
+  promoted v1.1 public surfaces describe the approved contract instead
+  (additive over the protected 1.0 baseline).
 
 ## Documentation map
 

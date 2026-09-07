@@ -385,6 +385,7 @@ not import from `dbf_bridge.core...` or `dbf_bridge.exporter...` directly.
 | `reconstruct_dbf()` | `ReconstructionRunResult` | one exported format + schemas → DBF/FPT tree |
 | `verify_conversion()` | `VerificationRunResult` | exported files vs source DBF and migration report |
 | `check_conversion_quality()` | `QualityRunResult` | retained DBF → JSONL → DBF diagnostics |
+| `write_table()` *(v1.1)* | `WriteResult` | typed schema + record stream → fresh DBF/FPT pair (additive; requires `[write]`) |
 
 Functions accept `str`, `pathlib.Path`, or another `os.PathLike`. They do not print by
 default. A completed operation returns table-level objects, aggregate counters, report
@@ -393,6 +394,23 @@ failures are data, not immediate exceptions, so an application can inspect every
 Call `result.raise_for_errors()` after the run to turn failures into a
 `DBFBridgeRunError`. Warnings do not raise; inspect `exit_code`, `successful`, and the
 table results when warnings must also block the calling application.
+
+### Direct Write (`write_table`, v1.1)
+
+```python
+from dbfbridge import read_schema, iter_records, write_table
+
+schema = read_schema("source/klienci.dbf")
+records = iter_records("source/klienci.dbf", memo="inline")
+result = write_table("output/klienci-copy.dbf", schema=schema, records=records)
+print(result.records_written, result.dbf_sha256)
+```
+
+`write_table()` writes a typed schema plus a record stream as a fresh DBF/FPT
+pair (additive v1.1 API; requires the `[write]` extra; the caller iterable is
+consumed exactly once; `overwrite` defaults to `False`; failures are typed in
+the `DirectWriteError` family; canonical equivalence does not imply raw byte
+identity; structural CDX indexes are never fabricated). See `docs/api-1.1.md`.
 
 ### API option reference
 
