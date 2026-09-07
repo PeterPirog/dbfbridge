@@ -34,6 +34,41 @@ _WRITE_UNSUPPORTED_TYPES = frozenset({"Q", "W"})
 
 _NUMERIC_LENGTH_TYPES = frozenset({"N", "F"})
 
+#: DBF version/dialect values the shared backend provably writes with full
+#: schema fidelity (DBFB-SCHEMA-003/005; authority: docs/compatibility-vfp.md
+#: and the suite's round-trip fixtures).  The shared backend creates tables
+#: through the VFP writer mode:
+#: - ``0x30`` "Visual FoxPro 6+" — proven by the plain VFP round trips;
+#: - ``0x32`` "Varchar/Varbinary enabled" — proven by the authentic 0x32
+#:   fixtures (``tests/test_direct_write.py`` Varchar/NULL round trips);
+#: - ``0`` (unknown) — the backend's own VFP default, no fidelity claim.
+#: ``0x31`` (autoincrement dialect) is rejected: the typed-schema adapter
+#: cannot map the autoincrement next-value/step descriptor bytes, so a fresh
+#: write would silently lose them.  All dBASE/FoxPro-2.x/HiPer-Six versions
+#: are outside the proven writer mode and are never silently converted to
+#: VFP.
+_PROVEN_WRITE_DIALECTS: frozenset[int] = frozenset({0, 0x30, 0x32})
+
+#: Format-defined physical widths (bytes) that every schema declaration must
+#: match exactly (DBFB-SCHEMA-003).  Evidence: the compatibility matrix and
+#: the reference writer's own generated descriptors (e.g. ``L``=1, ``D``/``T``
+#: /``@``/``Y``/``B``/``O``=8, ``I``/``+``/``M``/``G``/``P``=4).  Only
+#: Character/Varchar/Numeric/Float have format-legitimate flexible widths.
+_FIXED_FIELD_WIDTHS: dict[str, int] = {
+    "L": 1,
+    "D": 8,
+    "T": 8,
+    "@": 8,
+    "I": 4,
+    "+": 4,
+    "Y": 8,
+    "B": 8,
+    "O": 8,
+    "M": 4,
+    "G": 4,
+    "P": 4,
+}
+
 
 def validate_schema_for_write(schema: TableSchema) -> None:
     """Validate *schema* for Direct Write BEFORE any output is created.
@@ -41,6 +76,14 @@ def validate_schema_for_write(schema: TableSchema) -> None:
     Raises the typed write-family errors (``WRITE_SCHEMA_INVALID`` /
     ``WRITE_FIELD_UNSUPPORTED``) with field-name/type context only.
     """
+    if schema.dbversion_byte not in _PROVEN_WRITE_DIALECTS:
+        raise WriteSchemaInvalidError(
+            "The declared DBF dialect is not one the Direct Write backend "
+            "provably writes with full schema fidelity (plain VFP 0x30, "
+            "Varchar-enabled 0x32, or the unknown default); the writer never "
+            "silently converts a foreign dialect to VFP.",
+            context={"dbversion_byte": schema.dbversion_byte},
+        )
     if not schema.fields:
         raise WriteSchemaInvalidError(
             "The schema has no fields; nothing can be written.",
@@ -52,12 +95,26 @@ def validate_schema_for_write(schema: TableSchema) -> None:
     # tables need exactly one trustworthy type-``0`` system column
     # (DBFB-SCHEMA-003 / DBFB-REC-006).
     try:
-        build_nullflags_layout(schema.fields)
+        layout = build_nullflags_layout(schema.fields)
     except DbfHeaderInvalidError as exc:
         raise WriteSchemaInvalidError(
             "The schema's NULL/Varchar structure is not canonical: " + exc.message,
             context=exc.context,
         ) from exc
+    if layout is not None:
+        bitmap = next(
+            field for field in schema.fields if field.dbf_type == "0"
+        )
+        if bitmap.length != layout.byte_count:
+            raise WriteSchemaInvalidError(
+                "The declared _NullFlags column width contradicts the canonical "
+                "bitmap allocation.",
+                context={
+                    "field": bitmap.name,
+                    "declared_length": bitmap.length,
+                    "canonical_length": layout.byte_count,
+                },
+            )
     if schema.memo_block_size is not None and schema.memo_block_size < 1:
         raise WriteSchemaInvalidError(
             "The memo block size must be a positive number of bytes.",
@@ -93,6 +150,18 @@ def _validate_field(field: FieldInfo) -> None:
         raise WriteSchemaInvalidError(
             "Field length must be between 1 and 255 bytes.",
             context={"field": field.name, "dbf_type": field.dbf_type, "length": length},
+        )
+    canonical_width = _FIXED_FIELD_WIDTHS.get(field.dbf_type)
+    if canonical_width is not None and length != canonical_width:
+        raise WriteSchemaInvalidError(
+            "The declared field length contradicts the format-defined physical "
+            "width of this DBF type.",
+            context={
+                "field": field.name,
+                "dbf_type": field.dbf_type,
+                "declared_length": length,
+                "canonical_length": canonical_width,
+            },
         )
     if field.dbf_type in _NUMERIC_LENGTH_TYPES:
         if length > 20:

@@ -211,6 +211,12 @@ def write_table(
             operation=_OPERATION,
             context={"staging_directory": staging_root.as_posix()},
         )
+    # Same-filesystem/volume policy BEFORE any staging/spool artifact is
+    # created (DBFB-PUB-003): a foreign-volume staging directory is refused
+    # without creating spool files on it and without any atomicity downgrade.
+    from .backend import ensure_staging_same_volume
+
+    ensure_staging_same_volume(destination_path, staging_root)
 
     adapter = RecordAdapter(backend_schema)
     needs_second_pass = any(field.dbf_type == "0" for field in schema.fields)

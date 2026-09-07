@@ -23,6 +23,7 @@ Covers the internal ``dbf_bridge.write.write_table`` contract:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -301,6 +302,136 @@ def test_varchar_requires_nullflags_system_column(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# schema consistency: dialect gate + fixed-width layout (DBFB-SCHEMA-003/005)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dbversion_byte",
+    [0x02, 0x03, 0x31, 0x43, 0x83, 0x8B, 0xCB, 0xE5, 0xF5, 0xFB],
+)
+def test_unproven_dialects_are_rejected_before_output(
+    tmp_path: Path, dbversion_byte: int
+) -> None:
+    """The shared backend creates tables through the VFP writer mode; only
+    dialects its output actually preserves (plain VFP 0x30 and the
+    Varchar-enabled 0x32, plus the unknown default) may be declared."""
+    schema = _schema(_PLAIN_FIELDS, dbversion_byte=dbversion_byte)
+    with pytest.raises(WriteSchemaInvalidError) as error:
+        write_table(tmp_path / "a.dbf", schema=schema, records=_plain_records())
+    assert error.value.code is ErrorCode.WRITE_SCHEMA_INVALID
+    assert error.value.context["dbversion_byte"] == dbversion_byte
+    assert not (tmp_path / "a.dbf").exists()
+
+
+def test_proven_dialects_are_accepted(tmp_path: Path) -> None:
+    destination = tmp_path / "a.dbf"
+    assert _schema(_PLAIN_FIELDS).dbversion_byte == 0x30
+    write_table(destination, schema=_schema(_PLAIN_FIELDS), records=_plain_records())
+    unknown = _schema(_PLAIN_FIELDS, dbversion_byte=0)
+    write_table(
+        tmp_path / "default.dbf", schema=unknown, records=_plain_records()
+    )
+    assert (tmp_path / "default.dbf").is_file()
+
+
+@pytest.mark.parametrize(
+    ("dbf_type", "length"),
+    [
+        ("L", 2),
+        ("D", 10),
+        ("T", 14),
+        ("@", 4),
+        ("I", 2),
+        ("+", 8),
+        ("Y", 4),
+        ("B", 4),
+        ("O", 16),
+        ("M", 10),
+        ("G", 10),
+        ("P", 10),
+    ],
+)
+def test_contradictory_fixed_widths_are_rejected_before_output(
+    tmp_path: Path, dbf_type: str, length: int
+) -> None:
+    """Types with a format-defined physical width must declare it exactly
+    (evidence: docs/compatibility-vfp.md + the reference writer's own
+    descriptors); contradictory declarations fail before any output exists."""
+    bad = _schema((_field("F", dbf_type, length),))
+    with pytest.raises(WriteSchemaInvalidError) as error:
+        write_table(tmp_path / "a.dbf", schema=bad, records=iter(()))
+    assert error.value.code is ErrorCode.WRITE_SCHEMA_INVALID
+    assert error.value.context["field"] == "F"
+    assert error.value.context["dbf_type"] == dbf_type
+    assert not (tmp_path / "a.dbf").exists()
+
+
+def test_fixed_width_canonical_widths_write_smoke(tmp_path: Path) -> None:
+    import datetime as dt
+    from decimal import Decimal
+
+    destination = tmp_path / "fixed.dbf"
+    fields = (
+        _field("CODE", "C", 5),
+        _field("FLAG", "L", 1),
+        _field("WHEN", "D", 8),
+        _field("AT", "T", 8),
+        _field("COUNT", "I", 4),
+        _field("MONEY", "Y", 8),
+        _field("REAL", "B", 8),
+        _field("ALIAS", "O", 8),
+        _field("NOTE", "M", 4),
+        _field("PICTURE", "G", 4),
+        _field("IMG", "P", 4),
+    )
+    schema = _schema(fields)
+    result = write_table(
+        destination,
+        schema=schema,
+        records=[
+            {
+                "CODE": "A1",
+                "FLAG": True,
+                "WHEN": dt.date(2024, 1, 1),
+                "AT": dt.datetime(2024, 1, 1, 8, 30),
+                "COUNT": 7,
+                "MONEY": Decimal("12.3456"),
+                "REAL": 2.5,
+                "ALIAS": 3.5,
+                "NOTE": "text",
+                "PICTURE": b"\x00\x01",
+                "IMG": b"\xfe",
+            }
+        ],
+    )
+    assert result.records_written == 1
+    page = read_records(destination, memo="inline")
+    record = page.records[0].values
+    assert record["WHEN"] == dt.date(2024, 1, 1)
+    assert record["AT"] == dt.datetime(2024, 1, 1, 8, 30)
+    assert record["COUNT"] == 7
+    assert record["NOTE"] == "text"
+    assert record["PICTURE"] == b"\x00\x01"
+    assert record["IMG"] == b"\xfe"
+
+
+def test_nullflags_width_must_match_the_canonical_bitmap(tmp_path: Path) -> None:
+    nullable = _field("NOTE", "C", 5, flags=0x02)
+    # One nullable field implies two allocated bits (varlength? no — C has no
+    # varlength bit) → one NULL bit → one bitmap byte is canonical; a wider
+    # declared bitmap contradicts the canonical allocation.
+    too_wide = _schema((
+        _field("CODE", "C", 5),
+        nullable,
+        _field("NULFLAGS", "0", 2, flags=0x05),
+    ))
+    with pytest.raises(WriteSchemaInvalidError):
+        write_table(tmp_path / "a.dbf", schema=too_wide, records=iter(()))
+    assert not (tmp_path / "a.dbf").exists()
+
+
+# ---------------------------------------------------------------------------
 # records
 # ---------------------------------------------------------------------------
 
@@ -407,7 +538,7 @@ def test_input_physical_order_is_output_physical_order(tmp_path: Path) -> None:
 
 def test_text_memo_round_trip(tmp_path: Path) -> None:
     destination = tmp_path / "memo.dbf"
-    fields = (_field("CODE", "C", 5), _field("NOTE", "M", 10))
+    fields = (_field("CODE", "C", 5), _field("NOTE", "M", 4))
     schema = _schema(fields)
     records = [
         {"CODE": "A1", "NOTE": "text memo"},
@@ -421,7 +552,7 @@ def test_text_memo_round_trip(tmp_path: Path) -> None:
 
 def test_binary_memo_bytes_round_trip(tmp_path: Path) -> None:
     destination = tmp_path / "binmemo.dbf"
-    fields = (_field("CODE", "C", 5), _field("PICTURE", "G", 10))
+    fields = (_field("CODE", "C", 5), _field("PICTURE", "G", 4))
     schema = _schema(fields)
     payload = b"\x00\x01\xfe\xffbinary"
     write_table(
@@ -444,7 +575,7 @@ def test_lazy_memo_value_resolved_only_explicitly(tmp_path: Path) -> None:
     from dbf_bridge.core.records import LazyMemoValue
 
     destination = tmp_path / "lazy.dbf"
-    schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 10)))
+    schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 4)))
     loaded: list[str] = []
 
     def _loader() -> str:
@@ -473,7 +604,7 @@ def test_lazy_memo_value_resolved_only_explicitly(tmp_path: Path) -> None:
 
 def test_lazy_memo_load_failure_is_typed(tmp_path: Path) -> None:
     destination = tmp_path / "lazyfail.dbf"
-    schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 10)))
+    schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 4)))
 
     def _boom() -> str:
         raise RuntimeError("broken loader")
@@ -742,6 +873,182 @@ def test_fsync_failure_before_publication_leaves_old_pair(
     assert destination.exists()
     assert _sha256(destination) == original_sha
     assert list(tmp_path.glob("*.partial*")) == []
+
+
+def _flat_pair(tmp_path: Path) -> tuple[Path, TableSchema, str, str | None]:
+    destination = tmp_path / "pair.dbf"
+    schema = _schema(_PLAIN_FIELDS)
+    result = write_table(destination, schema=schema, records=_plain_records())
+    fpt = destination.with_suffix(".fpt")
+    return (
+        destination,
+        schema,
+        result.dbf_sha256,
+        _sha256(fpt) if fpt.exists() else None,
+    )
+
+
+def test_overwrite_dbf_fpt_to_dbf_only_failure_restores_the_full_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DBFB-PUB-004/005 (DBF+FPT -> DBF-only): the old FPT must stay
+    restorable until the whole replacement succeeds.
+
+    The new schema has NO memo column, so the old FPT disappears only after
+    the new DBF publication succeeded.  With the final staged DBF replace
+    failing, BOTH previous files must be back byte-for-byte and no residue
+    may remain (regression written RED: the old code unlinked the previous
+    FPT before the DBF replace without any backup)."""
+    destination = tmp_path / "pair.dbf"
+    memo_schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 4)))
+    first = write_table(destination, schema=memo_schema, records=_memo_records())
+    old_dbf_sha, old_fpt_sha = first.dbf_sha256, first.fpt_sha256
+
+    flat_schema = _schema(_PLAIN_FIELDS)
+    monkeypatch.setattr(write_backend.os, "replace", _fail_on_nth_partial_replace(1))
+    with pytest.raises(WritePublicationFailedError):
+        write_table(
+            destination,
+            schema=flat_schema,
+            records=_plain_records(),
+            overwrite=True,
+        )
+
+    fpt = destination.with_suffix(".fpt")
+    assert destination.exists()
+    assert _sha256(destination) == old_dbf_sha
+    assert fpt.exists(), "the previous FPT must be restored on handled failure"
+    assert _sha256(fpt) == old_fpt_sha
+    assert list(tmp_path.glob("*.partial*")) == []
+    assert list(tmp_path.glob("*.publish-backup*")) == []
+
+
+def test_overwrite_dbf_only_to_dbf_only_failure_restores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "pair.dbf"
+    schema = _schema(_PLAIN_FIELDS)
+    first = write_table(destination, schema=schema, records=_plain_records())
+    old_dbf_sha = first.dbf_sha256
+
+    monkeypatch.setattr(write_backend.os, "replace", _fail_on_nth_partial_replace(1))
+    with pytest.raises(WritePublicationFailedError):
+        write_table(
+            destination,
+            schema=schema,
+            records=_plain_records(),
+            overwrite=True,
+        )
+    assert destination.exists()
+    assert _sha256(destination) == old_dbf_sha
+    assert list(tmp_path.glob("*.partial*")) == []
+    assert list(tmp_path.glob("*.publish-backup*")) == []
+
+
+def test_overwrite_dbf_only_to_dbf_fpt_failure_restores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DBF-only -> DBF+FPT: a failure at either staged replace (FPT or DBF)
+    must leave exactly the previous DBF and no residue."""
+    destination = tmp_path / "pair.dbf"
+    flat_schema = _schema(_PLAIN_FIELDS)
+    first = write_table(destination, schema=flat_schema, records=_plain_records())
+    old_dbf_sha = first.dbf_sha256
+
+    memo_schema = _schema((_field("CODE", "C", 5), _field("NOTE", "M", 4)))
+    for replace_number in (1, 2):
+        monkeypatch.setattr(
+            write_backend.os, "replace", _fail_on_nth_partial_replace(replace_number)
+        )
+        with pytest.raises(WritePublicationFailedError):
+            write_table(
+                destination,
+                schema=memo_schema,
+                records=_memo_records(),
+                overwrite=True,
+            )
+        assert destination.exists()
+        assert _sha256(destination) == old_dbf_sha
+        assert not destination.with_suffix(".fpt").exists()
+        assert list(tmp_path.glob("*.partial*")) == []
+        assert list(tmp_path.glob("*.publish-backup*")) == []
+
+
+def test_staging_volume_identity_helper_accepts_the_same_device(tmp_path: Path) -> None:
+    destination = tmp_path / "out" / "pair.dbf"
+    staging = tmp_path / "staging"
+    write_backend.ensure_staging_same_volume(destination, staging)
+    write_backend.ensure_staging_same_volume(destination, None)
+    write_backend.ensure_staging_same_volume(destination, destination.parent)
+
+
+def test_staging_volume_identity_refuses_a_different_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The device-identity policy must refuse a foreign staging directory
+    without needing a second real filesystem: the nearest existing ancestor
+    of the staging path reports a different ``st_dev``."""
+    destination = tmp_path / "out" / "pair.dbf"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    real_stat = write_backend.os.stat
+    foreign_device = (real_stat(tmp_path).st_dev or 0) + 1
+
+    def _stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        result = real_stat(path, *args, **kwargs)
+        if str(staging) in str(path):
+            return os.stat_result(
+                (result.st_mode, result.st_ino, foreign_device, result.st_nlink,
+                 result.st_uid, result.st_gid, result.st_size, result.st_atime,
+                 result.st_mtime, result.st_ctime),
+            )
+        return result
+
+    monkeypatch.setattr(write_backend.os, "stat", _stat)
+    with pytest.raises(Exception) as error:
+        write_backend.ensure_staging_same_volume(destination, staging)
+    assert error.value.code == ErrorCode.ARGUMENT_INVALID.value
+
+
+def test_write_table_refuses_foreign_volume_staging_before_staging_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal must happen BEFORE the spool/staging directories are
+    created (DBFB-PUB-003): no spool, DBF, FPT or partial may exist on either
+    volume afterwards."""
+    destination = tmp_path / "pair.dbf"
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    real_stat = write_backend.os.stat
+    foreign_device = (real_stat(tmp_path).st_dev or 0) + 1
+
+    def _stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        result = real_stat(path, *args, **kwargs)
+        if str(staging) in str(path):
+            return os.stat_result(
+                (result.st_mode, result.st_ino, foreign_device, result.st_nlink,
+                 result.st_uid, result.st_gid, result.st_size, result.st_atime,
+                 result.st_mtime, result.st_ctime),
+            )
+        return result
+
+    monkeypatch.setattr(write_backend.os, "stat", _stat)
+    # A schema that would need the private spool (Varchar/_NullFlags second
+    # pass) proves the check precedes spool creation.
+    varchar_schema = _schema((
+        _field("CODE", "C", 5),
+        _field("TXT", "V", 12, flags=0x02),
+        _field("NULFLAGS", "0", 1, flags=0x05),
+    ))
+    with pytest.raises(Exception) as error:
+        write_table(
+            destination,
+            schema=varchar_schema,
+            records=_plain_records(),
+            staging_directory=staging,
+        )
+    assert error.value.code == ErrorCode.ARGUMENT_INVALID.value
+    assert list(staging.iterdir()) == [], "no spool may be created in foreign staging"
+    assert not destination.exists()
+    assert list(tmp_path.glob("*.partial*")) == []
+    assert list(tmp_path.glob("*spool*")) == []
 
 
 def test_staging_on_a_different_volume_is_refused_without_publication(
