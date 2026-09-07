@@ -165,20 +165,12 @@ def write_dbf(
         )
 
     # Atomic publication requires the staged files and the final files to
-    # live on the SAME filesystem/volume.  The default staging location is
-    # the destination directory (always same-volume); an explicit staging
-    # directory is verified, never silently downgraded to a copy.
+    # live on the SAME filesystem/volume (DBFB-PUB-003).  The default staging
+    # location is the destination directory (always same-volume); an explicit
+    # staging directory is verified by device identity, never silently
+    # downgraded to a copy.
     staging_root = Path(staging_directory) if staging_directory is not None else destination.parent
-    if _splitdrive_normcase(staging_root) != _splitdrive_normcase(destination):
-        raise ReconstructionError(
-            "The staging directory must be on the same filesystem/volume as the "
-            "destination for atomic publication.",
-            code=ErrorCode.ARGUMENT_INVALID,
-            context={
-                "staging_directory": staging_root.as_posix(),
-                "destination": destination.as_posix(),
-            },
-        )
+    ensure_staging_same_volume(destination, staging_directory)
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging_root.mkdir(parents=True, exist_ok=True)
     memo_required = any(field.get("is_memo") for field in fields)
@@ -300,6 +292,63 @@ def _splitdrive_normcase(path: Path) -> str:
     return os.path.splitdrive(os.path.abspath(os.fspath(path)))[0].casefold()
 
 
+def _volume_device(path: Path) -> tuple[int | None, Path]:
+    """``(st_dev, nearest existing ancestor)`` of the filesystem holding *path*.
+
+    Device identity is the only portable proof that two paths share a
+    filesystem: on POSIX, distinct mounted filesystems both report an EMPTY
+    ``os.path.splitdrive()`` component, so the drive-string comparison alone
+    cannot reject foreign staging there (DBFB-PUB-003).
+    """
+    probe = Path(path)
+    while True:
+        try:
+            return probe.stat().st_dev, probe
+        except OSError:
+            parent = probe.parent
+            if parent == probe:
+                return None, probe
+            probe = parent
+
+
+def ensure_staging_same_volume(destination: Path, staging_directory: Path | None) -> None:
+    """Deterministic same-filesystem/volume policy (DBFB-PUB-003).
+
+    Atomic publication requires the staged files and the final files to live
+    on the SAME filesystem/volume.  The decision is made from the ``st_dev``
+    device identity of the nearest existing ancestor of each path (before any
+    staging/spool artifact is created); the Windows drive string is kept as an
+    additional sanity defence.  A different device — or an unverifiable one —
+    is refused with ``ARGUMENT_INVALID``; there is never a silent downgrade to
+    a non-atomic copy.
+    """
+    if staging_directory is None:
+        return  # default staging is the destination directory: same volume by construction
+    destination_device, _destination_probe = _volume_device(destination)
+    staging_device, _staging_probe = _volume_device(staging_directory)
+    context = {
+        "destination": destination.as_posix(),
+        "staging_directory": staging_directory.as_posix(),
+    }
+    if destination_device is None or staging_device is None:
+        raise ReconstructionError(
+            "The staging directory's filesystem identity cannot be verified; "
+            "refusing to publish without the same-volume guarantee.",
+            code=ErrorCode.ARGUMENT_INVALID,
+            context=context,
+        )
+    if (
+        destination_device != staging_device
+        or _splitdrive_normcase(destination) != _splitdrive_normcase(staging_directory)
+    ):
+        raise ReconstructionError(
+            "The staging directory must be on the same filesystem/volume as the "
+            "destination for atomic publication.",
+            code=ErrorCode.ARGUMENT_INVALID,
+            context=context,
+        )
+
+
 def _publish_atomically(
     *,
     partial: Path,
@@ -311,11 +360,16 @@ def _publish_atomically(
 ) -> None:
     """Publish the staged DBF/FPT pair as ONE logical transaction.
 
-    The DBF and its memo companion are treated as a unit: an existing final
-    pair is first moved aside to staging-area backup names (atomic per
-    file), the staged files are then ``os.replace``d into place, and any
-    handled failure restores the previous pair exactly — a mixed old/new
-    DBF/FPT combination is never left behind (DBFB-PUB-004/005).  A hard
+    The DBF and its memo companion are treated as a unit: under
+    ``overwrite=True`` EVERY pre-existing final artifact belonging to this
+    logical output pair (the DBF and its corresponding FPT — even when the
+    new write no longer needs a memo file) is first moved aside to
+    staging-area backup names (atomic per file) and stays restorable until
+    the entire replacement succeeded.  The old FPT may disappear permanently
+    only after the new DBF publication succeeded (DBFB-PUB-004/005): a
+    handled failure — including a failure of the final DBF replace of a
+    DBF-only write over an old DBF+FPT pair — restores the previous pair
+    exactly, so a mixed old/new combination is never left behind.  A hard
     crash between the individual replaces is outside this contract and is
     documented as such.  After publication the destination directory is
     fsynced where the platform safely supports it (DBFB-PUB-008).
@@ -332,9 +386,10 @@ def _publish_atomically(
     try:
         if overwrite:
             # Keep the CURRENT final pair restorable until both replaces
-            # succeeded: move each existing final aside (same directory,
-            # atomic) instead of copying it.
-            if publishing_fpt and final_fpt.exists():
+            # succeeded — including the old FPT of a DBF-only replacement
+            # (DBFB-PUB-004/005).  Move each existing final aside (same
+            # directory, atomic) instead of copying it.
+            if final_fpt.exists():
                 fpt_backup = final_fpt.with_name(f".{final_fpt.name}.publish-backup")
                 os.replace(final_fpt, fpt_backup)
                 backups.append((fpt_backup, final_fpt))
@@ -345,20 +400,37 @@ def _publish_atomically(
         if publishing_fpt:
             os.replace(partial_fpt, final_fpt)
             published.append(final_fpt)
-        elif final_fpt.exists() and overwrite:
-            final_fpt.unlink()
         os.replace(partial, destination)
         published.append(destination)
     except OSError as exc:
         # Handled publication failure: drop the staged/published halves and
-        # restore the previous pair exactly — never unlink a backup before
-        # its content is back at the final path (data safety over tidiness).
+        # restore the previous pair exactly.  A failed RESTORE itself must
+        # surface as a structured error (never a silent fake success), and a
+        # backup whose content is not back at the final path is never deleted
+        # (data safety over tidiness).
+        restore_failures: list[str] = []
         for final in published:
             with suppress(Exception):
                 final.unlink()
         for backup, final in reversed(backups):
-            with suppress(Exception):
+            try:
                 os.replace(backup, final)
+            except OSError as restore_exc:
+                restore_failures.append(
+                    f"{backup.name} -> {final.name}: {restore_exc}"
+                )
+        if restore_failures:
+            raise ReconstructionError(
+                "Publication failed and rollback could not fully restore the "
+                "previous DBF/FPT artifacts.",
+                code=ErrorCode.WRITE_PUBLICATION_FAILED,
+                context={
+                    "phase": "publication",
+                    "rollback": "failed",
+                    "destination": destination.name,
+                    "backups": ";".join(restore_failures),
+                },
+            ) from exc
         raise ReconstructionError(
             f"Atomic DBF/FPT publication failed: {os.strerror(exc.errno) if exc.errno else exc}",
             code=ErrorCode.WRITE_PUBLICATION_FAILED,
