@@ -3,9 +3,10 @@
 Moved verbatim from the proven reconstruction writer
 (``dbf_bridge.importer.writer``, the correctness authority) so that exactly
 one physical writer exists: the reconstruction pipeline delegates here via
-the compatibility layer ``dbf_bridge.importer.writer``, and the future
-Direct Write contract must reuse this backend rather than grow a second
-engine (DBFB-LAYER-001..003, DBFB-NOGO-005).
+the compatibility layer ``dbf_bridge.importer.writer``, and the approved
+public Direct Write contract (``dbf_bridge.write.write_table``) reuses this
+backend rather than growing a second engine
+(DBFB-LAYER-001..003, DBFB-NOGO-005).
 
 Dependencies are boundary-neutral: ``core`` and the shared primitives in
 :mod:`dbf_bridge.common` only — never ``importer``/``exporter``/CLI — and
@@ -61,6 +62,20 @@ SUPPORTED_FIELD_TYPES = {
     "0",
 }
 TYPE_ALIASES = {"@": "T", "O": "B", "+": "I", "V": "C"}
+
+#: The ONE authoritative structural-CDX warning for every consumer of this
+#: physical writer (reconstruction AND Direct Write; DBFB-CDX-002).  It is
+#: deliberately worded without any byte/binary-identity claim: Direct Write
+#: promises canonical equivalence only (DBFB-WRITE-005), reconstruction
+#: reports its raw identity separately, and no operation may imply that a
+#: valid CDX was produced — index tags must be rebuilt externally
+#: (DBFB-CDX-001..004, DBFB-DOC-002).
+STRUCTURAL_CDX_WARNING = (
+    "The schema references a structural CDX index: index tag definitions are "
+    "not part of the DBF schema and cannot be reconstructed. The DBF/FPT pair "
+    "was written with the structural-index flag preserved, without any CDX "
+    "file created or copied; the index must be rebuilt externally before use."
+)
 
 
 class ReconstructionError(ValueError):
@@ -187,11 +202,7 @@ def write_dbf(
     warnings: list[str] = []
     structural_index = int(schema.get("dbf", {}).get("structural_index_flag") or 0)
     if structural_index:
-        warnings.append(
-            "Source DBF references a structural CDX index, but index definitions are not present "
-            "in the schema. The DBF structural-index flag is preserved for binary identity, but "
-            "the companion CDX file is not reconstructed."
-        )
+        warnings.append(STRUCTURAL_CDX_WARNING)
 
     specs = "; ".join(_field_spec(field) for field in fields)
     codepage = _hex_byte(schema.get("dbf", {}).get("language_driver"), default=0x03)
