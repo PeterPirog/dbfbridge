@@ -1,17 +1,31 @@
-"""Internal shared physical DBF/FPT writer boundary (Phase B).
+"""Internal shared physical DBF/FPT writer boundary (v1.1).
 
-This package hosts the SINGLE physical DBF/FPT writer implementation
-(:mod:`dbf_bridge.write.backend`), used by the reconstruction pipeline
-(``dbf_bridge.importer`` delegates to it) and reserved as the shared backend
-for the future Direct Write contract.
+Phase B established the single physical writer
+(:mod:`dbf_bridge.write.backend`); Phase C adds the INTERNAL Direct Write
+contract on top of it:
 
-It is internal implementation detail — no symbol here is part of the stable
-1.0 public contract, and the package exposes no public names itself
-(``dbf_bridge.write.backend`` is imported explicitly by the internal
-compatibility layer ``dbf_bridge.importer.writer``).  The ``dbf`` dependency
-stays lazy: importing this package never loads it and has no side effects.
+- :func:`write_table` — the internal entry point (overwrite defaults to
+  ``False``; canonical ``ProgressEvent`` progress; cooperative
+  ``cancel_check``; exactly-once streaming with a private bounded spool for
+  the Varchar/``_NullFlags`` second logical pass);
+- :class:`WriteResult` — the immutable, JSON-safe publication summary;
+- the separate :class:`~dbf_bridge.core.errors.DirectWriteError` family
+  (never derived from :class:`~dbf_bridge.core.errors.DirectReadError`).
+
+Everything in this package is INTERNAL until an explicit version decision
+promotes it (Phase D): nothing here is exported from the root public
+facades, and no symbol is part of the stable 1.0 contract.  The ``dbf``
+dependency stays lazy and optional (``[write]``).
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .api import WriteResult, write_table
+from .schema_adapter import schema_to_mapping, validate_schema_for_write
+
+__all__ = [
+    "WriteResult",
+    "schema_to_mapping",
+    "validate_schema_for_write",
+    "write_table",
+]

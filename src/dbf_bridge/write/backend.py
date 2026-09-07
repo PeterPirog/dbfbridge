@@ -35,6 +35,7 @@ from dbf_bridge.common import (
     nullable_null_fields,
     sha256_file,
 )
+from dbf_bridge.core.errors import ErrorCode
 from dbf_bridge.core.nullflags import NullFlagsLayout, build_nullflags_layout
 
 DBF_HEADER_SIZE = 32
@@ -62,7 +63,27 @@ TYPE_ALIASES = {"@": "T", "O": "B", "+": "I", "V": "C"}
 
 
 class ReconstructionError(ValueError):
-    """Raised when exported data cannot recreate the declared DBF structure."""
+    """Raised when exported data cannot recreate the declared DBF structure.
+
+    Physical write-path failures may optionally carry a structured machine
+    ``code`` (:class:`~dbf_bridge.core.errors.ErrorCode`) and a JSON-safe
+    ``context`` so the Direct Write boundary can classify them WITHOUT
+    parsing the English message.  Reconstruction-facing raises keep the
+    plain ``ValueError`` behaviour (``code=None``) — the attribute layer is
+    purely additive.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ErrorCode | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.context = dict(context) if context else {}
 
 
 def _ensure_writer_text_codecs(codepage: int, text_encodings: list[str]) -> None:
@@ -112,6 +133,8 @@ def write_dbf(
     overwrite: bool,
     records_factory: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
     progress_callback: Callable[[int], None] | None = None,
+    staging_directory: Path | None = None,
+    before_publish: Callable[[], None] | None = None,
 ) -> tuple[CanonicalChecksum, list[str]]:
     try:
         import dbf
@@ -134,9 +157,29 @@ def write_dbf(
         }
     )
     if unsupported:
-        raise ReconstructionError(f"Unsupported DBF field types for reconstruction: {unsupported}")
+        raise ReconstructionError(
+            f"Unsupported DBF field types for reconstruction: {unsupported}",
+            code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+            context={"dbf_types": unsupported},
+        )
 
+    # Atomic publication requires the staged files and the final files to
+    # live on the SAME filesystem/volume.  The default staging location is
+    # the destination directory (always same-volume); an explicit staging
+    # directory is verified, never silently downgraded to a copy.
+    staging_root = Path(staging_directory) if staging_directory is not None else destination.parent
+    if _splitdrive_normcase(staging_root) != _splitdrive_normcase(destination):
+        raise ReconstructionError(
+            "The staging directory must be on the same filesystem/volume as the "
+            "destination for atomic publication.",
+            code=ErrorCode.ARGUMENT_INVALID,
+            context={
+                "staging_directory": staging_root.as_posix(),
+                "destination": destination.as_posix(),
+            },
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
+    staging_root.mkdir(parents=True, exist_ok=True)
     memo_required = any(field.get("is_memo") for field in fields)
     final_fpt = memo_output_path(destination, schema)
     if destination.exists() and not overwrite:
@@ -144,7 +187,7 @@ def write_dbf(
     if memo_required and final_fpt.exists() and not overwrite:
         raise FileExistsError(f"Refusing to overwrite existing memo output: {final_fpt}")
 
-    partial = destination.with_name(f".{destination.stem}.partial.dbf")
+    partial = staging_root / f".{destination.stem}.partial.dbf"
     partial_fpt = partial.with_suffix(".fpt")
     partial.unlink(missing_ok=True)
     partial_fpt.unlink(missing_ok=True)
@@ -230,12 +273,16 @@ def write_dbf(
         _fsync_file(partial)
         if partial_fpt.exists():
             _fsync_file(partial_fpt)
-            os.replace(partial_fpt, final_fpt)
-        elif memo_required:
-            raise ReconstructionError("Memo fields are present but the FPT file was not created.")
-        elif final_fpt.exists() and overwrite:
-            final_fpt.unlink()
-        os.replace(partial, destination)
+        if before_publish is not None:
+            before_publish()
+        _publish_atomically(
+            partial=partial,
+            partial_fpt=partial_fpt,
+            destination=destination,
+            final_fpt=final_fpt,
+            memo_required=memo_required,
+            overwrite=overwrite,
+        )
     except Exception:
         if table is not None:
             with suppress(Exception):
@@ -245,6 +292,92 @@ def write_dbf(
         raise
 
     return checksum, warnings
+
+
+def _splitdrive_normcase(path: Path) -> str:
+    """The normalized volume/drive component of *path* (same-volume check)."""
+    return os.path.splitdrive(os.path.abspath(os.fspath(path)))[0].casefold()
+
+
+def _publish_atomically(
+    *,
+    partial: Path,
+    partial_fpt: Path,
+    destination: Path,
+    final_fpt: Path,
+    memo_required: bool,
+    overwrite: bool,
+) -> None:
+    """Publish the staged DBF/FPT pair as ONE logical transaction.
+
+    The DBF and its memo companion are treated as a unit: an existing final
+    pair is first moved aside to staging-area backup names (atomic per
+    file), the staged files are then ``os.replace``d into place, and any
+    handled failure restores the previous pair exactly — a mixed old/new
+    DBF/FPT combination is never left behind (DBFB-PUB-004/005).  A hard
+    crash between the individual replaces is outside this contract and is
+    documented as such.  After publication the destination directory is
+    fsynced where the platform safely supports it (DBFB-PUB-008).
+    """
+    publishing_fpt = partial_fpt.exists()
+    if not publishing_fpt and memo_required:
+        raise ReconstructionError(
+            "Memo fields are present but the FPT file was not created.",
+            code=ErrorCode.WRITE_MEMO_FAILED,
+            context={"file": final_fpt.name},
+        )
+    backups: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        if overwrite:
+            # Keep the CURRENT final pair restorable until both replaces
+            # succeeded: move each existing final aside (same directory,
+            # atomic) instead of copying it.
+            if publishing_fpt and final_fpt.exists():
+                fpt_backup = final_fpt.with_name(f".{final_fpt.name}.publish-backup")
+                os.replace(final_fpt, fpt_backup)
+                backups.append((fpt_backup, final_fpt))
+            if destination.exists():
+                dbf_backup = destination.with_name(f".{destination.name}.publish-backup")
+                os.replace(destination, dbf_backup)
+                backups.append((dbf_backup, destination))
+        if publishing_fpt:
+            os.replace(partial_fpt, final_fpt)
+            published.append(final_fpt)
+        elif final_fpt.exists() and overwrite:
+            final_fpt.unlink()
+        os.replace(partial, destination)
+        published.append(destination)
+    except OSError as exc:
+        # Handled publication failure: drop the staged/published halves and
+        # restore the previous pair exactly — never unlink a backup before
+        # its content is back at the final path (data safety over tidiness).
+        for final in published:
+            with suppress(Exception):
+                final.unlink()
+        for backup, final in reversed(backups):
+            with suppress(Exception):
+                os.replace(backup, final)
+        raise ReconstructionError(
+            f"Atomic DBF/FPT publication failed: {os.strerror(exc.errno) if exc.errno else exc}",
+            code=ErrorCode.WRITE_PUBLICATION_FAILED,
+            context={"phase": "publication", "destination": destination.name},
+        ) from exc
+    else:
+        for backup, _final in backups:
+            with suppress(Exception):
+                backup.unlink(missing_ok=True)
+        _fsync_directory(destination.parent)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort directory fsync after publication (POSIX-meaningful)."""
+    with suppress(OSError, AttributeError):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def output_hashes(destination: Path, schema: Mapping[str, Any]) -> tuple[str, str | None]:
@@ -330,26 +463,36 @@ def _repair_varchar_logical_layout(
         elif dbf_type == "V":
             bit = layout.varlength_bits.get(name)
             if bit is None:  # pragma: no cover - the engine allocates it
-                raise ReconstructionError(f"Varchar field {name!r} has no varlength bit.")
+                raise ReconstructionError(
+                    f"Varchar field {name!r} has no varlength bit.",
+                    code=ErrorCode.WRITE_SCHEMA_INVALID,
+                    context={"field": name},
+                )
             if int(field.get("flags") or 0) & 0x04:
                 raise ReconstructionError(
                     f"Varchar field {name!r} is binary (NOCPTRANS); logical-layout repair "
                     "supports text Varchar only — full-record mode with raw record images "
-                    "is required."
+                    "is required.",
+                    code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+                    context={"field": name, "dbf_type": "V"},
                 )
             varchar_specs.append((name, width, start, bit))
         start += width
     if bitmap_offset is None:
         if varchar_specs:  # pragma: no cover - V fields always imply a bitmap
             raise ReconstructionError(
-                "Varchar fields require the _NullFlags system column declared by the schema."
+                "Varchar fields require the _NullFlags system column declared by the schema.",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"varchar_fields": [spec[0] for spec in varchar_specs]},
             )
         return
     if bitmap_offset + layout.byte_count > (int(expected_record) if expected_record else 0):
         raise ReconstructionError(
             "The generated table layout does not leave room for the canonical _NullFlags "
             f"bitmap ({layout.byte_count} byte(s)); reconstruct with full-record mode "
-            "(raw record images) for this table."
+            "(raw record images) for this table.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"required_bytes": layout.byte_count},
         )
     with partial.open("r+b") as handle:
         header = handle.read(DBF_HEADER_SIZE)
@@ -360,19 +503,25 @@ def _repair_varchar_logical_layout(
                 f"Generated table record length {record_length} does not match the schema "
                 f"{expected_record}; canonical Varchar layout repair requires the canonical "
                 "record layout (raw record images / full-record mode for non-standard "
-                "bitmap widths)."
+                "bitmap widths).",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"generated": record_length, "expected": int(expected_record)},
             )
         if expected_header is not None and header_length != int(expected_header):
             raise ReconstructionError(
                 f"Generated table header length {header_length} does not match the schema "
                 f"{expected_header}; canonical Varchar layout repair requires the canonical "
-                "record layout."
+                "record layout.",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"generated": header_length, "expected": int(expected_header)},
             )
         for record_index, record in enumerate(records_factory()):
             if record_index >= record_count:
                 raise ReconstructionError(
                     "Record stream is longer than the staged table during Varchar "
-                    "logical-layout repair."
+                    "logical-layout repair.",
+                    code=ErrorCode.OPERATION_FAILED,
+                    context={"phase": "varchar_repair", "record_index": record_index},
                 )
             base = header_length + record_index * record_length
             null_names = nullable_null_fields(record, fields, layout)
@@ -398,7 +547,9 @@ def _repair_varchar_logical_layout(
                     if len(encoded) > width:
                         raise ReconstructionError(
                             f"Varchar field {name!r} value exceeds its declared width "
-                            f"({len(encoded)} > {width})."
+                            f"({len(encoded)} > {width}).",
+                            code=ErrorCode.WRITE_VALUE_INVALID,
+                            context={"field": name, "dbf_type": "V"},
                         )
                     if len(encoded) < width:
                         payload = (
@@ -582,7 +733,11 @@ def _field_spec(field: Mapping[str, Any]) -> str:
     elif dbf_type in {"L", "D", "T", "M", "G", "P", "B", "I", "Y"}:
         spec = f"{name} {dbf_type}"
     else:
-        raise ReconstructionError(f"Cannot build field {name!r} of type {original_type!r}.")
+        raise ReconstructionError(
+            f"Cannot build field {name!r} of type {original_type!r}.",
+            code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+            context={"field": name, "dbf_type": original_type},
+        )
     # ``V`` fields always consume a varlength bit in the canonical VFP
     # ``_NullFlags`` contract (even when not NULLable) — declaring them NULL
     # makes the writer's bitmap exactly one bit wide per canonical bit.
@@ -644,9 +799,15 @@ def _coerce_value(
             return raw_text if raw_text is not None else _encode_text(str(value), text_encodings)
     except (ValueError, TypeError) as exc:
         raise ReconstructionError(
-            f"Cannot convert field {name!r} ({dbf_type}) value {value!r}: {exc}"
+            f"Cannot convert field {name!r} ({dbf_type}) value {value!r}: {exc}",
+            code=ErrorCode.WRITE_VALUE_INVALID,
+            context={"field": name, "dbf_type": dbf_type},
         ) from exc
-    raise ReconstructionError(f"Unsupported field {name!r} of type {dbf_type!r}.")
+    raise ReconstructionError(
+        f"Unsupported field {name!r} of type {dbf_type!r}.",
+        code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+        context={"field": name, "dbf_type": dbf_type},
+    )
 
 
 def _patch_dbf_metadata(
@@ -766,7 +927,11 @@ def _patch_fpt_block_types(
                 dbf_file.seek(record_offset + int(field["address"]))
                 pointer_data = dbf_file.read(4)
                 if len(pointer_data) != 4:
-                    raise ReconstructionError("Memo pointer is truncated.")
+                    raise ReconstructionError(
+                        "Memo pointer is truncated.",
+                        code=ErrorCode.WRITE_MEMO_FAILED,
+                        context={"phase": "memo_block_types"},
+                    )
                 block = struct.unpack("<I", pointer_data)[0]
                 if block == 0:
                     continue
@@ -784,11 +949,15 @@ def _validate_layout(path: Path, schema: Mapping[str, Any]) -> None:
     expected_record = schema.get("dbf", {}).get("record_length_bytes")
     if expected_header is not None and header_length != int(expected_header):
         raise ReconstructionError(
-            f"Header length mismatch: reconstructed {header_length}, schema {expected_header}."
+            f"Header length mismatch: reconstructed {header_length}, schema {expected_header}.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"generated": header_length, "expected": int(expected_header)},
         )
     if expected_record is not None and record_length != int(expected_record):
         raise ReconstructionError(
-            f"Record length mismatch: reconstructed {record_length}, schema {expected_record}."
+            f"Record length mismatch: reconstructed {record_length}, schema {expected_record}.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"generated": record_length, "expected": int(expected_record)},
         )
 
 
