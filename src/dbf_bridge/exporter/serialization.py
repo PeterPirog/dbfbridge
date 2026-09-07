@@ -7,14 +7,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from ..common import (  # noqa: F401 - neutral shared transport keys (re-exports)
+    BINARY_MEMO_FIELDS_KEY as BINARY_MEMO_FIELDS_KEY,
+)
+from ..common import (
+    RAW_RECORD_KEY as RAW_RECORD_KEY,
+)
+from ..common import (
+    RAW_TEXT_FIELDS_KEY as RAW_TEXT_FIELDS_KEY,
+)
 from ..core.fields import (
     classify_field,
 )
 from .models import FieldMetadata
-
-BINARY_MEMO_FIELDS_KEY = "__dbfbridge_binary_memo_fields__"
-RAW_TEXT_FIELDS_KEY = "__dbfbridge_raw_text_fields__"
-RAW_RECORD_KEY = "__dbfbridge_raw_record__"
 
 
 class SerializationError(ValueError):

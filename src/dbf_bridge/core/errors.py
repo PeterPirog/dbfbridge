@@ -44,6 +44,16 @@ class ErrorCode(str, enum.Enum):
     RECONSTRUCTION_FAILED = "RECONSTRUCTION_FAILED"
     ROUNDTRIP_MISMATCH = "ROUNDTRIP_MISMATCH"
     OPERATION_FAILED = "OPERATION_FAILED"
+    # Direct Write (additive since the v1.1 public contract; existing 1.0
+    # codes are frozen and never repurposed).  The write-conflict case reuses
+    # the stable OUTPUT_EXISTS code instead of a parallel vocabulary.
+    DESTINATION_IO_ERROR = "DESTINATION_IO_ERROR"
+    WRITE_SCHEMA_INVALID = "WRITE_SCHEMA_INVALID"
+    WRITE_FIELD_UNSUPPORTED = "WRITE_FIELD_UNSUPPORTED"
+    WRITE_VALUE_INVALID = "WRITE_VALUE_INVALID"
+    WRITE_MEMO_FAILED = "WRITE_MEMO_FAILED"
+    WRITE_PUBLICATION_FAILED = "WRITE_PUBLICATION_FAILED"
+    WRITE_CANCELLED = "WRITE_CANCELLED"
 
 
 def _json_safe(value: Any) -> Any:
@@ -200,6 +210,87 @@ class ReadCancelledError(DirectReadError):
     """
 
     code = ErrorCode.READ_CANCELLED
+
+
+class DirectWriteError(Exception):
+    """Base class for the typed **direct write** failure family.
+
+    Deliberately NOT a subclass of :class:`DirectReadError`: an
+    ``except DirectReadError`` clause must never capture a write-side
+    failure (and vice versa).  The payload shape mirrors the read family —
+    a stable :class:`ErrorCode`, the offending path and a JSON-safe
+    ``context`` — so callers classify failures from structured data alone,
+    never from the English message.
+    """
+
+    code: ErrorCode
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str | os.PathLike[str] | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.path = os.fspath(path) if path is not None else None
+        self.context = dict(context) if context else {}
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe structured payload (``json.dumps`` never raises)."""
+        path = _json_safe(self.path)
+        if isinstance(path, str) and os.sep != "/":
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                path = Path(path).as_posix()
+        return {
+            "code": self.code.value,
+            "message": self.message,
+            "path": path,
+            "context": _json_safe(self.context),
+        }
+
+
+class DestinationIoError(DirectWriteError):
+    """A filesystem failure around DBF/FPT staging or publication."""
+
+    code = ErrorCode.DESTINATION_IO_ERROR
+
+
+class WriteSchemaInvalidError(DirectWriteError):
+    """The schema is unusable for writing (no fields, bad combination)."""
+
+    code = ErrorCode.WRITE_SCHEMA_INVALID
+
+
+class WriteFieldUnsupportedError(DirectWriteError):
+    """A field type the shared writer backend cannot represent."""
+
+    code = ErrorCode.WRITE_FIELD_UNSUPPORTED
+
+
+class WriteValueInvalidError(DirectWriteError):
+    """A value (or record stream) does not fit or convert for its target field."""
+
+    code = ErrorCode.WRITE_VALUE_INVALID
+
+
+class WriteMemoFailedError(DirectWriteError):
+    """A memo payload could not be written or finalized."""
+
+    code = ErrorCode.WRITE_MEMO_FAILED
+
+
+class WritePublicationFailedError(DirectWriteError):
+    """Staging, fsync or the final publication replace failed."""
+
+    code = ErrorCode.WRITE_PUBLICATION_FAILED
+
+
+class WriteCancelledError(DirectWriteError):
+    """The write was cooperatively cancelled before final publication."""
+
+    code = ErrorCode.WRITE_CANCELLED
 
 
 @dataclasses.dataclass(frozen=True)
@@ -370,7 +461,9 @@ __all__ = [
     "DbfPathError",
     "DbfRecordInvalidError",
     "DbfTruncatedError",
+    "DestinationIoError",
     "DirectReadError",
+    "DirectWriteError",
     "EncodingUnknownError",
     "ErrorCode",
     "FieldProjectionInvalidError",
@@ -383,4 +476,10 @@ __all__ = [
     "OperationPathError",
     "ReadCancelledError",
     "TextDecodeError",
+    "WriteCancelledError",
+    "WriteFieldUnsupportedError",
+    "WriteMemoFailedError",
+    "WritePublicationFailedError",
+    "WriteSchemaInvalidError",
+    "WriteValueInvalidError",
 ]

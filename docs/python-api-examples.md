@@ -280,6 +280,51 @@ Quality is a **write** operation creating retained diagnostic output and is
 more expensive than Direct Read — it is a dedicated diagnostic call, not a
 lightweight table-read request.
 
+## 10. `write_table()` - typed schema + record stream -> DBF/FPT (v1.1)
+
+```python
+from dbfbridge import (
+    DirectWriteError,
+    iter_records,
+    read_schema,
+    write_table,
+)
+
+schema = read_schema("data/KLIENCI.DBF")
+
+# Any iterator works: iter_records(), a generator, a list of mappings.
+# This copy transforms values through a generator while streaming.
+records = (
+    {name: value.upper() if name == "NAZWA" and isinstance(value, str) else value
+     for name, value in record.values.items()}
+    | {"__deleted__": record.deleted}
+    for record in iter_records("data/KLIENCI.DBF", memo="inline", include_deleted=True)
+)
+
+result = write_table(
+    "copy/KLIENCI.DBF",
+    schema=schema,
+    records=records,
+    overwrite=False,          # existing output is refused (OUTPUT_EXISTS)
+)
+
+print(result.records_written, result.deleted_records, result.dbf_sha256)
+print(result.to_dict())       # JSON-safe payload (POSIX paths, warnings list)
+```
+
+- the caller iterable is consumed **exactly once**; input physical order is
+  the output physical order (deleted markers preserved);
+- unknown keys are rejected and missing non-NULLable fields raise typed
+  errors - the `_NullFlags` system column is writer-managed;
+- cancellation: `cancel_check=lambda: stop_requested()` is checked at record
+  boundaries and before final publication (`WRITE_CANCELLED`, staging is
+  cleaned);
+- failures are typed in the separate `DirectWriteError` family with
+  structured codes (`error.code`), never parsed from message text;
+- canonical equivalence does not imply raw byte identity, and structural CDX
+  indexes are never fabricated (`index_rebuild_required=True` means "rebuild
+  externally").
+
 ## Progress and cancellation
 
 Direct Read operations accept `progress=` (a callback receiving

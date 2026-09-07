@@ -1,0 +1,1176 @@
+"""The SINGLE physical DBF/FPT writer implementation.
+
+Moved verbatim from the proven reconstruction writer
+(``dbf_bridge.importer.writer``, the correctness authority) so that exactly
+one physical writer exists: the reconstruction pipeline delegates here via
+the compatibility layer ``dbf_bridge.importer.writer``, and the approved
+public Direct Write contract (``dbf_bridge.write.write_table``) reuses this
+backend rather than growing a second engine
+(DBFB-LAYER-001..003, DBFB-NOGO-005).
+
+Dependencies are boundary-neutral: ``core`` and the shared primitives in
+:mod:`dbf_bridge.common` only — never ``importer``/``exporter``/CLI — and
+the ``dbf`` writer dependency is imported lazily inside :func:`write_dbf`,
+so importing this module loads no optional heavy dependency and creates no
+files.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import shutil
+import struct
+from collections.abc import Callable, Iterable, Mapping
+from contextlib import suppress
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+from dbf_bridge.common import (
+    BINARY_MEMO_FIELDS_KEY,
+    RAW_RECORD_KEY,
+    RAW_TEXT_FIELDS_KEY,
+    CanonicalChecksum,
+    nullable_null_fields,
+    parse_iso_date,
+    sha256_file,
+)
+from dbf_bridge.core.errors import ErrorCode
+from dbf_bridge.core.nullflags import NullFlagsLayout, build_nullflags_layout
+
+DBF_HEADER_SIZE = 32
+FIELD_DESCRIPTOR_SIZE = 32
+SUPPORTED_FIELD_TYPES = {
+    "C",
+    "V",
+    "N",
+    "F",
+    "L",
+    "D",
+    "T",
+    "@",
+    "M",
+    "G",
+    "P",
+    "B",
+    "O",
+    "I",
+    "+",
+    "Y",
+    "0",
+}
+TYPE_ALIASES = {"@": "T", "O": "B", "+": "I", "V": "C"}
+
+#: The ONE authoritative structural-CDX warning for every consumer of this
+#: physical writer (reconstruction AND Direct Write; DBFB-CDX-002).  It is
+#: deliberately worded without any byte/binary-identity claim: Direct Write
+#: promises canonical equivalence only (DBFB-WRITE-005), reconstruction
+#: reports its raw identity separately, and no operation may imply that a
+#: valid CDX was produced — index tags must be rebuilt externally
+#: (DBFB-CDX-001..004, DBFB-DOC-002).
+STRUCTURAL_CDX_WARNING = (
+    "The schema references a structural CDX index: index tag definitions are "
+    "not part of the DBF schema and cannot be reconstructed. The DBF/FPT pair "
+    "was written with the structural-index flag preserved, without any CDX "
+    "file created or copied; the index must be rebuilt externally before use."
+)
+
+
+class ReconstructionError(ValueError):
+    """Raised when exported data cannot recreate the declared DBF structure.
+
+    Physical write-path failures may optionally carry a structured machine
+    ``code`` (:class:`~dbf_bridge.core.errors.ErrorCode`) and a JSON-safe
+    ``context`` so the Direct Write boundary can classify them WITHOUT
+    parsing the English message.  Reconstruction-facing raises keep the
+    plain ``ValueError`` behaviour (``code=None``) — the attribute layer is
+    purely additive.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ErrorCode | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.context = dict(context) if context else {}
+
+
+def _ensure_writer_text_codecs(codepage: int, text_encodings: list[str]) -> None:
+    """Register the schema's text codecs with the ``dbf`` writer.
+
+    Two on-demand boundaries, mirroring the export path:
+
+    - Polish OEM codec names (``mazovia``/``piast``/``pki``) must be registered
+      in the global codec registry before any text encoding;
+    - the writer's codepage table has **no codec name** for some language
+      drivers (e.g. Mazovia ``0x69``, Kamenicky ``0x68`` — the bundled entry is
+      ``(None, …)``); the first schema encoding that registers successfully is
+      bridged into that slot so schema-driven reconstruction works.
+    """
+    from ..core.codecs import _ensure_encoding_available
+
+    registered: list[str] = []
+    for encoding in text_encodings:
+        try:
+            _ensure_encoding_available(encoding)
+        except LookupError:
+            continue
+        registered.append(encoding)
+    if not registered:
+        return
+    import dbf.tables as dbf_tables
+
+    pages = getattr(dbf_tables, "code_pages", None)
+    if not isinstance(pages, dict):
+        return
+    entry = pages.get(codepage)
+    if entry is not None and entry[0] is None:
+        for encoding in registered:
+            try:
+                _ensure_encoding_available(encoding)
+            except LookupError:  # pragma: no cover - defensive
+                continue
+            pages[codepage] = (encoding, entry[1])
+            break
+
+
+def write_dbf(
+    destination: Path,
+    records: Iterable[Mapping[str, Any]],
+    schema: Mapping[str, Any],
+    *,
+    overwrite: bool,
+    records_factory: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
+    progress_callback: Callable[[int], None] | None = None,
+    staging_directory: Path | None = None,
+    before_publish: Callable[[], None] | None = None,
+) -> tuple[CanonicalChecksum, list[str]]:
+    try:
+        import dbf
+    except ImportError as exc:
+        from ..optional_deps import OptionalDependencyMissingError
+
+        raise OptionalDependencyMissingError(
+            dependency="dbf",
+            extra="write",
+            operation="reconstruct_dbf",
+            purpose="DBF/FPT reconstruction",
+        ) from exc
+
+    fields = [field for field in schema["fields"] if field.get("dbf_type") != "0"]
+    unsupported = sorted(
+        {
+            str(field.get("dbf_type"))
+            for field in fields
+            if field.get("dbf_type") not in SUPPORTED_FIELD_TYPES
+        }
+    )
+    if unsupported:
+        raise ReconstructionError(
+            f"Unsupported DBF field types for reconstruction: {unsupported}",
+            code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+            context={"dbf_types": unsupported},
+        )
+
+    # Atomic publication requires the staged files and the final files to
+    # live on the SAME filesystem/volume (DBFB-PUB-003).  The default staging
+    # location is the destination directory (always same-volume); an explicit
+    # staging directory is verified by device identity, never silently
+    # downgraded to a copy.
+    staging_root = Path(staging_directory) if staging_directory is not None else destination.parent
+    ensure_staging_same_volume(destination, staging_directory)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    memo_required = any(field.get("is_memo") for field in fields)
+    final_fpt = memo_output_path(destination, schema)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing output: {destination}")
+    if memo_required and final_fpt.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing memo output: {final_fpt}")
+
+    partial = staging_root / f".{destination.stem}.partial.dbf"
+    partial_fpt = partial.with_suffix(".fpt")
+    partial.unlink(missing_ok=True)
+    partial_fpt.unlink(missing_ok=True)
+    warnings: list[str] = []
+    structural_index = int(schema.get("dbf", {}).get("structural_index_flag") or 0)
+    if structural_index:
+        warnings.append(STRUCTURAL_CDX_WARNING)
+
+    specs = "; ".join(_field_spec(field) for field in fields)
+    codepage = _hex_byte(schema.get("dbf", {}).get("language_driver"), default=0x03)
+    memo_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
+    text_encodings = _text_encodings(schema)
+    _ensure_writer_text_codecs(codepage, text_encodings)
+    checksum = CanonicalChecksum(schema)
+    memo_block_overrides: list[tuple[int, str, int]] = []
+    table = None
+    try:
+        table = dbf.Table(
+            str(partial),
+            field_specs=specs,
+            memo_size=memo_size,
+            dbf_type="vfp",
+            codepage=codepage,
+        )
+        table.open(mode=dbf.READ_WRITE)
+        _install_lossless_numeric_writer(table)
+        for index, source_record in enumerate(records, start=1):
+            checksum.update(source_record)
+            null_names = nullable_null_fields(source_record, list(schema["fields"]))
+            binary_memo_names = _binary_memo_fields(source_record)
+            raw_text_fields = _raw_text_fields(source_record)
+            values = {
+                field["name"]: dbf.Null
+                if field["name"] in null_names
+                else _coerce_value(
+                    source_record.get(field["name"]),
+                    field,
+                    text_encodings=text_encodings,
+                    binary_memo=field["name"] in binary_memo_names,
+                    raw_text=raw_text_fields.get(str(field["name"])),
+                )
+                for field in fields
+            }
+            table.append(values)
+            memo_block_overrides.extend((index - 1, name, 0) for name in binary_memo_names)
+            if source_record.get("__deleted__"):
+                dbf.delete(table[-1])
+            if progress_callback is not None and (index == 1 or index % 10_000 == 0):
+                progress_callback(index)
+        table.close()
+        table = None
+
+        # Schema-driven Varchar logical-layout repair (staging only): the
+        # ``dbf`` writer stores ``V`` columns as fixed-width Character and
+        # manages its own ``_NullFlags`` bitmap (one bit per NULLable field),
+        # which is not the canonical VFP contract (varlength bit per Varchar
+        # field + NULL bits in descriptor order).  The staged records are
+        # rewritten from the logical values with the canonical layout BEFORE
+        # metadata patching, layout validation, and atomic publish.
+        _repair_varchar_logical_layout(
+            partial,
+            schema,
+            records_factory,
+            text_encodings,
+        )
+
+        if partial_fpt.exists():
+            _patch_fpt_block_types(
+                partial,
+                partial_fpt,
+                schema,
+                fields,
+                memo_block_overrides,
+            )
+        _patch_dbf_metadata(partial, schema, list(schema["fields"]))
+        if partial_fpt.exists():
+            _patch_fpt_metadata(partial_fpt, schema)
+        _validate_layout(partial, schema)
+        _fsync_file(partial)
+        if partial_fpt.exists():
+            _fsync_file(partial_fpt)
+        if before_publish is not None:
+            before_publish()
+        _publish_atomically(
+            partial=partial,
+            partial_fpt=partial_fpt,
+            destination=destination,
+            final_fpt=final_fpt,
+            memo_required=memo_required,
+            overwrite=overwrite,
+        )
+    except Exception:
+        if table is not None:
+            with suppress(Exception):
+                table.close()
+        partial.unlink(missing_ok=True)
+        partial_fpt.unlink(missing_ok=True)
+        raise
+
+    return checksum, warnings
+
+
+def _splitdrive_normcase(path: Path) -> str:
+    """The normalized volume/drive component of *path* (same-volume check)."""
+    return os.path.splitdrive(os.path.abspath(os.fspath(path)))[0].casefold()
+
+
+def _volume_device(path: Path) -> tuple[int | None, Path]:
+    """``(st_dev, nearest existing ancestor)`` of the filesystem holding *path*.
+
+    Device identity is the only portable proof that two paths share a
+    filesystem: on POSIX, distinct mounted filesystems both report an EMPTY
+    ``os.path.splitdrive()`` component, so the drive-string comparison alone
+    cannot reject foreign staging there (DBFB-PUB-003).
+    """
+    probe = Path(path)
+    while True:
+        try:
+            # ``os.stat`` directly (not ``Path.stat``): Python 3.10 resolves
+            # ``Path.stat`` through a class-level accessor captured at import
+            # time, so a test double patched into ``os.stat`` must still be
+            # observable here on every supported interpreter.
+            return os.stat(probe).st_dev, probe
+        except OSError:
+            parent = probe.parent
+            if parent == probe:
+                return None, probe
+            probe = parent
+
+
+def ensure_staging_same_volume(destination: Path, staging_directory: Path | None) -> None:
+    """Deterministic same-filesystem/volume policy (DBFB-PUB-003).
+
+    Atomic publication requires the staged files and the final files to live
+    on the SAME filesystem/volume.  The decision is made from the ``st_dev``
+    device identity of the nearest existing ancestor of each path (before any
+    staging/spool artifact is created); the Windows drive string is kept as an
+    additional sanity defence.  A different device — or an unverifiable one —
+    is refused with ``ARGUMENT_INVALID``; there is never a silent downgrade to
+    a non-atomic copy.
+    """
+    if staging_directory is None:
+        return  # default staging is the destination directory: same volume by construction
+    destination_device, _destination_probe = _volume_device(destination)
+    staging_device, _staging_probe = _volume_device(staging_directory)
+    context = {
+        "destination": destination.as_posix(),
+        "staging_directory": staging_directory.as_posix(),
+    }
+    if destination_device is None or staging_device is None:
+        raise ReconstructionError(
+            "The staging directory's filesystem identity cannot be verified; "
+            "refusing to publish without the same-volume guarantee.",
+            code=ErrorCode.ARGUMENT_INVALID,
+            context=context,
+        )
+    if (
+        destination_device != staging_device
+        or _splitdrive_normcase(destination) != _splitdrive_normcase(staging_directory)
+    ):
+        raise ReconstructionError(
+            "The staging directory must be on the same filesystem/volume as the "
+            "destination for atomic publication.",
+            code=ErrorCode.ARGUMENT_INVALID,
+            context=context,
+        )
+
+
+def _publish_atomically(
+    *,
+    partial: Path,
+    partial_fpt: Path,
+    destination: Path,
+    final_fpt: Path,
+    memo_required: bool,
+    overwrite: bool,
+) -> None:
+    """Publish the staged DBF/FPT pair as ONE logical transaction.
+
+    The DBF and its memo companion are treated as a unit: under
+    ``overwrite=True`` EVERY pre-existing final artifact belonging to this
+    logical output pair (the DBF and its corresponding FPT — even when the
+    new write no longer needs a memo file) is first moved aside to
+    staging-area backup names (atomic per file) and stays restorable until
+    the entire replacement succeeded.  The old FPT may disappear permanently
+    only after the new DBF publication succeeded (DBFB-PUB-004/005): a
+    handled failure — including a failure of the final DBF replace of a
+    DBF-only write over an old DBF+FPT pair — restores the previous pair
+    exactly, so a mixed old/new combination is never left behind.  A hard
+    crash between the individual replaces is outside this contract and is
+    documented as such.  After publication the destination directory is
+    fsynced where the platform safely supports it (DBFB-PUB-008).
+    """
+    publishing_fpt = partial_fpt.exists()
+    if not publishing_fpt and memo_required:
+        raise ReconstructionError(
+            "Memo fields are present but the FPT file was not created.",
+            code=ErrorCode.WRITE_MEMO_FAILED,
+            context={"file": final_fpt.name},
+        )
+    backups: list[tuple[Path, Path]] = []
+    published: list[Path] = []
+    try:
+        if overwrite:
+            # Keep the CURRENT final pair restorable until both replaces
+            # succeeded — including the old FPT of a DBF-only replacement
+            # (DBFB-PUB-004/005).  Move each existing final aside (same
+            # directory, atomic) instead of copying it.
+            if final_fpt.exists():
+                fpt_backup = final_fpt.with_name(f".{final_fpt.name}.publish-backup")
+                os.replace(final_fpt, fpt_backup)
+                backups.append((fpt_backup, final_fpt))
+            if destination.exists():
+                dbf_backup = destination.with_name(f".{destination.name}.publish-backup")
+                os.replace(destination, dbf_backup)
+                backups.append((dbf_backup, destination))
+        if publishing_fpt:
+            os.replace(partial_fpt, final_fpt)
+            published.append(final_fpt)
+        os.replace(partial, destination)
+        published.append(destination)
+    except OSError as exc:
+        # Handled publication failure: drop the staged/published halves and
+        # restore the previous pair exactly.  A failed RESTORE itself must
+        # surface as a structured error (never a silent fake success), and a
+        # backup whose content is not back at the final path is never deleted
+        # (data safety over tidiness).
+        restore_failures: list[str] = []
+        for final in published:
+            with suppress(Exception):
+                final.unlink()
+        for backup, final in reversed(backups):
+            try:
+                os.replace(backup, final)
+            except OSError as restore_exc:
+                restore_failures.append(
+                    f"{backup.name} -> {final.name}: {restore_exc}"
+                )
+        if restore_failures:
+            raise ReconstructionError(
+                "Publication failed and rollback could not fully restore the "
+                "previous DBF/FPT artifacts.",
+                code=ErrorCode.WRITE_PUBLICATION_FAILED,
+                context={
+                    "phase": "publication",
+                    "rollback": "failed",
+                    "destination": destination.name,
+                    "backups": ";".join(restore_failures),
+                },
+            ) from exc
+        raise ReconstructionError(
+            f"Atomic DBF/FPT publication failed: {os.strerror(exc.errno) if exc.errno else exc}",
+            code=ErrorCode.WRITE_PUBLICATION_FAILED,
+            context={"phase": "publication", "destination": destination.name},
+        ) from exc
+    else:
+        for backup, _final in backups:
+            with suppress(Exception):
+                backup.unlink(missing_ok=True)
+        _fsync_directory(destination.parent)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Best-effort directory fsync after publication (POSIX-meaningful)."""
+    with suppress(OSError, AttributeError):
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def output_hashes(destination: Path, schema: Mapping[str, Any]) -> tuple[str, str | None]:
+    fpt = memo_output_path(destination, schema)
+    return sha256_file(destination), sha256_file(fpt) if fpt.is_file() else None
+
+
+def _set_bitmap_bit(bitmap: bytearray, bit: int, *, value: bool) -> None:
+    """Apply one canonical-layout bit to a mutable bitmap (no allocation logic)."""
+    byte, offset = divmod(bit, 8)
+    if byte >= len(bitmap):
+        return
+    if value:
+        bitmap[byte] |= 1 << offset
+    else:
+        bitmap[byte] &= ~(1 << offset) & 0xFF
+
+
+def _record_bitmap(record: Mapping[str, Any], layout: NullFlagsLayout) -> bytearray:
+    """The record's exported bitmap, normalized to the canonical byte count."""
+    raw_bitmap = record.get(layout.field_name)
+    bitmap = bytearray(layout.byte_count)
+    if isinstance(raw_bitmap, (bytes, bytearray)):
+        bitmap[: len(raw_bitmap)] = bytearray(raw_bitmap[: layout.byte_count])
+    elif isinstance(raw_bitmap, str) and raw_bitmap:
+        try:
+            decoded = base64.b64decode(raw_bitmap, validate=True)
+        except ValueError as exc:
+            raise ReconstructionError(
+                f"Invalid {layout.field_name} bitmap metadata: {exc}"
+            ) from exc
+        bitmap[: len(decoded)] = bytearray(decoded[: layout.byte_count])
+    return bitmap
+
+
+def _repair_varchar_logical_layout(
+    partial: Path,
+    schema: Mapping[str, Any],
+    records_factory: Callable[[], Iterable[Mapping[str, Any]]] | None,
+    text_encodings: list[str],
+) -> None:
+    """Restore the canonical Varchar payload and ``_NullFlags`` layout on the
+    staging DBF (schema-driven, bounded-memory, atomic-publish boundary).
+
+    The ``dbf`` writer stores ``V`` columns through the Character alias with
+    fixed-width payloads and manages its own ``_NullFlags`` bitmap (one bit per
+    NULLable field, no varlength concept).  The canonical VFP contract instead
+    reserves a varlength bit for every Varchar field plus NULL bits for every
+    nullable field, in descriptor order, and stores a Varchar shorter than its
+    declared width as ``value bytes + space padding + length byte``.
+
+    This pass rewrites, per staged record:
+
+    - each text Varchar payload from its logical value (configured text
+      encoding, ``__dbfbridge_raw_text_fields__`` loss-aware bytes when
+      present) — short values carry the length byte, full-width values keep
+      all data bytes, NULLs stay blank;
+    - the ``_NullFlags`` bitmap bytes with the canonical
+      ``dbf_bridge.core.nullflags`` allocation.
+
+    It runs on the staging file only — before descriptor patching, layout
+    validation, fsync, and atomic publish — so a failure leaves no final
+    output and no partial residue.  Records are streamed via *records_factory*
+    (O(1)/O(batch) memory, no materialization).
+    """
+    if records_factory is None:
+        return
+    fields = list(schema["fields"])
+    layout: NullFlagsLayout | None = build_nullflags_layout(fields)
+    if layout is None:
+        return
+    expected_record = schema.get("dbf", {}).get("record_length_bytes")
+    expected_header = schema.get("dbf", {}).get("header_length_bytes")
+    varchar_specs: list[tuple[str, int, int, int]] = []
+    bitmap_offset: int | None = None
+    start = 1  # deletion marker precedes the first field
+    for field in fields:
+        name = str(field["name"])
+        width = int(field.get("length") or 0)
+        dbf_type = str(field.get("dbf_type"))
+        if dbf_type == "0":
+            bitmap_offset = start
+        elif dbf_type == "V":
+            bit = layout.varlength_bits.get(name)
+            if bit is None:  # pragma: no cover - the engine allocates it
+                raise ReconstructionError(
+                    f"Varchar field {name!r} has no varlength bit.",
+                    code=ErrorCode.WRITE_SCHEMA_INVALID,
+                    context={"field": name},
+                )
+            if int(field.get("flags") or 0) & 0x04:
+                raise ReconstructionError(
+                    f"Varchar field {name!r} is binary (NOCPTRANS); logical-layout repair "
+                    "supports text Varchar only — full-record mode with raw record images "
+                    "is required.",
+                    code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+                    context={"field": name, "dbf_type": "V"},
+                )
+            varchar_specs.append((name, width, start, bit))
+        start += width
+    if bitmap_offset is None:
+        if varchar_specs:  # pragma: no cover - V fields always imply a bitmap
+            raise ReconstructionError(
+                "Varchar fields require the _NullFlags system column declared by the schema.",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"varchar_fields": [spec[0] for spec in varchar_specs]},
+            )
+        return
+    if bitmap_offset + layout.byte_count > (int(expected_record) if expected_record else 0):
+        raise ReconstructionError(
+            "The generated table layout does not leave room for the canonical _NullFlags "
+            f"bitmap ({layout.byte_count} byte(s)); reconstruct with full-record mode "
+            "(raw record images) for this table.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"required_bytes": layout.byte_count},
+        )
+    with partial.open("r+b") as handle:
+        header = handle.read(DBF_HEADER_SIZE)
+        header_length, record_length = struct.unpack_from("<HH", header, 8)
+        record_count = struct.unpack_from("<I", header, 4)[0]
+        if expected_record is not None and record_length != int(expected_record):
+            raise ReconstructionError(
+                f"Generated table record length {record_length} does not match the schema "
+                f"{expected_record}; canonical Varchar layout repair requires the canonical "
+                "record layout (raw record images / full-record mode for non-standard "
+                "bitmap widths).",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"generated": record_length, "expected": int(expected_record)},
+            )
+        if expected_header is not None and header_length != int(expected_header):
+            raise ReconstructionError(
+                f"Generated table header length {header_length} does not match the schema "
+                f"{expected_header}; canonical Varchar layout repair requires the canonical "
+                "record layout.",
+                code=ErrorCode.WRITE_SCHEMA_INVALID,
+                context={"generated": header_length, "expected": int(expected_header)},
+            )
+        for record_index, record in enumerate(records_factory()):
+            if record_index >= record_count:
+                raise ReconstructionError(
+                    "Record stream is longer than the staged table during Varchar "
+                    "logical-layout repair.",
+                    code=ErrorCode.OPERATION_FAILED,
+                    context={"phase": "varchar_repair", "record_index": record_index},
+                )
+            base = header_length + record_index * record_length
+            null_names = nullable_null_fields(record, fields, layout)
+            raw_text = _raw_text_fields(record)
+            # Start from the exported source bitmap (canonical allocation) and
+            # only re-derive the Varchar varlength bits from the payloads
+            # written below; padding/unused bits keep the source form.
+            bitmap = _record_bitmap(record, layout)
+            for field_name, null_bit in layout.null_bits.items():
+                _set_bitmap_bit(bitmap, null_bit, value=field_name in null_names)
+            for name, width, offset, bit in varchar_specs:
+                if name in null_names:
+                    payload = b" " * width
+                    varlength_set = False
+                else:
+                    fallback = raw_text.get(name)
+                    value = record.get(name)
+                    encoded = (
+                        fallback
+                        if fallback is not None
+                        else (_encode_text(str(value), text_encodings) if value is not None else b"")
+                    )
+                    if len(encoded) > width:
+                        raise ReconstructionError(
+                            f"Varchar field {name!r} value exceeds its declared width "
+                            f"({len(encoded)} > {width}).",
+                            code=ErrorCode.WRITE_VALUE_INVALID,
+                            context={"field": name, "dbf_type": "V"},
+                        )
+                    if len(encoded) < width:
+                        payload = (
+                            encoded
+                            + b" " * (width - 1 - len(encoded))
+                            + len(encoded).to_bytes(1, "little")
+                        )
+                        varlength_set = True
+                    else:
+                        payload = encoded
+                        varlength_set = False
+                handle.seek(base + offset)
+                handle.write(payload)
+                _set_bitmap_bit(bitmap, bit, value=varlength_set)
+            handle.seek(base + bitmap_offset)
+            handle.write(bytes(bitmap))
+
+
+def restore_raw_layout(
+    destination: Path,
+    records: Iterable[Mapping[str, Any]],
+    schema: Mapping[str, Any],
+) -> bool:
+    """Restore exact DBF records and relocate generated memo blocks to original pointers.
+
+    Current JSONL exports carry the source record image.  Logical values still
+    drive validation and FPT generation; the raw image is applied only after
+    every record can be matched safely.
+    """
+
+    with destination.open("rb") as source_dbf:
+        header = source_dbf.read(DBF_HEADER_SIZE)
+    record_count = struct.unpack_from("<I", header, 4)[0]
+    header_length, record_length = struct.unpack_from("<HH", header, 8)
+    expected_count = schema.get("dbf", {}).get("record_count_from_header")
+    if expected_count is not None and int(expected_count) != record_count:
+        return False
+
+    dbf_partial = destination.with_name(f".{destination.name}.raw-layout.partial")
+    dbf_partial.unlink(missing_ok=True)
+    shutil.copyfile(destination, dbf_partial)
+
+    memo_fields = [field for field in schema.get("fields", []) if field.get("is_memo")]
+    fpt = memo_output_path(destination, schema)
+    fpt_partial = fpt.with_name(f".{fpt.name}.raw-layout.partial")
+    generated_fpt = fpt.open("rb") if memo_fields and fpt.is_file() else None
+    relocated_fpt = None
+    try:
+        if generated_fpt is not None:
+            fpt_partial.unlink(missing_ok=True)
+            relocated_fpt = fpt_partial.open("w+b")
+            source_size = int(schema.get("memo", {}).get("size_bytes") or 0)
+            if source_size:
+                relocated_fpt.truncate(source_size)
+            raw_header = schema.get("memo", {}).get("header_base64")
+            if raw_header:
+                memo_header = base64.b64decode(str(raw_header), validate=True)
+            else:
+                memo_header = generated_fpt.read(512)
+            relocated_fpt.seek(0)
+            relocated_fpt.write(memo_header[:512])
+
+        block_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
+        seen_records = 0
+        with dbf_partial.open("r+b") as rebuilt_dbf:
+            for record_index, record in enumerate(records):
+                encoded = record.get(RAW_RECORD_KEY)
+                if not isinstance(encoded, str):
+                    return False
+                try:
+                    raw_record = base64.b64decode(encoded, validate=True)
+                except ValueError as exc:
+                    raise ReconstructionError(
+                        f"Record {record_index + 1} has invalid raw DBF metadata."
+                    ) from exc
+                if len(raw_record) != record_length:
+                    raise ReconstructionError(
+                        f"Record {record_index + 1} raw length {len(raw_record)} does not match "
+                        f"DBF record length {record_length}."
+                    )
+                offset = header_length + record_index * record_length
+                rebuilt_dbf.seek(offset)
+                generated_record = rebuilt_dbf.read(record_length)
+                if len(generated_record) != record_length:
+                    raise ReconstructionError(
+                        f"Reconstructed DBF record {record_index + 1} is truncated."
+                    )
+                if generated_fpt is not None and relocated_fpt is not None:
+                    for field in memo_fields:
+                        address = int(field["address"])
+                        original_pointer = struct.unpack_from("<I", raw_record, address)[0]
+                        generated_pointer = struct.unpack_from("<I", generated_record, address)[0]
+                        _relocate_memo_block(
+                            generated_fpt,
+                            relocated_fpt,
+                            generated_pointer,
+                            original_pointer,
+                            block_size,
+                            record_index + 1,
+                            str(field["name"]),
+                        )
+                rebuilt_dbf.seek(offset)
+                rebuilt_dbf.write(raw_record)
+                seen_records += 1
+            if seen_records != record_count:
+                raise ReconstructionError(
+                    f"Raw record metadata count {seen_records} does not match DBF record count "
+                    f"{record_count}."
+                )
+            rebuilt_dbf.flush()
+            os.fsync(rebuilt_dbf.fileno())
+
+        if relocated_fpt is not None:
+            relocated_fpt.flush()
+            os.fsync(relocated_fpt.fileno())
+            relocated_fpt.close()
+            relocated_fpt = None
+            generated_fpt.close()
+            generated_fpt = None
+            os.replace(fpt_partial, fpt)
+        os.replace(dbf_partial, destination)
+        return True
+    finally:
+        if generated_fpt is not None:
+            generated_fpt.close()
+        if relocated_fpt is not None:
+            relocated_fpt.close()
+        dbf_partial.unlink(missing_ok=True)
+        fpt_partial.unlink(missing_ok=True)
+
+
+def _relocate_memo_block(
+    source: Any,
+    destination: Any,
+    generated_pointer: int,
+    original_pointer: int,
+    block_size: int,
+    record_number: int,
+    field_name: str,
+) -> None:
+    if generated_pointer == 0 and original_pointer == 0:
+        return
+    if generated_pointer == 0 or original_pointer == 0:
+        raise ReconstructionError(
+            f"Memo pointer presence differs at record {record_number}, field {field_name!r}."
+        )
+    source.seek(generated_pointer * block_size)
+    header = source.read(8)
+    if len(header) != 8:
+        raise ReconstructionError(
+            f"Generated memo block is truncated at record {record_number}, field {field_name!r}."
+        )
+    payload_length = struct.unpack_from(">I", header, 4)[0]
+    source.seek(generated_pointer * block_size)
+    block = source.read(8 + payload_length)
+    if len(block) != 8 + payload_length:
+        raise ReconstructionError(
+            f"Generated memo payload is truncated at record {record_number}, "
+            f"field {field_name!r}."
+        )
+    destination.seek(original_pointer * block_size)
+    destination.write(block)
+
+
+def memo_output_path(destination: Path, schema: Mapping[str, Any]) -> Path:
+    memo_name = schema.get("memo", {}).get("path")
+    return destination.with_name(str(memo_name)) if memo_name else destination.with_suffix(".fpt")
+
+
+def _field_spec(field: Mapping[str, Any]) -> str:
+    name = str(field["name"])
+    original_type = str(field["dbf_type"])
+    dbf_type = TYPE_ALIASES.get(original_type, original_type)
+    length = int(field.get("length") or 0)
+    decimals = int(field.get("decimal_count") or 0)
+    flags = int(field.get("flags") or 0)
+    if dbf_type == "C":
+        spec = f"{name} C({length})"
+    elif dbf_type in {"N", "F"}:
+        spec = f"{name} {dbf_type}({length},{decimals})"
+    elif dbf_type in {"L", "D", "T", "M", "G", "P", "B", "I", "Y"}:
+        spec = f"{name} {dbf_type}"
+    else:
+        raise ReconstructionError(
+            f"Cannot build field {name!r} of type {original_type!r}.",
+            code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+            context={"field": name, "dbf_type": original_type},
+        )
+    # ``V`` fields always consume a varlength bit in the canonical VFP
+    # ``_NullFlags`` contract (even when not NULLable) — declaring them NULL
+    # makes the writer's bitmap exactly one bit wide per canonical bit.
+    if (flags & 0x02) or original_type == "V":
+        spec += " NULL"
+    # Build every M field as binary internally.  VFP permits text and binary
+    # memo blocks in the same field; after writing, the original descriptor
+    # flags and the per-block content types are restored.
+    if (flags & 0x04 and dbf_type in {"C", "M"}) or dbf_type in {"C", "M"}:
+        spec += " BINARY"
+    return spec
+
+
+def _coerce_value(
+    value: Any,
+    field: Mapping[str, Any],
+    *,
+    text_encodings: list[str],
+    binary_memo: bool,
+    raw_text: bytes | None,
+) -> Any:
+    if value is None:
+        return None
+    name = str(field["name"])
+    dbf_type = str(field["dbf_type"])
+    try:
+        if dbf_type in {"C", "V"}:
+            return raw_text if raw_text is not None else _encode_text(str(value), text_encodings)
+        if dbf_type in {"N", "F", "Y"}:
+            return Decimal(str(value))
+        if dbf_type in {"I", "+"}:
+            return int(Decimal(str(value)))
+        if dbf_type in {"B", "O"} and not field.get("is_memo"):
+            return float(value)
+        if dbf_type == "L":
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"true", "t", "yes", "y", "1"}:
+                    return True
+                if lowered in {"false", "f", "no", "n", "0"}:
+                    return False
+                if lowered in {"", "?", "null", "none"}:
+                    return None
+                raise ValueError(f"invalid logical value {value!r}")
+            return bool(value)
+        if dbf_type == "D":
+            return (
+                value.date()
+                if isinstance(value, datetime)
+                else (
+                    value
+                    if isinstance(value, date)
+                    else parse_iso_date(str(value))
+                )
+            )
+        if dbf_type in {"T", "@"}:
+            return value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if field.get("is_binary") or dbf_type in {"G", "P"} or binary_memo:
+            return (
+                value if isinstance(value, bytes) else base64.b64decode(str(value), validate=True)
+            )
+        if dbf_type == "M":
+            return raw_text if raw_text is not None else _encode_text(str(value), text_encodings)
+    except (ValueError, TypeError) as exc:
+        raise ReconstructionError(
+            f"Cannot convert field {name!r} ({dbf_type}) value {value!r}: {exc}",
+            code=ErrorCode.WRITE_VALUE_INVALID,
+            context={"field": name, "dbf_type": dbf_type},
+        ) from exc
+    raise ReconstructionError(
+        f"Unsupported field {name!r} of type {dbf_type!r}.",
+        code=ErrorCode.WRITE_FIELD_UNSUPPORTED,
+        context={"field": name, "dbf_type": dbf_type},
+    )
+
+
+def _patch_dbf_metadata(
+    path: Path,
+    schema: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+) -> None:
+    dbf_info = schema.get("dbf", {})
+    version = _hex_byte(dbf_info.get("version_byte"), default=0x30)
+    language_driver = _hex_byte(dbf_info.get("language_driver"), default=0x03)
+    last_update = dbf_info.get("last_update")
+    with path.open("r+b") as outfile:
+        header = bytearray(outfile.read(DBF_HEADER_SIZE))
+        if len(header) != DBF_HEADER_SIZE:
+            raise ReconstructionError("Reconstructed DBF header is truncated.")
+        raw_header = dbf_info.get("header_base64")
+        if raw_header:
+            original = base64.b64decode(str(raw_header), validate=True)
+            generated_record_count = bytes(header[4:8])
+            generated_layout = bytes(header[8:12])
+            # New schemas contain the complete header region.  If the input
+            # record count and layout are unchanged, restore it verbatim,
+            # including VFP reserved bytes/backlink and the CDX flag.
+            if (
+                len(original) > DBF_HEADER_SIZE
+                and len(original) == struct.unpack_from("<H", header, 8)[0]
+                and original[4:8] == generated_record_count
+                and original[8:12] == generated_layout
+            ):
+                outfile.seek(0)
+                outfile.write(original)
+                header[:] = original[:DBF_HEADER_SIZE]
+            elif len(original) >= DBF_HEADER_SIZE:
+                header[0:4] = original[0:4]
+                header[12:32] = original[12:32]
+        else:
+            header[0] = version
+            if last_update:
+                parsed = date.fromisoformat(str(last_update))
+                header[1] = parsed.year - 1900
+                header[2:4] = bytes((parsed.month, parsed.day))
+        header[29] = language_driver
+        outfile.seek(0)
+        outfile.write(header)
+
+        for index, field in enumerate(fields):
+            descriptor_offset = DBF_HEADER_SIZE + index * FIELD_DESCRIPTOR_SIZE
+            outfile.seek(descriptor_offset)
+            descriptor = bytearray(outfile.read(FIELD_DESCRIPTOR_SIZE))
+            if len(descriptor) != FIELD_DESCRIPTOR_SIZE:
+                raise ReconstructionError(f"Field descriptor {index + 1} is truncated.")
+            raw_descriptor = field.get("descriptor_base64")
+            if raw_descriptor:
+                original = base64.b64decode(str(raw_descriptor), validate=True)
+                if len(original) == FIELD_DESCRIPTOR_SIZE:
+                    descriptor[:] = original
+            else:
+                original_type = str(field["dbf_type"])
+                descriptor[11] = ord(original_type)
+                descriptor[18] = int(field.get("flags") or 0)
+                descriptor[31] = int(field.get("index_field_flag") or 0)
+            outfile.seek(descriptor_offset)
+            outfile.write(descriptor)
+        outfile.flush()
+        os.fsync(outfile.fileno())
+
+
+def _patch_fpt_metadata(path: Path, schema: Mapping[str, Any]) -> None:
+    raw_header = schema.get("memo", {}).get("header_base64")
+    if not raw_header:
+        return
+    original = base64.b64decode(str(raw_header), validate=True)
+    if len(original) < 512:
+        return
+    with path.open("r+b") as outfile:
+        generated = bytearray(outfile.read(512))
+        if len(generated) < 512:
+            raise ReconstructionError("Reconstructed FPT header is truncated.")
+        generated[4:6] = original[4:6]
+        generated[8:512] = original[8:512]
+        outfile.seek(0)
+        outfile.write(generated)
+        outfile.flush()
+        os.fsync(outfile.fileno())
+
+
+def _generated_record_offsets(dbf_path: Path, header_length: int) -> dict[str, int]:
+    """Field name -> in-record offset, from the GENERATED DBF's own descriptors.
+
+    The memo-pointer patching must look where the writer library actually put
+    each pointer: the staged table's own field descriptors carry the true
+    displacement values.  A caller-supplied schema ``address`` describes the
+    SOURCE layout (or, for a hand-built Direct Write schema, may be a
+    placeholder such as 0) — trusting it made a ``G``-field patch read a
+    Character payload as the block pointer and ``seek()`` the FPT far beyond
+    its end, extending the memo file to tens of gigabytes (ENOSPC on
+    space-limited volumes).
+    """
+    offsets: dict[str, int] = {}
+    with dbf_path.open("rb") as handle:
+        position = DBF_HEADER_SIZE
+        while position + FIELD_DESCRIPTOR_SIZE <= header_length:
+            handle.seek(position)
+            descriptor = handle.read(FIELD_DESCRIPTOR_SIZE)
+            if len(descriptor) < FIELD_DESCRIPTOR_SIZE or descriptor[0] == 0x0D:
+                break
+            name = (
+                descriptor[:11].split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
+            )
+            if name:
+                offsets[name.casefold()] = struct.unpack_from("<I", descriptor, 12)[0]
+            position += FIELD_DESCRIPTOR_SIZE
+    return offsets
+
+
+def _patch_fpt_block_types(
+    dbf_path: Path,
+    fpt_path: Path,
+    schema: Mapping[str, Any],
+    fields: list[Mapping[str, Any]],
+    block_overrides: list[tuple[int, str, int]],
+) -> None:
+    binary_memos = [
+        field
+        for field in fields
+        if field.get("is_memo") and (field.get("is_binary") or field.get("dbf_type") in {"G", "P"})
+    ]
+    if not binary_memos and not block_overrides:
+        return
+    fields_by_name = {str(field["name"]): field for field in fields}
+    overrides_by_record: dict[int, list[tuple[Mapping[str, Any], int]]] = {}
+    for record_index, field_name, block_type in block_overrides:
+        field = fields_by_name.get(field_name)
+        if field is not None:
+            overrides_by_record.setdefault(record_index, []).append((field, block_type))
+    block_size = int(schema.get("memo", {}).get("block_size_bytes") or 64)
+    with dbf_path.open("rb") as dbf_file, fpt_path.open("r+b") as fpt_file:
+        header = dbf_file.read(DBF_HEADER_SIZE)
+        record_count = struct.unpack_from("<I", header, 4)[0]
+        header_length, record_length = struct.unpack_from("<HH", header, 8)
+        record_offsets = _generated_record_offsets(dbf_path, header_length)
+        for record_index in range(record_count):
+            record_offset = header_length + record_index * record_length
+            patches = [(field, 2 if field.get("dbf_type") == "G" else 0) for field in binary_memos]
+            patches.extend(overrides_by_record.get(record_index, []))
+            for field, block_type in patches:
+                in_record = record_offsets.get(
+                    str(field["name"]).casefold(), int(field["address"])
+                )
+                dbf_file.seek(record_offset + in_record)
+                pointer_data = dbf_file.read(4)
+                if len(pointer_data) != 4:
+                    raise ReconstructionError(
+                        "Memo pointer is truncated.",
+                        code=ErrorCode.WRITE_MEMO_FAILED,
+                        context={"phase": "memo_block_types"},
+                    )
+                block = struct.unpack("<I", pointer_data)[0]
+                if block == 0:
+                    continue
+                fpt_file.seek(block * block_size)
+                fpt_file.write(struct.pack(">I", block_type))
+        fpt_file.flush()
+        os.fsync(fpt_file.fileno())
+
+
+def _validate_layout(path: Path, schema: Mapping[str, Any]) -> None:
+    with path.open("rb") as infile:
+        header = infile.read(DBF_HEADER_SIZE)
+    header_length, record_length = struct.unpack_from("<HH", header, 8)
+    expected_header = schema.get("dbf", {}).get("header_length_bytes")
+    expected_record = schema.get("dbf", {}).get("record_length_bytes")
+    if expected_header is not None and header_length != int(expected_header):
+        raise ReconstructionError(
+            f"Header length mismatch: reconstructed {header_length}, schema {expected_header}.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"generated": header_length, "expected": int(expected_header)},
+        )
+    if expected_record is not None and record_length != int(expected_record):
+        raise ReconstructionError(
+            f"Record length mismatch: reconstructed {record_length}, schema {expected_record}.",
+            code=ErrorCode.WRITE_SCHEMA_INVALID,
+            context={"generated": record_length, "expected": int(expected_record)},
+        )
+
+
+def _hex_byte(value: Any, *, default: int) -> int:
+    if value is None:
+        return default
+    return int(str(value), 16) if isinstance(value, str) else int(value)
+
+
+def _binary_memo_fields(record: Mapping[str, Any]) -> set[str]:
+    value = record.get(BINARY_MEMO_FIELDS_KEY)
+    if not isinstance(value, list):
+        return set()
+    return {str(name) for name in value}
+
+
+def _raw_text_fields(record: Mapping[str, Any]) -> dict[str, bytes]:
+    value = record.get(RAW_TEXT_FIELDS_KEY)
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, bytes] = {}
+    for name, encoded in value.items():
+        try:
+            result[str(name)] = base64.b64decode(str(encoded), validate=True)
+        except ValueError as exc:
+            raise ReconstructionError(f"Invalid raw text metadata for field {name!r}.") from exc
+    return result
+
+
+def _text_encodings(schema: Mapping[str, Any]) -> list[str]:
+    text = schema.get("text_encoding", {})
+    candidates = [
+        text.get("declared_or_detected_encoding"),
+        *(text.get("fallback_order") or []),
+    ]
+    return list(dict.fromkeys(str(item) for item in candidates if item)) or ["cp1250"]
+
+
+def _encode_text(value: str, encodings: list[str]) -> bytes:
+    errors: list[str] = []
+    for encoding in encodings:
+        try:
+            return value.encode(encoding, errors="strict")
+        except (UnicodeEncodeError, LookupError) as exc:
+            errors.append(f"{encoding}: {exc}")
+    raise ReconstructionError(
+        "Text memo cannot be encoded with any encoding declared by the schema: " + "; ".join(errors)
+    )
+
+
+def _install_lossless_numeric_writer(table: Any) -> None:
+    """Accept FoxPro numeric forms such as ``-.25`` in narrow N/F fields."""
+
+    for field_type, definition in table._meta.fieldtypes.items():
+        raw_type = getattr(field_type, "value", field_type)
+        if raw_type not in {ord("N"), ord("F"), b"N", b"F"}:
+            continue
+        definition["Update"] = _update_numeric
+
+
+def _update_numeric(value: Any, fielddef: Any, *_ignore: Any) -> bytes:
+    length = int(fielddef[2])
+    decimals = int(fielddef[4])
+    if value is None:
+        return b" " * length
+    try:
+        number = Decimal(str(value))
+        quantum = Decimal(1).scaleb(-decimals)
+        rendered = format(number.quantize(quantum), f".{decimals}f")
+    except (InvalidOperation, ValueError) as exc:
+        raise ReconstructionError(f"Invalid numeric value {value!r}: {exc}") from exc
+    if len(rendered) > length and rendered.startswith("0."):
+        rendered = rendered[1:]
+    elif len(rendered) > length and rendered.startswith("-0."):
+        rendered = "-." + rendered[3:]
+    if len(rendered) > length:
+        # FoxPro accepts scientific notation in narrow N/F fields.  Real VFP
+        # tables use this for values such as 9,000,000,000 in F(6,1).
+        for precision in range(decimals, -1, -1):
+            scientific = format(number, f".{precision}E")
+            if len(scientific) <= length:
+                rendered = scientific
+                break
+    if len(rendered) > length:
+        raise ReconstructionError(f"Numeric value {value!r} does not fit N/F({length},{decimals}).")
+    return rendered.rjust(length).encode("ascii")
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb+") as handle:
+        os.fsync(handle.fileno())
