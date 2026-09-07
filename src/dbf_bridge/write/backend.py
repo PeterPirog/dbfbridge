@@ -303,7 +303,11 @@ def _volume_device(path: Path) -> tuple[int | None, Path]:
     probe = Path(path)
     while True:
         try:
-            return probe.stat().st_dev, probe
+            # ``os.stat`` directly (not ``Path.stat``): Python 3.10 resolves
+            # ``Path.stat`` through a class-level accessor captured at import
+            # time, so a test double patched into ``os.stat`` must still be
+            # observable here on every supported interpreter.
+            return os.stat(probe).st_dev, probe
         except OSError:
             parent = probe.parent
             if parent == probe:
