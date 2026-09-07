@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..common import sha256_file as sha256_file  # noqa: F401 - neutral shared primitive (re-export)
 from .models import ExportFormat, FieldMetadata, StreamStats
 
 
@@ -111,14 +112,6 @@ def validate_output(
         result.errors.append("MEMO hashes differ after parsing the output file.")
 
     return result
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as infile:
-        for chunk in iter(lambda: infile.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _parse_jsonl(path: Path, fields: list[FieldMetadata]) -> ValidationResult:
