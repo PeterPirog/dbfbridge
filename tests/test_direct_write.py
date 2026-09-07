@@ -1324,6 +1324,37 @@ def test_structural_cdx_is_reported_as_rebuild_required(tmp_path: Path) -> None:
     assert not (tmp_path / "cdx.cdx").exists()
 
 
+def test_structural_cdx_warning_is_single_source_and_truthful(tmp_path: Path) -> None:
+    """DBFB-WRITE-005 / DBFB-CDX-002..004 / DBFB-DOC-002: the ONE authoritative
+    structural-CDX warning states the limitation and the external rebuild
+    requirement WITHOUT any byte/binary-identity claim, and Direct Write does
+    not append a second, overlapping CDX warning.
+
+    Regression written RED: the shared backend warning used to say the
+    structural-index flag is "preserved for binary identity" — a promise
+    Direct Write does not make."""
+    schema = _schema(_PLAIN_FIELDS, has_structural_cdx=True)
+    result = write_table(tmp_path / "cdx.dbf", schema=schema, records=_plain_records())
+    assert result.structural_cdx is True
+    assert result.index_rebuild_required is True
+    assert result.warnings, "the CDX limitation must be explicit in the result"
+    lowered = " ".join(result.warnings).casefold()
+    # Semantic tokens, not frozen prose: limitation + external rebuild.
+    assert "structural cdx" in lowered
+    assert "rebuilt externally" in lowered
+    # No identity claim of any kind.
+    assert "binary identity" not in lowered
+    assert "byte identity" not in lowered
+    assert "identity" not in lowered
+    # No CDX file was created, copied or fabricated.
+    assert not (tmp_path / "cdx.cdx").exists()
+    # ONE warning source: exactly one CDX warning reaches the result.
+    cdx_warnings = [
+        warning for warning in result.warnings if "cdx" in warning.casefold()
+    ]
+    assert len(cdx_warnings) == 1
+
+
 def test_dbc_bound_is_truthful_with_warning(tmp_path: Path) -> None:
     schema = _schema(_PLAIN_FIELDS, dbc_bound=True, is_database_container=True)
     result = write_table(tmp_path / "dbc.dbf", schema=schema, records=_plain_records())

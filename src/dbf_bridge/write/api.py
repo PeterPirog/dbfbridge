@@ -285,12 +285,12 @@ def write_table(
             spool.discard()
 
     warnings = list(backend_warnings)
-    if schema.has_structural_cdx:
-        warnings.append(
-            "The schema references a structural CDX index; the DBF/FPT pair was written "
-            "without the companion .cdx — index tags must be rebuilt externally before "
-            "use."
-        )
+    # The structural-CDX limitation is reported by the ONE authoritative
+    # shared-writer warning (``write.backend.STRUCTURAL_CDX_WARNING``, emitted
+    # whenever the mapped schema carries the structural-index flag — always
+    # the case here because ``schema_to_mapping`` derives it from
+    # ``has_structural_cdx``).  Direct Write CONSUMES that warning and adds no
+    # second, divergent CDX wording (DBFB-CDX-002 / DBFB-WRITE-005).
     if schema.dbc_bound:
         warnings.append(
             "The source table was bound to a database container; the written table is "
