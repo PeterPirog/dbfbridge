@@ -431,6 +431,13 @@ def test_binary_memo_bytes_round_trip(tmp_path: Path) -> None:
     )
     page = read_records(destination, memo="inline")
     assert page.records[0].values["PICTURE"] == payload
+    # Regression (CI ENOSPC): the block-type patch used to read a
+    # Character payload as the memo block pointer when the supplied schema
+    # carried placeholder addresses, `seek()`ing the FPT ~34 GB past its end
+    # (real allocation on NTFS, sparse on ext4).  The patcher must use the
+    # generated table's OWN descriptor offsets.
+    fpt = destination.with_suffix(".fpt")
+    assert fpt.stat().st_size < 1_000_000, fpt.stat().st_size
 
 
 def test_lazy_memo_value_resolved_only_explicitly(tmp_path: Path) -> None:
