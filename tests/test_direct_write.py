@@ -670,17 +670,22 @@ def test_handled_publication_failure_restores_the_previous_pair(
     assert list(tmp_path.glob("*.publish-backup*")) == []
 
 
+@pytest.mark.parametrize("suffix", [".dbf", ".fpt"])
 def test_fsync_failure_before_publication_leaves_old_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     published_pair: tuple[Path, TableSchema, str],
+    suffix: str,
 ) -> None:
+    """Inject a fsync failure on the DBF and on the FPT staging file: a
+    pre-publication failure is a typed destination I/O error and neither the
+    previous pair nor the residue state is disturbed."""
     destination, schema, original_sha = published_pair
     original = write_backend._fsync_file
 
     def _boom(path: Any) -> None:
-        if path.suffix == ".dbf":
-            raise OSError("injected fsync failure")
+        if path.suffix == suffix:
+            raise OSError(f"injected fsync failure ({suffix})")
         original(path)
 
     monkeypatch.setattr(write_backend, "_fsync_file", _boom)
@@ -898,6 +903,38 @@ def test_round_trip_varchar_nullflags_and_nulls(tmp_path: Path) -> None:
     destination = tmp_path / "v-copy.dbf"
     write_table(destination, schema=schema, records=records)
     _assert_canonical_equivalence(source, destination, include_deleted=False)
+
+
+@pytest.mark.parametrize(
+    ("codepage", "encoding"),
+    [(0xC8, "cp1250"), (0x23, "cp852"), (0x69, "mazovia")],
+)
+def test_round_trip_polish_codepages_with_varchar_and_nulls(
+    tmp_path: Path, codepage: int, encoding: str
+) -> None:
+    """Canonical Direct Read -> Direct Write -> Direct Read equivalence for
+    the supported Polish codepages (cp1250, cp852, Mazovia/PIAST) including
+    Varchar, NULL and deleted markers (DBFB-VFP-002/005)."""
+    source = tmp_path / f"cp-{codepage:x}.dbf"
+    polish = "Żółw ąęł" if codepage == 0x69 else "Żółw ąę łó Ńź"
+    build_vfp32_table(
+        source,
+        columns=[
+            {"name": "TXT", "type": "V", "width": 24, "nullable": True},
+            {"name": "NOTKA", "type": "C", "width": 12, "nullable": True},
+        ],
+        rows=[
+            {"TXT": polish, "NOTKA": None},
+            {"TXT": None, "NOTKA": "ąę łó"},
+        ],
+        codepage=codepage,
+    )
+    schema = read_schema(source)
+    assert schema.language_driver == codepage
+    records = list(iter_records(source, include_deleted=True))
+    destination = tmp_path / f"cp-{codepage:x}-copy.dbf"
+    write_table(destination, schema=schema, records=records)
+    _assert_canonical_equivalence(source, destination, include_deleted=True)
 
 
 def test_round_trip_deleted_physical_order_with_varchar(tmp_path: Path) -> None:
