@@ -240,22 +240,74 @@ def test_rss_provenance_fields_are_recorded(tmp_path: Path) -> None:
             assert delta is None
 
 
-def test_memory_comparison_reports_measured_facts(tmp_path: Path) -> None:
+def test_memory_comparison_reports_measured_facts_only(tmp_path: Path) -> None:
+    """F1-BLK-06: the comparison reports measured FACTS with a NEUTRAL
+    assessment — no invented numeric threshold and no automatic DBFB-PERF-004
+    pass/fail policy in the benchmark evidence."""
     counts = dict(_tiny_counts())
     payload = profile.build_artifact("smoke", counts, tmp_path)
     comparison = payload["w1_w3_comparison"]
     for key in (
-        "w1_record_count", "w1_peak_rss_bytes", "w1_peak_rss_delta_bytes",
-        "w3_record_count", "w3_peak_rss_bytes", "w3_peak_rss_delta_bytes",
-        "record_count_ratio", "peak_rss_delta_ratio", "conclusion",
+        "w1_record_count", "w1_rss_before_bytes", "w1_peak_rss_bytes",
+        "w1_peak_rss_delta_bytes",
+        "w3_record_count", "w3_rss_before_bytes", "w3_peak_rss_bytes",
+        "w3_peak_rss_delta_bytes",
+        "record_count_ratio", "peak_rss_delta_ratio", "assessment",
     ):
         assert key in comparison, key
-    assert comparison["conclusion"] in {
-        "NO_INPUT_MATERIALIZATION_EVIDENCE",
-        "INCONCLUSIVE",
-        "NOT_AVAILABLE",
-        "POTENTIAL_DBFB_PERF_004_BLOCKER",
-    }
+    assert comparison["assessment"] == "MEASURED_FACTS_ONLY"
+    assert "conclusion" not in comparison
+    lowered_note = comparison["note"].casefold()
+    assert "no repository regression threshold" in lowered_note
+    assert "automatic" in lowered_note
+    assert "pass/fail policy" in lowered_note
+    # descriptive normalization is labelled, not interpreted
+    assert (
+        comparison["w1_peak_rss_delta_bytes_per_input_record"]
+        == round(comparison["w1_peak_rss_delta_bytes"] / comparison["w1_record_count"], 4)
+    )
+
+
+def test_memory_comparison_contains_no_threshold_policy() -> None:
+    """AST/source regression: the W1/W3 comparison logic must stay
+    measurement infrastructure — no architecture-policy threshold constants
+    and no automatic verdict categories (DBFB-PERF-006)."""
+    source = (ROOT / "benchmarks" / "direct_write_profile.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_memory_comparison"
+    )
+    for node in ast.walk(function):
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)):
+            continue
+        if isinstance(node.left, ast.Constant):
+            assert node.left.value != 0.8, (
+                "invented RSS ratio threshold policy reintroduced"
+            )
+        if isinstance(node, ast.Compare):
+            for comparator in node.comparators:
+                if isinstance(comparator, ast.Constant) and comparator.value == 0.5:
+                    raise AssertionError("threshold constant 0.5 reintroduced")
+    lowered = source.casefold()
+    for policy_name in (
+        "potential_dbfb_perf_004_blocker",
+        "inconclusive",
+        "no_input_materialization_evidence",
+    ):
+        assert policy_name not in lowered, policy_name
+    # the validator never gates on RSS ratios
+    validator = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "validate_artifact"
+    )
+    validator_source = ast.get_source_segment(source, validator) or ""
+    assert "peak_rss_delta_ratio" not in validator_source
+    assert "record_count_ratio" not in validator_source
 
 
 # ---------------------------------------------------------------------------
