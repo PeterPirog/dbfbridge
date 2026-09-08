@@ -204,36 +204,43 @@ def test_w10_uses_the_varchar_nullflags_replay_path(tmp_path: Path) -> None:
 # historical baselines are immutable (DBFB-PERF-005)
 # ---------------------------------------------------------------------------
 
-#: SHA-256 of every tracked historical baseline file, frozen at the approved
-#: main lineage.  ANY modification to a Phase 0/1/3 baseline artifact breaks
-#: this test — hermetic (no git refs needed, CI shallow-checkout safe).
-_FROZEN_BASELINE_SHA256 = {
-    "phase-0-full.json": "d3b5ab454706b5e7085811c49fc06f8a421f127498695ae1178a1efc07453aa6",
-    "phase-0-full.md": "137ade61b31b1be2638a9fb081bf61097e78c04b9bc2860df48f6114f06eff0c",
-    "phase-0-vs-phase-1.json": "a1756cf132699c1f015c4eb868d64a39cc16bc6e611af6a41f3fc3bc5e7d6fd0",
-    "phase-0-vs-phase-1.md": "f2ee948e324cf167ea30a2943c771c4228f628d69b919dffd73b6eb7b2196264",
-    "phase-1-direct-read-full.json": "e13015eb49d30444f26c47bafd6619d09e5ed710b75b08246bd8e19137710709",
-    "phase-1-direct-read-full.manifest.json": "3e33ad6ddef94a35d67e1ea9972514e6fc8ec840d4075cf5332348917f895b5d",
-    "phase-1-direct-read-full.md": "4df6a4d24497e9fbaf132cd4e60728940ee065ea099f5af7f7de51d405e0b033",
-    "phase-3-performance-full.json": "88fcf32ed88e3e3ff32648f502772eda17f54b7e3347eb24af460af8ff105551",
-    "phase-3-performance-full.manifest.json": "6bf11efeab53053ef510ac60e66f3e7cbdfe9a80b50a0adab895b8cb15466012",
-    "phase-3-performance-full.md": "66b8a151a68a57614251cd96e7514f819ea727ba5f02bf0a24b4fc6d0eb6cf97",
+#: Git blob SHAs of every tracked historical baseline file at the approved
+#: main lineage (``git ls-tree -r HEAD -- benchmarks/baselines``).  ANY
+#: modification committed to a Phase 0/1/3 baseline artifact breaks this
+#: test — hermetic (needs only HEAD, CI shallow-checkout safe, immune to
+#: working-tree line-ending conversion).
+_FROZEN_BASELINE_BLOBS = {
+    "phase-0-full.json": "654452b139cf1e7d458efbe49952831aa7337e1a",
+    "phase-0-full.md": "140b209188cf4005874e0e78e9657bf354909b24",
+    "phase-0-vs-phase-1.json": "716a55ec5c4cbb440ba954c6df4b1c8abd5e6d8e",
+    "phase-0-vs-phase-1.md": "87f61eff092858bc4bbb2bce7aff4083fca9ac4e",
+    "phase-1-direct-read-full.json": "f1f69601d5aa1295feb2a47dac7dd632e6af7926",
+    "phase-1-direct-read-full.manifest.json": "b1e92dfe4ad76fe20c2896c08a9abbae63c5a696",
+    "phase-1-direct-read-full.md": "a7d3162c249db5af156d32a6e9e9f42872ca828f",
+    "phase-3-performance-full.json": "2e579e31b0bdcd16d0e8f5cd4667a945cca85b37",
+    "phase-3-performance-full.manifest.json": "4bd29f809a8f8500123023225641ba8d956de0b2",
+    "phase-3-performance-full.md": "937bad8b873991a015707e37e2ce26c83c86bf7e",
 }
 
 
 def test_historical_phase_baselines_are_byte_for_byte_unchanged() -> None:
-    import hashlib
-
     dirty = subprocess.run(
         ["git", "status", "--porcelain", "benchmarks/baselines"],
         cwd=ROOT, capture_output=True, text=True,
     ).stdout
     assert dirty == "", dirty
-    tracked: dict[str, str] = {}
-    for path in sorted((ROOT / "benchmarks" / "baselines").glob("*")):
-        if path.is_file() and path.name != ".gitkeep":
-            tracked[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    assert tracked == _FROZEN_BASELINE_SHA256, (
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "HEAD", "--", "benchmarks/baselines"],
+        cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout
+    committed: dict[str, str] = {}
+    for line in listing.splitlines():
+        meta, name = line.split("\t", 1)
+        _mode, _kind, blob = meta.split()
+        if name.endswith(".gitkeep"):
+            continue
+        committed[name.removeprefix("benchmarks/baselines/")] = blob
+    assert committed == _FROZEN_BASELINE_BLOBS, (
         "historical Phase 0/1/3 baselines were modified"
     )
 
