@@ -728,18 +728,14 @@ def _scenario_w12(output_dir: Path, staging: Path, count: int) -> dict[str, Any]
 
 
 def _memory_comparison(rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Evidence-limited W1-vs-W3 memory interpretation (DBFB-PERF-004).
+    """Measured W1-vs-W3 memory FACTS (DBFB-PERF-004).
 
-    The reported facts are the measured counts, RSS baselines, peaks and
-    retained deltas.  Materializing the input records would make the
-    retained delta grow ~linearly with the record count, i.e.
-    ``peak_rss_delta_ratio`` would approach ``record_count_ratio``.  The
-    classification rule is transparent and evidence-derived:
-
-    - ``peak_rss_delta_ratio >= 0.8 * record_count_ratio`` ->
-      ``POTENTIAL_DBFB_PERF_004_BLOCKER`` (reported, never hidden);
-    - ``>= 0.5`` -> ``INCONCLUSIVE``;
-    - below -> ``NO_INPUT_MATERIALIZATION_EVIDENCE``.
+    The benchmark is MEASUREMENT infrastructure, not architecture policy:
+    it reports the measured counts, RSS baselines, peaks, deltas and their
+    descriptive ratios — and NOTHING else.  No numeric pass/fail threshold
+    and no automatic DBFB-PERF-004 verdict is established here; the
+    independent architect determines acceptance from these facts plus the
+    source-level streaming evidence.
     """
     w1 = rows[SCENARIO_W1]
     w3 = rows[SCENARIO_W3]
@@ -755,6 +751,11 @@ def _memory_comparison(rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "w3_rss_before_bytes": w3.get("rss_before_bytes"),
         "w3_peak_rss_bytes": w3.get("peak_rss_bytes"),
         "w3_peak_rss_delta_bytes": w3.get("peak_rss_delta_bytes"),
+        # Descriptive normalization ONLY: process RSS does not directly prove
+        # per-record retention semantics, so these values are labelled as
+        # measured deltas divided by the input record count.
+        "w1_peak_rss_delta_bytes_per_input_record": None,
+        "w3_peak_rss_delta_bytes_per_input_record": None,
     }
     w1_count = w1.get("record_count") or 0
     w3_count = w3.get("record_count") or 0
@@ -767,22 +768,22 @@ def _memory_comparison(rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if isinstance(w1_peak, int) and w1_peak > 0 and isinstance(w3_peak, int):
             facts["peak_rss_ratio"] = round(w3_peak / w1_peak, 4)
         facts["peak_rss_delta_ratio"] = round(w3_delta / w1_delta, 4) if w1_delta > 0 else None
-        delta_ratio = facts.get("peak_rss_delta_ratio")
-        record_ratio = facts["record_count_ratio"]
-        if delta_ratio is None:
-            facts["conclusion"] = "NOT_AVAILABLE"
-        elif delta_ratio >= 0.8 * record_ratio:
-            facts["conclusion"] = "POTENTIAL_DBFB_PERF_004_BLOCKER"
-        elif delta_ratio >= 0.5:
-            facts["conclusion"] = "INCONCLUSIVE"
-        else:
-            facts["conclusion"] = "NO_INPUT_MATERIALIZATION_EVIDENCE"
+        facts["w1_peak_rss_delta_bytes_per_input_record"] = round(
+            w1_delta / w1_count, 4
+        )
+        facts["w3_peak_rss_delta_bytes_per_input_record"] = round(
+            w3_delta / w3_count, 4
+        )
     else:
-        facts["conclusion"] = "NOT_AVAILABLE"
+        facts["record_count_ratio"] = None
+        facts["peak_rss_ratio"] = None
+        facts["peak_rss_delta_ratio"] = None
+    facts["assessment"] = "MEASURED_FACTS_ONLY"
     facts["note"] = (
-        "The conclusion is derived from the two measured points plus the "
-        "source-level proof that the input is a one-shot generator; no O(1) "
-        "memory claim is made."
+        "The benchmark reports measured RSS facts and source-level streaming "
+        "evidence.  No repository regression threshold or automatic "
+        "DBFB-PERF-004 pass/fail policy is established by this first "
+        "measured profile."
     )
     return facts
 
@@ -915,7 +916,7 @@ def markdown_summary(payload: dict[str, Any]) -> str:
     comparison = payload.get("w1_w3_comparison") or {}
     lines += [
         "",
-        f"Memory comparison ({comparison.get('conclusion')}): "
+        f"Memory facts (assessment: {comparison.get('assessment')}): "
         f"record ratio {comparison.get('record_count_ratio')} · "
         f"peak RSS ratio {comparison.get('peak_rss_ratio')} · "
         f"peak Δ ratio {comparison.get('peak_rss_delta_ratio')}.",
@@ -923,7 +924,8 @@ def markdown_summary(payload: dict[str, Any]) -> str:
         "W12 is functional cleanup evidence (`functional_cleanup`), not a "
         "throughput claim.  `intermediate_jsonl_bytes` is 0 for every "
         "scenario.  These are MEASURED EVIDENCE, not a regression baseline "
-        "and not an optimization claim.",
+        "and not an optimization claim.  No Direct Write RSS regression "
+        "threshold has been established by this first measured profile.",
     ]
     return "\n".join(lines) + "\n"
 
