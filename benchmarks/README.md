@@ -426,6 +426,33 @@ record the **measured** `active_records` / `deleted_records` / `total_records`
 counts and the validation requires them to match the file on disk, in addition
 to expected counts, sizes and SHA-256.
 
+## Direct Write measured profile (v1.1, `dbfbridge-direct-write-v1`)
+
+A **separate** versioned benchmark contract for the public v1.1 Direct Write
+surface (`write_table`).  It measures W1 (190k flat), W3 (1M flat, lazy
+generator input), W10 (Varchar/`_NullFlags` replay path) and W12
+(functional cancellation/cleanup smoke) with the SAME
+`benchmarks/metrics.py` machinery (sampled peak RSS, atomic-publish
+temporary bytes, residue), validates every output through public Direct
+Read, and reports `intermediate_jsonl_bytes = 0` explicitly for every
+scenario (regression-protected).  The first profile is **MEASURED
+EVIDENCE**, not a regression baseline (DBFB-PERF-006); the validator
+enforces structural gates only (zero JSONL, zero residue, correct counts,
+one-shot input), never performance thresholds.  Historical Phase 0/1/3
+baselines are untouched.
+
+```powershell
+# smoke (CI-feasible; wiring/contract validation, not final evidence):
+python -m benchmarks.direct_write_profile --mode smoke
+
+# full architecture counts (W1=190k, W3=1M, W10=100k, W12 functional):
+python -m benchmarks.direct_write_profile --mode full
+```
+
+Artifacts land in `benchmarks/evidence/direct-write-v1-<mode>.{json,md}`
+(generated from the same payload — one source of truth).  W2/W4–W9/W11
+belong to the NEXT bounded Phase F task.
+
 ## Profiles
 
 `fast` is the control profile (**19 `MEASURED`** scenarios, 0 `NOT_IMPLEMENTED`).
