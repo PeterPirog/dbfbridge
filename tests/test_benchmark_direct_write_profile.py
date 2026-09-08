@@ -533,13 +533,34 @@ def _w5_schema_fields():
     return profile._memo_heavy_schema().fields
 
 
-def test_deleted_expected_count_is_o1_arithmetic() -> None:
-    """F2-BLK-05: the expected deleted count uses O(1) arithmetic
-    (``count // 3`` for the ``index % 3 == 2`` rule), not an O(n) list —
-    boundary-checked around multiples of 3."""
-    for count in (1, 2, 3, 4, 5, 6, 7, 999, 1000, 1001):
-        expected_by_rule = len([index for index in range(count) if index % 3 == 2])
-        assert expected_by_rule == count // 3, count
+def test_memo_code_validation_is_real_evidence(tmp_path: Path) -> None:
+    """F2-BLK-06 negative regression: ``code_mismatches`` is mechanically
+    derived, not decorative — a written table whose CODE values do not match
+    the supplied ``code_prefix`` must FAIL the validator."""
+    import dbfbridge
+
+    schema = profile._memo_heavy_schema()
+    destination = tmp_path / "mismatched.dbf"
+    dbfbridge.write_table(
+        destination,
+        schema=schema,
+        records=profile.memo_heavy_records(12, generation="NEW", code_prefix="N"),
+    )
+    # validate against a WRONG prefix: NOTE/PICTURE stay valid, CODE fails
+    validation = profile._validate_memo_output(
+        destination, 12, generation="NEW", code_prefix="X"
+    )
+    assert validation["code_mismatches"] == 12
+    assert validation["text_memo_mismatches"] == 0
+    assert validation["binary_memo_mismatches"] == 0
+    assert validation["memo_type_mismatches"] == 0
+    assert validation["memo_semantics_verified"] is False
+    # and the correct prefix passes on the same table
+    good = profile._validate_memo_output(
+        destination, 12, generation="NEW", code_prefix="N"
+    )
+    assert good["code_mismatches"] == 0
+    assert good["memo_semantics_verified"] is True
 
 
 def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
@@ -570,10 +591,12 @@ def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
     # W5: FPT published, exact text+binary memo semantics validated.
     w5 = rows[profile.SCENARIO_W5]
     assert w5["validation"]["memo_semantics_verified"] is True
+    assert w5["validation"]["code_mismatches"] == 0
     assert w5["validation"]["text_memo_mismatches"] == 0
     assert w5["validation"]["binary_memo_mismatches"] == 0
     assert w5["validation"]["memo_type_mismatches"] == 0
     assert w5["validation"]["generation"] == "NEW"
+    assert w5["validation"]["first_code"] == "M0000000"
     assert w5["validation"]["fpt_published"] is True
     assert w5["fpt_bytes"] > 0
     assert w5["dbf_bytes"] > 0
@@ -600,10 +623,19 @@ def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
     assert w11["backup_logical_bytes_moved"] > 0
     assert w11["temporary_bytes_left"] == 0
     assert w11["validation"]["new_generation_verified"] is True
+    assert w11["validation"]["code_mismatches"] == 0
+    assert w11["validation"]["first_code"] == "N0000000"
+    assert w11["validation"]["last_code"] == (
+        f"N{_tiny_counts()[profile.SCENARIO_W11] - 1:07d}"
+    )
     assert w11["validation"]["old_new_dbf_differ"] is True
     assert w11["validation"]["old_new_fpt_differ"] is True
     assert w11["validation"]["preexisting_dbf_sha256"] != w11["validation"]["final_dbf_sha256"]
     assert w11["validation"]["preexisting_fpt_sha256"] != w11["validation"]["final_fpt_sha256"]
+    assert w11["validation"]["preexisting_dbf_bytes"] > 0
+    assert w11["validation"]["preexisting_fpt_bytes"] > 0
+    assert w11["final_dbf_bytes"] > 0
+    assert w11["final_fpt_bytes"] > 0
     assert w11["preexisting_final_bytes"] > 0
 
     # W7/W8/W9: distinct Polish encoding round trips + public schema driver.
