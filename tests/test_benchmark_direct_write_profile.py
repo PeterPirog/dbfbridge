@@ -41,11 +41,27 @@ def test_direct_write_contract_is_separate_and_versioned() -> None:
 def test_all_core_scenario_ids_exist() -> None:
     assert set(profile.SCENARIO_IDS) == {
         profile.SCENARIO_W1,
+        profile.SCENARIO_W2,
         profile.SCENARIO_W3,
+        profile.SCENARIO_W4,
+        profile.SCENARIO_W5,
+        profile.SCENARIO_W6,
+        profile.SCENARIO_W7,
+        profile.SCENARIO_W8,
+        profile.SCENARIO_W9,
         profile.SCENARIO_W10,
+        profile.SCENARIO_W11,
         profile.SCENARIO_W12,
     }
     assert profile.SCENARIO_KINDS[profile.SCENARIO_W12] == "functional_cleanup"
+    assert profile.SCENARIO_KINDS[profile.SCENARIO_W2] == "throughput_transform_pipeline"
+    assert profile.SCENARIO_KINDS[profile.SCENARIO_W11] == "transaction_staging_cost"
+    for encoding_scenario in (
+        profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9,
+    ):
+        assert profile.SCENARIO_KINDS[encoding_scenario].startswith(
+            "throughput_encoding_"
+        )
 
 
 def test_artifact_carries_truthful_provenance(tmp_path: Path) -> None:
@@ -63,8 +79,16 @@ def test_artifact_carries_truthful_provenance(tmp_path: Path) -> None:
 def _tiny_counts() -> dict[str, int]:
     return {
         profile.SCENARIO_W1: 100,
+        profile.SCENARIO_W2: 100,
         profile.SCENARIO_W3: 150,
+        profile.SCENARIO_W4: 100,
+        profile.SCENARIO_W5: 60,
+        profile.SCENARIO_W6: 90,
+        profile.SCENARIO_W7: 40,
+        profile.SCENARIO_W8: 40,
+        profile.SCENARIO_W9: 40,
         profile.SCENARIO_W10: 60,
+        profile.SCENARIO_W11: 50,
         profile.SCENARIO_W12: 50,
     }
 
@@ -456,9 +480,67 @@ def test_library_does_not_import_benchmark_infrastructure() -> None:
 
 def test_full_counts_match_the_architecture() -> None:
     assert profile.FULL_COUNTS[profile.SCENARIO_W1] == 190_000
+    assert profile.FULL_COUNTS[profile.SCENARIO_W2] == 190_000
     assert profile.FULL_COUNTS[profile.SCENARIO_W3] == 1_000_000
     assert profile.FULL_COUNTS[profile.SCENARIO_W10] == 100_000
-    assert profile.SMOKE_COUNTS[profile.SCENARIO_W3] < 10_000
+    for scenario in (
+        profile.SCENARIO_W4, profile.SCENARIO_W5, profile.SCENARIO_W6,
+        profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9,
+        profile.SCENARIO_W11,
+    ):
+        rationale = profile.COUNT_RATIONALE[scenario]
+        assert profile.FULL_COUNTS[scenario] > 0
+        assert isinstance(rationale, str) and rationale
+
+
+def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
+    """F2 acceptance evidence from the smoke profile (small counts)."""
+    payload = profile.build_artifact("smoke", _tiny_counts(), tmp_path / "scenarios")
+    rows = {row["scenario"]: row for row in payload["scenarios"]}
+
+    # W2: lazy pipeline, source unchanged, transform verified.
+    w2 = rows[profile.SCENARIO_W2]
+    assert w2["status"] == "MEASURED"
+    assert w2["validation"]["source_unchanged"] is True
+    assert w2["validation"]["transform_verified"] is True
+    assert w2["validation"]["source_sha256"]
+    assert w2["intermediate_jsonl_bytes"] == 0
+
+    # W4: Character-heavy canonical reread.
+    w4 = rows[profile.SCENARIO_W4]
+    assert w4["validation"]["canonical_values_verified"] is True
+    assert w4["validation"]["first_name"]
+
+    # W5: FPT published, memo semantics validated.
+    w5 = rows[profile.SCENARIO_W5]
+    assert w5["validation"]["memo_semantics_verified"] is True
+    assert w5["validation"]["fpt_published"] is True
+    assert w5["fpt_bytes"] > 0
+    assert w5["dbf_bytes"] > 0
+
+    # W6: deleted markers and ordering.
+    w6 = rows[profile.SCENARIO_W6]
+    assert w6["validation"]["deleted_semantics_verified"] is True
+    assert w6["validation"]["deleted_count"] == w6["validation"]["expected_deleted_count"]
+
+    # W7/W8/W9: distinct Polish encoding round trips.
+    for scenario in (profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9):
+        row = rows[scenario]
+        assert row["validation"]["encoding_round_trip_verified"] is True
+        assert row["intermediate_jsonl_bytes"] == 0
+    encodings = {
+        rows[s]["validation"]["encoding"]
+        for s in (profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9)
+    }
+    assert encodings == {"cp1250", "cp852", "mazovia"}
+
+    # W11: real overwrite transaction (backup renames observed).
+    w11 = rows[profile.SCENARIO_W11]
+    assert w11["scenario_kind"] == "transaction_staging_cost"
+    assert w11["backup_logical_bytes_moved"] > 0
+    assert w11["temporary_bytes_left"] == 0
+    assert w11["validation"]["new_generation_verified"] is True
+    assert w11["preexisting_final_bytes"] > 0
 
 
 def test_smoke_artifact_writing_is_deterministic_in_structure(

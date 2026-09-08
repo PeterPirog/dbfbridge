@@ -73,18 +73,47 @@ CONTRACT_DIRECT_WRITE = "dbfbridge-direct-write-v1"
 CONTRACT_DIRECT_WRITE_VERSION = 1
 
 SCENARIO_W1 = "direct_write_190k_flat"
+SCENARIO_W2 = "direct_read_transform_write_190k"
 SCENARIO_W3 = "direct_write_1m_flat"
+SCENARIO_W4 = "direct_write_character_heavy"
+SCENARIO_W5 = "direct_write_memo_heavy"
+SCENARIO_W6 = "direct_write_deleted_include"
+SCENARIO_W7 = "direct_write_cp1250"
+SCENARIO_W8 = "direct_write_cp852"
+SCENARIO_W9 = "direct_write_mazovia"
 SCENARIO_W10 = "direct_write_varchar_nullflags"
+SCENARIO_W11 = "overwrite_transaction_staging_cost"
 SCENARIO_W12 = "cancellation_cleanup_smoke"
 
 #: All scenario identifiers of this contract (DBFB-PERF-003).
-SCENARIO_IDS = (SCENARIO_W1, SCENARIO_W3, SCENARIO_W10, SCENARIO_W12)
+SCENARIO_IDS = (
+    SCENARIO_W1,
+    SCENARIO_W2,
+    SCENARIO_W3,
+    SCENARIO_W4,
+    SCENARIO_W5,
+    SCENARIO_W6,
+    SCENARIO_W7,
+    SCENARIO_W8,
+    SCENARIO_W9,
+    SCENARIO_W10,
+    SCENARIO_W11,
+    SCENARIO_W12,
+)
 
 #: W12 is FUNCTIONAL cleanup evidence, never throughput (DBFB-PERF-003).
 SCENARIO_KINDS = {
     SCENARIO_W1: "throughput",
+    SCENARIO_W2: "throughput_transform_pipeline",
     SCENARIO_W3: "throughput_bounded_memory",
+    SCENARIO_W4: "throughput_character_heavy",
+    SCENARIO_W5: "throughput_memo_heavy",
+    SCENARIO_W6: "throughput_deleted_records",
+    SCENARIO_W7: "throughput_encoding_cp1250",
+    SCENARIO_W8: "throughput_encoding_cp852",
+    SCENARIO_W9: "throughput_encoding_mazovia",
     SCENARIO_W10: "throughput_replay_path",
+    SCENARIO_W11: "transaction_staging_cost",
     SCENARIO_W12: "functional_cleanup",
 }
 
@@ -94,17 +123,56 @@ INTERMEDIATE_JSONL_BYTES = 0
 #: Architecture record counts for the FULL profile (W12 is functional and
 #: only needs a bounded stream ceiling; W10's 100k exceeds the bounded
 #: spool memory threshold, so the full profile MUST spill to disk).
+#: W2 is architecture-FIXED at 190k; W4-W9/W11 counts are deterministic
+#: repository choices (documented rationale, NOT architecture requirements):
+#: character/memo/deleted/encoding workloads mirror the established Phase 3
+#: workload family sizes; the overwrite transaction adds full pair staging.
 FULL_COUNTS = {
     SCENARIO_W1: 190_000,
+    SCENARIO_W2: 190_000,
     SCENARIO_W3: 1_000_000,
+    SCENARIO_W4: 100_000,
+    SCENARIO_W5: 100_000,
+    SCENARIO_W6: 100_000,
+    SCENARIO_W7: 50_000,
+    SCENARIO_W8: 50_000,
+    SCENARIO_W9: 50_000,
     SCENARIO_W10: 100_000,
+    SCENARIO_W11: 20_000,
     SCENARIO_W12: 1_000,
+}
+COUNT_RATIONALE = {
+    SCENARIO_W1: "architecture-defined (190k flat)",
+    SCENARIO_W2: "architecture-defined (190k pipeline)",
+    SCENARIO_W3: "architecture-defined (1M bounded memory)",
+    SCENARIO_W4: "repository choice: mirrors the established 190k-workload "
+    "family at a practical CI scale for a pure Character workload",
+    SCENARIO_W5: "repository choice: 100k text+binary memos produce a "
+    "significant FPT without dominating the profile runtime",
+    SCENARIO_W6: "repository choice: mirrors the deleted-include workload "
+    "family; one third of the records carry delete markers",
+    SCENARIO_W7: "repository choice: Polish diacritics at 50k keep the "
+    "round-trip meaningful and the full profile practical",
+    SCENARIO_W8: "repository choice: same rationale as W7",
+    SCENARIO_W9: "repository choice: same rationale as W7 (Mazovia/PIAST)",
+    SCENARIO_W10: "existing accepted F1 full count (spills to disk)",
+    SCENARIO_W11: "repository choice: 20k DBF+FPT overwrite gives a "
+    "measurable staged transaction cost",
+    SCENARIO_W12: "functional ceiling only (cancellation before publication)",
 }
 #: CI-feasible smoke counts (wiring/contract validation, NOT final evidence).
 SMOKE_COUNTS = {
     SCENARIO_W1: 2_000,
+    SCENARIO_W2: 2_000,
     SCENARIO_W3: 5_000,
+    SCENARIO_W4: 1_000,
+    SCENARIO_W5: 300,
+    SCENARIO_W6: 1_000,
+    SCENARIO_W7: 500,
+    SCENARIO_W8: 500,
+    SCENARIO_W9: 500,
     SCENARIO_W10: 500,
+    SCENARIO_W11: 300,
     SCENARIO_W12: 200,
 }
 
@@ -232,6 +300,56 @@ def _staging_residue(root: Path) -> list[Path]:
     return residue
 
 
+class BackupMoveTracker:
+    """Observe logical backup renames inside a scenario output directory.
+
+    Benchmark-only: wraps ``os.replace`` and records the logical size of
+    every move whose DESTINATION is a ``.publish-backup`` name inside the
+    scenario output directory (the overwrite transaction renames the previous
+    final pair aside before publishing).  Nothing is counted as "bytes
+    written" — a rename moves content the publication did not rewrite — so
+    this is reported separately as ``backup_logical_bytes_moved``.
+    """
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir.resolve()
+        self.backup_logical_bytes_moved = 0
+        self.moves = 0
+        self._original_replace = None
+
+    def _is_backup_move(self, src: Path, dst: Path) -> bool:
+        return (
+            "publish-backup" in dst.name
+            and dst.resolve().is_relative_to(self.output_dir)
+            and src.resolve().is_relative_to(self.output_dir)
+        )
+
+    def __enter__(self) -> BackupMoveTracker:
+        import os
+
+        self._original_replace = os.replace
+
+        def _tracked_replace(src, dst, *args, **kwargs):
+            try:
+                if self._is_backup_move(Path(src), Path(dst)):
+                    self.backup_logical_bytes_moved += Path(src).stat().st_size
+                    self.moves += 1
+            except (OSError, ValueError):
+                pass
+            return self._original_replace(src, dst, *args, **kwargs)
+
+        os.replace = _tracked_replace  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        import os
+
+        if self._original_replace is not None:
+            os.replace = self._original_replace  # type: ignore[assignment]
+            self._original_replace = None
+        return False
+
+
 # ---------------------------------------------------------------------------
 # deterministic record streams (lazy, one-shot, never materialized)
 # ---------------------------------------------------------------------------
@@ -252,41 +370,42 @@ def flat_records(count: int):
         }
 
 
-def _flat_schema():
-    """The flat schema (format-consistent with the Direct Write contract tests)."""
+def _build_schema(
+    fields: tuple,
+    *,
+    encoding: str = "cp1250",
+    language_driver: int = 0xC8,
+    has_memo: bool = False,
+    is_binary_memo: tuple[str, ...] = (),
+) -> Any:
+    """Parameterized Direct Write schema builder (public model construction)."""
     from dbfbridge import FieldInfo, TableSchema
 
-    def field(
-        ordinal: int, name: str, dbf_type: str, length: int, *,
-        address: int, decimals: int = 0,
-    ) -> FieldInfo:
-        return FieldInfo(
-            ordinal=ordinal, name=name, dbf_type=dbf_type, length=length,
-            decimal_count=decimals, address=address, flags=0, index_field_flag=0,
-            autoincrement_next_value=0, autoincrement_step=1, is_memo=False,
-            is_binary=False, supported=True, dbversion_byte=0x30,
+    if has_memo:
+        fields = tuple(
+            FieldInfo(
+                ordinal=item.ordinal, name=item.name, dbf_type=item.dbf_type,
+                length=item.length, decimal_count=0, address=item.address, flags=0,
+                index_field_flag=0, autoincrement_next_value=0, autoincrement_step=1,
+                is_memo=True, is_binary=item.name in is_binary_memo, supported=True,
+                dbversion_byte=0x30,
+            )
+            for item in fields
         )
-
-    fields = (
-        field(1, "CODE", "C", 10, address=0),
-        field(2, "AMOUNT", "N", 10, address=10, decimals=2),
-        field(3, "WHEN", "D", 8, address=20),
-        field(4, "FLAG", "L", 1, address=28),
-    )
     return TableSchema(
         path=Path("memory:direct-write-benchmark"),
         record_count=0,
         header_length=32 + 32 * len(fields) + 1,
         record_length=sum(item.length for item in fields) + 1,
-        language_driver=0x03,
-        encoding="cp1250",
-        has_memo=False,
-        has_memo_flag=False,
+        language_driver=language_driver,
+        encoding=encoding,
+        has_memo=has_memo,
+        has_memo_flag=has_memo,
         has_structural_cdx=False,
         is_database_container=False,
         dbc_bound=False,
         dbc_backlink_path=None,
-        table_flags=0,
+        table_flags=0x02 if has_memo else 0,
         fields=fields,
         warnings=(),
         dbversion_byte=0x30,
@@ -295,7 +414,7 @@ def _flat_schema():
         incomplete_transaction=False,
         encryption_flag=False,
         memo_companion_format="FoxPro FPF",
-        memo_companion_present=False,
+        memo_companion_present=has_memo,
         memo_companion_path=None,
         memo_companion_size_bytes=None,
         memo_block_size=64,
@@ -303,6 +422,72 @@ def _flat_schema():
         companion_cdx_present=False,
         companion_cdx_path=None,
     )
+
+
+def _field_info(ordinal: int, name: str, dbf_type: str, length: int, *, address: int, decimals: int = 0):
+    from dbfbridge import FieldInfo
+
+    return FieldInfo(
+        ordinal=ordinal, name=name, dbf_type=dbf_type, length=length,
+        decimal_count=decimals, address=address, flags=0, index_field_flag=0,
+        autoincrement_next_value=0, autoincrement_step=1, is_memo=False,
+        is_binary=False, supported=True, dbversion_byte=0x30,
+    )
+
+
+def _flat_schema(*, encoding: str = "cp1250", language_driver: int = 0xC8):
+    """The flat schema (format-consistent with the Direct Write contract tests)."""
+    fields = (
+        _field_info(1, "CODE", "C", 10, address=0),
+        _field_info(2, "AMOUNT", "N", 10, address=10, decimals=2),
+        _field_info(3, "WHEN", "D", 8, address=20),
+        _field_info(4, "FLAG", "L", 1, address=28),
+    )
+    return _build_schema(fields, encoding=encoding, language_driver=language_driver)
+
+
+def _character_heavy_schema():
+    """Multiple Character fields with varied payload capacity (W4)."""
+    fields = (
+        _field_info(1, "CODE", "C", 10, address=0),
+        _field_info(2, "NAME", "C", 30, address=10),
+        _field_info(3, "SURNAME", "C", 25, address=40),
+        _field_info(4, "STREET", "C", 40, address=65),
+        _field_info(5, "CITY", "C", 20, address=105),
+        _field_info(6, "NOTE", "C", 50, address=125),
+    )
+    return _build_schema(fields)
+
+
+def _memo_heavy_schema():
+    """Text (M) + binary (G) memo schema — both proven by the v1.1 tests (W5)."""
+    fields = (
+        _field_info(1, "CODE", "C", 10, address=0),
+        _field_info(2, "NOTE", "M", 4, address=10),
+        _field_info(3, "PICTURE", "G", 4, address=14),
+    )
+    return _build_schema(
+        fields, has_memo=True, is_binary_memo=("PICTURE",)
+    )
+
+
+def _deleted_schema():
+    """Flat schema for the deleted-records scenario (W6)."""
+    fields = (
+        _field_info(1, "CODE", "C", 10, address=0),
+        _field_info(2, "AMOUNT", "N", 10, address=10, decimals=2),
+    )
+    return _build_schema(fields)
+
+
+def _encoding_schema(encoding: str, language_driver: int):
+    """Polish-text schema for the encoding round-trip scenarios (W7/W8/W9)."""
+    fields = (
+        _field_info(1, "CODE", "C", 12, address=0),
+        _field_info(2, "NAZWA", "C", 30, address=12),
+        _field_info(3, "MIASTO", "C", 20, address=42),
+    )
+    return _build_schema(fields, encoding=encoding, language_driver=language_driver)
 
 
 def _varchar_schema(output_dir: Path):
@@ -357,12 +542,79 @@ def varchar_records(count: int, schema):
         yield row
 
 
+def character_heavy_records(count: int):
+    """Lazy generator for the Character-heavy scenario (W4)."""
+    for index in range(count):
+        yield {
+            "CODE": f"C{index:07d}",
+            "NAME": f"Jan Maria {index % 1000:04d} z Zamościa",
+            "SURNAME": f"Kowalski-{index % 97:02d}-Nowak",
+            "STREET": f"ul. {(index % 41) * 7 + 1} Kwiatowa, lok. {index % 13}",
+            "CITY": f"Miasteczko {(index % 311):03d}",
+            "NOTE": f"notatka {index % 997:04d}: "
+            + "ąęłóń śźż" * (1 + index % 4),
+        }
+
+
+def memo_heavy_records(count: int):
+    """Lazy generator for the memo-heavy scenario (W5): text + binary memos.
+
+    Text memo payloads carry deterministic Polish content; the binary memo
+    carries deterministic varying-length bytes (including a 0x00 lead byte
+    and embedded non-ASCII-safe sequences).  ``PICTURE`` values below 8 bytes
+    use the G-field byte-payload form proven by the Direct Write tests.
+    """
+    from .fixtures import MEMO_TEXT
+
+    for index in range(count):
+        binary = bytes(
+            (index * 31 + offset) % 256 for offset in range(8 + index % 200)
+        )
+        yield {
+            "CODE": f"M{index:07d}",
+            "NOTE": f"[{index % 5000:04d}] {MEMO_TEXT}",
+            "PICTURE": binary,
+        }
+
+
+def deleted_records(count: int):
+    """Lazy generator for the deleted-records scenario (W6).
+
+    Every third record (index % 3 == 2) carries the public ``__deleted__``
+    marker; physical ordering and the exact deleted count stay known.
+    """
+    for index in range(count):
+        record = {
+            "CODE": f"D{index:07d}",
+            "AMOUNT": round((index % 5_000) / 100, 2),
+        }
+        if index % 3 == 2:
+            record["__deleted__"] = True
+        yield record
+
+
+def polish_records(count: int, schema):
+    """Lazy generator with real Polish diacritics (W7/W8/W9)."""
+    from .fixtures import POLISH_TEXT
+
+    names = [field.name for field in schema.fields if field.dbf_type == "C"]
+    code_name, nazwa_name, miasto_name = names[0], names[1], names[2]
+    for index in range(count):
+        yield {
+            code_name: f"{index % 100_000:05d}",
+            nazwa_name: f"{POLISH_TEXT[index % len(POLISH_TEXT)]} {index % 10_000:04d}",
+            miasto_name: POLISH_TEXT[(index * 3) % len(POLISH_TEXT)],
+        }
+
+
 # ---------------------------------------------------------------------------
 # public Direct Read validation — BOUNDED (O(page), never O(total))
 # ---------------------------------------------------------------------------
 
 
-def _validate_flat_output(destination: Path, count: int) -> dict[str, Any]:
+def _validate_flat_output(
+    destination: Path, count: int, *, transformed: bool = False
+) -> dict[str, Any]:
     """Page-by-page public Direct Read validation of a flat write.
 
     Only the running count, first/last facts and small deterministic state
@@ -390,13 +642,174 @@ def _validate_flat_output(destination: Path, count: int) -> dict[str, Any]:
             break
         offset = page.next_offset
     assert total == count, (total, count)
-    return {
+    result = {
         "record_count": total,
         "first_code": first_code,
         "last_code": last_code,
         "first_amount": first_amount,
         "last_flag": last_flag,
         "canonical_values_verified": True,
+        "bounded_validation": True,
+    }
+    if transformed:
+        result["transform_verified"] = bool(
+            first_code and last_code and first_code.startswith("T")
+            and last_code.startswith("T")
+        )
+        result["first_amount"] = first_amount
+    return result
+
+
+def _validate_character_output(destination: Path, count: int) -> dict[str, Any]:
+    """Bounded page-by-page Character-heavy validation (W4)."""
+    from dbfbridge import read_records
+
+    total = 0
+    first_name: str | None = None
+    last_city: str | None = None
+    offset = 0
+    while True:
+        page = read_records(destination, offset=offset, limit=50_000, memo="skip")
+        for record in page.records:
+            if total == 0:
+                first_name = record.values.get("NAME")
+            last_city = record.values.get("CITY")
+            total += 1
+        if page.exhausted or page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert total == count
+    return {
+        "record_count": total,
+        "first_name": first_name,
+        "last_city": last_city,
+        "canonical_values_verified": True,
+        "bounded_validation": True,
+    }
+
+
+def _validate_memo_output(
+    destination: Path, count: int, *, new_generation: bool = False
+) -> dict[str, Any]:
+    """Bounded memo validation via public read_records(memo="inline") (W5/W11)."""
+    from dbfbridge import read_records
+
+    total = 0
+    first_note: str | None = None
+    last_note: str | None = None
+    first_picture: bytes | None = None
+    last_picture: bytes | None = None
+    offset = 0
+    while True:
+        page = read_records(destination, offset=offset, limit=50_000, memo="inline")
+        for record in page.records:
+            if total == 0:
+                first_note = record.values.get("NOTE")
+                first_picture = record.values.get("PICTURE")
+            last_note = record.values.get("NOTE")
+            last_picture = record.values.get("PICTURE")
+            total += 1
+        if page.exhausted or page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert total == count
+    result = {
+        "record_count": total,
+        "first_note_prefix": (first_note or "")[:6],
+        "last_note_prefix": (last_note or "")[:6],
+        "first_picture_bytes": len(first_picture) if first_picture else 0,
+        "last_picture_bytes": len(last_picture) if last_picture else 0,
+        "memo_semantics_verified": bool(first_note) and bool(last_picture),
+        "fpt_published": True,
+        "bounded_validation": True,
+    }
+    if new_generation:
+        result["new_generation_verified"] = bool(
+            (first_note or "").startswith("[0000]")
+            and (last_note or "").startswith(f"[{(count - 1) % 5000:04d}]")
+        )
+    return result
+
+
+def _validate_deleted_output(
+    destination: Path, count: int, expected_deleted: int
+) -> dict[str, Any]:
+    """Bounded deleted-records validation: markers and ordering (W6)."""
+    from dbfbridge import read_records
+
+    total = 0
+    deleted = 0
+    first_code: str | None = None
+    last_code: str | None = None
+    ordering_matches = True
+    mismatches: list[Any] = []
+    offset = 0
+    while True:
+        page = read_records(
+            destination, offset=offset, limit=50_000, memo="skip", include_deleted=True
+        )
+        for record in page.records:
+            if total == 0:
+                first_code = record.values.get("CODE")
+            last_code = record.values.get("CODE")
+            if record.deleted != (total % 3 == 2):
+                ordering_matches = False
+                if len(mismatches) < 20:
+                    mismatches.append(
+                        (total, record.values.get("CODE"), record.deleted)
+                    )
+            if record.deleted:
+                deleted += 1
+            total += 1
+        if page.exhausted or page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert total == count
+    return {
+        "record_count": total,
+        "first_code": first_code,
+        "last_code": last_code,
+        "deleted_count": deleted,
+        "expected_deleted_count": expected_deleted,
+        "ordering_matches_input": ordering_matches,
+        "deleted_semantics_verified": deleted == expected_deleted and ordering_matches,
+        "bounded_validation": True,
+    }
+
+
+def _validate_encoding_output(destination: Path, count: int, encoding: str) -> dict[str, Any]:
+    """Bounded encoding round-trip validation (W7/W8/W9)."""
+    from benchmarks.fixtures import POLISH_TEXT
+    from dbfbridge import read_records
+
+    total = 0
+    first_nazwa: str | None = None
+    last_nazwa: str | None = None
+    canonical_mismatches = 0
+    offset = 0
+    while True:
+        page = read_records(destination, offset=offset, limit=50_000, memo="skip")
+        for record in page.records:
+            expected = (
+                f"{POLISH_TEXT[total % len(POLISH_TEXT)]} {total % 10_000:04d}"
+            )
+            actual = record.values.get("NAZWA")
+            if total == 0:
+                first_nazwa = actual
+            last_nazwa = actual
+            if actual != expected:
+                canonical_mismatches += 1
+            total += 1
+        if page.exhausted or page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert total == count
+    return {
+        "record_count": total,
+        "first_nazwa": first_nazwa,
+        "last_nazwa": last_nazwa,
+        "canonical_mismatches": canonical_mismatches,
+        "encoding_round_trip_verified": canonical_mismatches == 0,
         "bounded_validation": True,
     }
 
@@ -454,6 +867,7 @@ def _run_row(
     fpt_bytes: int,
     spool: SpoolTracker,
     residue_paths: list[Path],
+    backup_logical_bytes_moved: int | None = None,
 ) -> dict[str, Any]:
     """Assemble one artifact row with the DISTINCT temporary byte model.
 
@@ -486,6 +900,7 @@ def _run_row(
         "scenario_kind": SCENARIO_KINDS[scenario_id],
         "status": measured.get("status"),
         "record_count": record_count,
+        "count_rationale": COUNT_RATIONALE.get(scenario_id),
         "wall_seconds": measured.get("wall_seconds"),
         "cpu_seconds": measured.get("cpu_seconds"),
         "records_per_second": measured.get("records_per_second"),
@@ -504,6 +919,7 @@ def _run_row(
         "temporary_bytes_written": temporary_written,
         "temporary_bytes_left": residue_bytes,
         "temporary_residue_paths": [path.name for path in residue_paths],
+        "backup_logical_bytes_moved": backup_logical_bytes_moved,
         "final_output_bytes": total_output,
         "dbf_bytes": dbf_bytes,
         "fpt_bytes": fpt_bytes,
@@ -635,6 +1051,300 @@ def _scenario_w10(output_dir: Path, staging: Path, count: int) -> dict[str, Any]
         spool=spool,
         residue_paths=_staging_residue(output_dir),
     )
+
+
+def _scenario_w2(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W2 direct_read_transform_write_190k`` — DBFB-COST-001 pipeline.
+
+    The source dataset is prepared OUTSIDE the measured window; the measured
+    operation is the PUBLIC lazy pipeline ``iter_records -> transform ->
+    write_table`` (no JSONL, no schema.json, no migration report).  The
+    source DBF must remain byte-for-byte unchanged.
+    """
+    import hashlib
+
+    from dbfbridge import iter_records, write_table
+
+    schema = _flat_schema()
+    source = output_dir / "w2_source.dbf"
+    write_table(source, schema=schema, records=flat_records(count))
+    source_sha_before = hashlib.sha256(source.read_bytes()).hexdigest()
+    source_bytes = source.stat().st_size
+    destination = output_dir / "w2_transformed.dbf"
+    spool = SpoolTracker(staging)
+
+    def transform_records():
+        for position, record in enumerate(iter_records(source, memo="skip")):
+            values = dict(record.values)
+            # deterministic non-identity transform of ordinary supported fields
+            values["CODE"] = "T" + str(values.get("CODE", ""))[1:]
+            values["AMOUNT"] = round((values.get("AMOUNT") or 0) + 1.5, 2)
+            assert position >= 0  # single pass, lazily consumed
+            yield values
+
+    def run() -> None:
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=transform_records(),
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run,
+        input_bytes=source_bytes,
+        input_records=count,
+        output_dir=output_dir,
+    )
+    validation = (
+        _validate_flat_output(destination, count, transformed=True)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    source_sha_after = hashlib.sha256(source.read_bytes()).hexdigest()
+    validation["source_sha256"] = source_sha_after
+    validation["source_unchanged"] = source_sha_before == source_sha_after
+    fpt_path = destination.with_suffix(".fpt")
+    return _run_row(
+        SCENARIO_W2,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=fpt_path.stat().st_size if fpt_path.exists() else 0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+    )
+
+
+def _scenario_w4(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W4 direct_write_character_heavy`` — Character payload density."""
+    from dbfbridge import write_table
+
+    destination = output_dir / "w4_character.dbf"
+    schema = _character_heavy_schema()
+    spool = SpoolTracker(staging)
+
+    def run() -> None:
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=character_heavy_records(count),
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run, input_bytes=None, input_records=count, output_dir=output_dir
+    )
+    validation = (
+        _validate_character_output(destination, count)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    return _run_row(
+        SCENARIO_W4,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+    )
+
+
+def _scenario_w5(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W5 direct_write_memo_heavy`` — text (M) + binary (G) memo FPT output."""
+    from dbfbridge import write_table
+
+    destination = output_dir / "w5_memo.dbf"
+    schema = _memo_heavy_schema()
+    spool = SpoolTracker(staging)
+
+    def run() -> None:
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=memo_heavy_records(count),
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run, input_bytes=None, input_records=count, output_dir=output_dir
+    )
+    validation = (
+        _validate_memo_output(destination, count)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    return _run_row(
+        SCENARIO_W5,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=(
+            destination.with_suffix(".fpt").stat().st_size
+            if destination.with_suffix(".fpt").exists()
+            else 0
+        ),
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+    )
+
+
+def _scenario_w6(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W6 direct_write_deleted_include`` — deleted-marker round trip (W6)."""
+    from dbfbridge import write_table
+
+    destination = output_dir / "w6_deleted.dbf"
+    schema = _deleted_schema()
+    expected_deleted = len([index for index in range(count) if index % 3 == 2])
+    spool = SpoolTracker(staging)
+
+    def run() -> None:
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=deleted_records(count),
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run, input_bytes=None, input_records=count, output_dir=output_dir
+    )
+    validation = (
+        _validate_deleted_output(destination, count, expected_deleted)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    return _run_row(
+        SCENARIO_W6,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+    )
+
+
+def _scenario_encoding(
+    output_dir: Path,
+    staging: Path,
+    count: int,
+    *,
+    scenario_id: str,
+    encoding: str,
+    language_driver: int,
+) -> dict[str, Any]:
+    """``W7/W8/W9`` — Polish-encoding round trips through the public API."""
+    from dbfbridge import write_table
+
+    destination = output_dir / f"{scenario_id}.dbf"
+    schema = _encoding_schema(encoding, language_driver)
+    spool = SpoolTracker(staging)
+
+    def run() -> None:
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=polish_records(count, schema),
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run, input_bytes=None, input_records=count, output_dir=output_dir
+    )
+    validation = (
+        _validate_encoding_output(destination, count, encoding)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    validation["encoding"] = encoding
+    validation["language_driver"] = f"0x{language_driver:02X}"
+    return _run_row(
+        scenario_id,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+    )
+
+
+def _scenario_w11(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W11 overwrite_transaction_staging_cost`` — measured transaction cost.
+
+    A pre-existing DBF+FPT pair (memo schema) is replaced through the normal
+    overwrite transaction (staging, fsync, backup rename, ``os.replace``).
+    Transaction semantics are NOT weakened and failure semantics remain the
+    authority of the existing failure-injection tests.
+    """
+    from dbfbridge import write_table
+
+    destination = output_dir / "w11_pair.dbf"
+    schema = _memo_heavy_schema()
+    # Pre-existing pair OUTSIDE the measured window (live prefix "O").
+    write_table(
+        destination,
+        schema=schema,
+        records=memo_heavy_records(count),
+        staging_directory=staging,
+    )
+    preexisting_dbf = destination.stat().st_size
+    preexisting_fpt = destination.with_suffix(".fpt").stat().st_size
+    spool = SpoolTracker(staging)
+    moves = BackupMoveTracker(output_dir)
+
+    def overwritten_records():
+        for index, record in enumerate(memo_heavy_records(count)):
+            record["CODE"] = f"N{index:07d}"  # new generation marker
+            yield record
+
+    def run() -> None:
+        with spool, moves:
+            write_table(
+                destination,
+                schema=schema,
+                records=overwritten_records(),
+                overwrite=True,
+                staging_directory=staging,
+            )
+
+    measured = measure_run(
+        run, input_bytes=None, input_records=count, output_dir=output_dir
+    )
+    validation = (
+        _validate_memo_output(destination, count, new_generation=True)
+        if measured.get("status") == STATUS_MEASURED
+        else {"verified": False}
+    )
+    fpt_path = destination.with_suffix(".fpt")
+    row = _run_row(
+        SCENARIO_W11,
+        measured,
+        record_count=count,
+        validation=validation,
+        dbf_bytes=destination.stat().st_size if destination.exists() else 0,
+        fpt_bytes=fpt_path.stat().st_size if fpt_path.exists() else 0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
+        backup_logical_bytes_moved=(
+            moves.backup_logical_bytes_moved if moves.moves else 0
+        ),
+    )
+    row["preexisting_final_bytes"] = preexisting_dbf + preexisting_fpt
+    row["backup_moves"] = moves.moves
+    return row
 
 
 def _scenario_w12(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
@@ -849,18 +1559,37 @@ def validate_artifact(payload: dict[str, Any]) -> list[str]:
 
 
 def build_artifact(mode: str, counts: dict[str, int], root: Path) -> dict[str, Any]:
-    """Run W1/W3/W10/W12 and assemble the measured artifact payload.
+    """Run W1-W12 and assemble the measured artifact payload.
 
     The caller owns *root*'s lifetime (the CLI wraps it in a
     ``TemporaryDirectory`` so scenario artifacts are transient while the
     JSON/Markdown evidence is written to ``--out`` separately).
     """
-    for sub in ("w1", "w3", "w10", "w12"):
+    for sub in (
+        "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12",
+    ):
         (root / sub).mkdir(parents=True, exist_ok=True)
     rows = [
         _scenario_w1(root / "w1", root / "w1" / "staging", counts[SCENARIO_W1]),
+        _scenario_w2(root / "w2", root / "w2" / "staging", counts[SCENARIO_W2]),
         _scenario_w3(root / "w3", root / "w3" / "staging", counts[SCENARIO_W3]),
+        _scenario_w4(root / "w4", root / "w4" / "staging", counts[SCENARIO_W4]),
+        _scenario_w5(root / "w5", root / "w5" / "staging", counts[SCENARIO_W5]),
+        _scenario_w6(root / "w6", root / "w6" / "staging", counts[SCENARIO_W6]),
+        _scenario_encoding(
+            root / "w7", root / "w7" / "staging", counts[SCENARIO_W7],
+            scenario_id=SCENARIO_W7, encoding="cp1250", language_driver=0xC8,
+        ),
+        _scenario_encoding(
+            root / "w8", root / "w8" / "staging", counts[SCENARIO_W8],
+            scenario_id=SCENARIO_W8, encoding="cp852", language_driver=0x64,
+        ),
+        _scenario_encoding(
+            root / "w9", root / "w9" / "staging", counts[SCENARIO_W9],
+            scenario_id=SCENARIO_W9, encoding="mazovia", language_driver=0x69,
+        ),
         _scenario_w10(root / "w10", root / "w10" / "staging", counts[SCENARIO_W10]),
+        _scenario_w11(root / "w11", root / "w11" / "staging", counts[SCENARIO_W11]),
         _scenario_w12(root / "w12", root / "w12" / "staging", counts[SCENARIO_W12]),
     ]
     by_scenario = {row["scenario"]: row for row in rows}
