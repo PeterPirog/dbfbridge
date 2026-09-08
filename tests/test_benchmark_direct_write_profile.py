@@ -493,6 +493,55 @@ def test_full_counts_match_the_architecture() -> None:
         assert isinstance(rationale, str) and rationale
 
 
+def test_memo_schema_field_metadata_is_truthful(tmp_path: Path) -> None:
+    """F2-BLK-01: the memo schema carries truthful PER-FIELD metadata, proven
+    through the PUBLIC ``read_schema`` read-back of a written table:
+    CODE C (is_memo False / is_binary False), NOTE M (True/False),
+    PICTURE G (True/True)."""
+    import dbfbridge
+
+    counts = dict(_tiny_counts())
+    counts[profile.SCENARIO_W5] = 10
+    profile.build_artifact("smoke", counts, tmp_path / "scenarios")
+    # the source schema (in-process) is truthful
+    schema_fields = {
+        field.name: (field.dbf_type, field.is_memo, field.is_binary)
+        for field in _w5_schema_fields()
+    }
+    assert schema_fields == {
+        "CODE": ("C", False, False),
+        "NOTE": ("M", True, False),
+        "PICTURE": ("G", True, True),
+    }
+    # and the PUBLIC schema read-back of the WRITTEN table proves the writer
+    # preserved the truthful metadata
+
+    destination = tmp_path / "scenarios" / "w5" / "w5_memo.dbf"
+    schema = dbfbridge.read_schema(destination)
+    by_name = {
+        field.name: (field.dbf_type, field.is_memo, field.is_binary)
+        for field in schema.fields
+    }
+    assert by_name == {
+        "CODE": ("C", False, False),
+        "NOTE": ("M", True, False),
+        "PICTURE": ("G", True, True),
+    }
+
+
+def _w5_schema_fields():
+    return profile._memo_heavy_schema().fields
+
+
+def test_deleted_expected_count_is_o1_arithmetic() -> None:
+    """F2-BLK-05: the expected deleted count uses O(1) arithmetic
+    (``count // 3`` for the ``index % 3 == 2`` rule), not an O(n) list —
+    boundary-checked around multiples of 3."""
+    for count in (1, 2, 3, 4, 5, 6, 7, 999, 1000, 1001):
+        expected_by_rule = len([index for index in range(count) if index % 3 == 2])
+        assert expected_by_rule == count // 3, count
+
+
 def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
     """F2 acceptance evidence from the smoke profile (small counts)."""
     payload = profile.build_artifact("smoke", _tiny_counts(), tmp_path / "scenarios")
@@ -503,17 +552,28 @@ def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
     assert w2["status"] == "MEASURED"
     assert w2["validation"]["source_unchanged"] is True
     assert w2["validation"]["transform_verified"] is True
-    assert w2["validation"]["source_sha256"]
+    assert w2["validation"]["source_sha256_before"] == w2["validation"]["source_sha256_after"]
+    assert (
+        w2["validation"]["source_mtime_ns_before"]
+        == w2["validation"]["source_mtime_ns_after"]
+    )
+    assert w2["validation"]["source_fpt_applicable"] is False
+    assert w2["validation"]["transform_mismatches"] == 0
     assert w2["intermediate_jsonl_bytes"] == 0
 
-    # W4: Character-heavy canonical reread.
+    # W4: exact Character-heavy reread.
     w4 = rows[profile.SCENARIO_W4]
     assert w4["validation"]["canonical_values_verified"] is True
+    assert w4["validation"]["character_value_mismatches"] == 0
     assert w4["validation"]["first_name"]
 
-    # W5: FPT published, memo semantics validated.
+    # W5: FPT published, exact text+binary memo semantics validated.
     w5 = rows[profile.SCENARIO_W5]
     assert w5["validation"]["memo_semantics_verified"] is True
+    assert w5["validation"]["text_memo_mismatches"] == 0
+    assert w5["validation"]["binary_memo_mismatches"] == 0
+    assert w5["validation"]["memo_type_mismatches"] == 0
+    assert w5["validation"]["generation"] == "NEW"
     assert w5["validation"]["fpt_published"] is True
     assert w5["fpt_bytes"] > 0
     assert w5["dbf_bytes"] > 0
@@ -534,13 +594,35 @@ def test_f2_scenario_evidence_in_smoke_profile(tmp_path: Path) -> None:
     }
     assert encodings == {"cp1250", "cp852", "mazovia"}
 
-    # W11: real overwrite transaction (backup renames observed).
+    # W11: real old-pair -> different new-pair overwrite transaction.
     w11 = rows[profile.SCENARIO_W11]
     assert w11["scenario_kind"] == "transaction_staging_cost"
     assert w11["backup_logical_bytes_moved"] > 0
     assert w11["temporary_bytes_left"] == 0
     assert w11["validation"]["new_generation_verified"] is True
+    assert w11["validation"]["old_new_dbf_differ"] is True
+    assert w11["validation"]["old_new_fpt_differ"] is True
+    assert w11["validation"]["preexisting_dbf_sha256"] != w11["validation"]["final_dbf_sha256"]
+    assert w11["validation"]["preexisting_fpt_sha256"] != w11["validation"]["final_fpt_sha256"]
     assert w11["preexisting_final_bytes"] > 0
+
+    # W7/W8/W9: distinct Polish encoding round trips + public schema driver.
+    for scenario in (profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9):
+        row = rows[scenario]
+        assert row["validation"]["encoding_round_trip_verified"] is True
+        assert row["validation"]["schema_driver_verified"] is True
+        assert row["validation"]["canonical_mismatches"] == 0
+        assert row["intermediate_jsonl_bytes"] == 0
+    encodings = {
+        rows[s]["validation"]["encoding"]
+        for s in (profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9)
+    }
+    assert encodings == {"cp1250", "cp852", "mazovia"}
+    drivers = {
+        rows[s]["validation"]["language_driver"]
+        for s in (profile.SCENARIO_W7, profile.SCENARIO_W8, profile.SCENARIO_W9)
+    }
+    assert drivers == {"0xC8", "0x64", "0x69"}
 
 
 def test_smoke_artifact_writing_is_deterministic_in_structure(

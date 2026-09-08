@@ -376,22 +376,15 @@ def _build_schema(
     encoding: str = "cp1250",
     language_driver: int = 0xC8,
     has_memo: bool = False,
-    is_binary_memo: tuple[str, ...] = (),
 ) -> Any:
-    """Parameterized Direct Write schema builder (public model construction)."""
-    from dbfbridge import FieldInfo, TableSchema
+    """Parameterized Direct Write schema builder (public model construction).
 
-    if has_memo:
-        fields = tuple(
-            FieldInfo(
-                ordinal=item.ordinal, name=item.name, dbf_type=item.dbf_type,
-                length=item.length, decimal_count=0, address=item.address, flags=0,
-                index_field_flag=0, autoincrement_next_value=0, autoincrement_step=1,
-                is_memo=True, is_binary=item.name in is_binary_memo, supported=True,
-                dbversion_byte=0x30,
-            )
-            for item in fields
-        )
+    ``has_memo`` only sets the TABLE-level memo companion facts; the FIELD
+    metadata must already be truthful (each memo field constructed with
+    ``is_memo=True`` and the correct ``is_binary`` — DBFB-SCHEMA-002).
+    """
+    from dbfbridge import TableSchema
+
     return TableSchema(
         path=Path("memory:direct-write-benchmark"),
         record_count=0,
@@ -424,14 +417,23 @@ def _build_schema(
     )
 
 
-def _field_info(ordinal: int, name: str, dbf_type: str, length: int, *, address: int, decimals: int = 0):
+def _field_info(
+    ordinal: int, name: str, dbf_type: str, length: int, *,
+    address: int, decimals: int = 0,
+    is_memo: bool = False, is_binary: bool = False,
+):
+    """Truthful FieldInfo construction (DBFB-SCHEMA-002).
+
+    ``is_memo``/``is_binary`` describe the FIELD type — they are never
+    derived from the table-level ``has_memo`` flag.
+    """
     from dbfbridge import FieldInfo
 
     return FieldInfo(
         ordinal=ordinal, name=name, dbf_type=dbf_type, length=length,
         decimal_count=decimals, address=address, flags=0, index_field_flag=0,
-        autoincrement_next_value=0, autoincrement_step=1, is_memo=False,
-        is_binary=False, supported=True, dbversion_byte=0x30,
+        autoincrement_next_value=0, autoincrement_step=1, is_memo=is_memo,
+        is_binary=is_binary, supported=True, dbversion_byte=0x30,
     )
 
 
@@ -460,15 +462,13 @@ def _character_heavy_schema():
 
 
 def _memo_heavy_schema():
-    """Text (M) + binary (G) memo schema — both proven by the v1.1 tests (W5)."""
+    """Text (M) + binary (G) memo schema — truthful per-field metadata (W5/W11)."""
     fields = (
         _field_info(1, "CODE", "C", 10, address=0),
-        _field_info(2, "NOTE", "M", 4, address=10),
-        _field_info(3, "PICTURE", "G", 4, address=14),
+        _field_info(2, "NOTE", "M", 4, address=10, is_memo=True, is_binary=False),
+        _field_info(3, "PICTURE", "G", 4, address=14, is_memo=True, is_binary=True),
     )
-    return _build_schema(
-        fields, has_memo=True, is_binary_memo=("PICTURE",)
-    )
+    return _build_schema(fields, has_memo=True)
 
 
 def _deleted_schema():
@@ -556,13 +556,16 @@ def character_heavy_records(count: int):
         }
 
 
-def memo_heavy_records(count: int):
-    """Lazy generator for the memo-heavy scenario (W5): text + binary memos.
+def memo_heavy_records(count: int, *, generation: str = "NEW", code_prefix: str = "N"):
+    """Lazy generator for the memo-heavy scenarios (W5/W11): text + binary memos.
 
-    Text memo payloads carry deterministic Polish content; the binary memo
-    carries deterministic varying-length bytes (including a 0x00 lead byte
-    and embedded non-ASCII-safe sequences).  ``PICTURE`` values below 8 bytes
-    use the G-field byte-payload form proven by the Direct Write tests.
+    ``generation`` is a deterministic generation marker that changes ALL three
+    value families (DBF field, text memo, binary memo) so an overwrite
+    transaction genuinely replaces a DIFFERENT DBF+FPT generation (F2-BLK-02):
+
+    - ``CODE`` uses the generation-specific prefix;
+    - the text memo carries the generation marker;
+    - the binary memo embeds a deterministic generation tag byte.
     """
     from .fixtures import MEMO_TEXT
 
@@ -570,9 +573,15 @@ def memo_heavy_records(count: int):
         binary = bytes(
             (index * 31 + offset) % 256 for offset in range(8 + index % 200)
         )
+        if generation == "OLD":
+            binary = b"\xA0" + binary  # deterministic OLD-generation tag byte
+            note = f"[OLD {index % 5000:04d}] {MEMO_TEXT}"
+        else:
+            binary = b"\x5A" + binary  # deterministic NEW-generation tag byte
+            note = f"[NEW {index % 5000:04d}] {MEMO_TEXT}"
         yield {
-            "CODE": f"M{index:07d}",
-            "NOTE": f"[{index % 5000:04d}] {MEMO_TEXT}",
+            "CODE": f"{code_prefix}{index:07d}",
+            "NOTE": note,
             "PICTURE": binary,
         }
 
@@ -615,28 +624,35 @@ def polish_records(count: int, schema):
 def _validate_flat_output(
     destination: Path, count: int, *, transformed: bool = False
 ) -> dict[str, Any]:
-    """Page-by-page public Direct Read validation of a flat write.
+    """Exact bounded page-by-page validation of a flat/transformed write.
 
-    Only the running count, first/last facts and small deterministic state
-    are retained — the validation memory complexity is O(page size), never
-    O(total records).
+    For EVERY output record the deterministic expected values (CODE, AMOUNT,
+    WHEN, FLAG) are recomputed from the generator contract and compared —
+    the validation memory complexity is O(page size), never O(total records).
     """
     from dbfbridge import read_records
 
     total = 0
     first_code: str | None = None
     last_code: str | None = None
-    first_amount: float | None = None
-    last_flag: bool | None = None
+    transform_mismatches = 0
     offset = 0
     while True:
         page = read_records(destination, offset=offset, limit=50_000, memo="skip")
         for record in page.records:
             if total == 0:
                 first_code = record.values.get("CODE")
-                first_amount = record.values.get("AMOUNT")
             last_code = record.values.get("CODE")
-            last_flag = record.values.get("FLAG")
+            index = total
+            values = record.values
+            if (
+                values.get("CODE") != f"{'T' if transformed else 'K'}{index:07d}"
+                or values.get("AMOUNT")
+                != round((index % 10_000) / 100 + (1.5 if transformed else 0), 2)
+                or values.get("WHEN") != date(2024, 1, 1 + index % 28)
+                or values.get("FLAG") != (index % 3 == 0)
+            ):
+                transform_mismatches += 1
             total += 1
         if page.exhausted or page.next_offset is None:
             break
@@ -646,34 +662,50 @@ def _validate_flat_output(
         "record_count": total,
         "first_code": first_code,
         "last_code": last_code,
-        "first_amount": first_amount,
-        "last_flag": last_flag,
-        "canonical_values_verified": True,
+        "transform_mismatches": transform_mismatches,
+        "canonical_values_verified": transform_mismatches == 0,
         "bounded_validation": True,
     }
     if transformed:
-        result["transform_verified"] = bool(
-            first_code and last_code and first_code.startswith("T")
-            and last_code.startswith("T")
-        )
-        result["first_amount"] = first_amount
+        result["transform_verified"] = transform_mismatches == 0
     return result
 
 
 def _validate_character_output(destination: Path, count: int) -> dict[str, Any]:
-    """Bounded page-by-page Character-heavy validation (W4)."""
+    """Exact bounded Character-heavy validation (W4).
+
+    Every output record's six Character fields are compared against the
+    deterministic generator values; only counters and first/last facts are
+    retained — O(page size).
+    """
     from dbfbridge import read_records
 
     total = 0
     first_name: str | None = None
     last_city: str | None = None
+    character_value_mismatches = 0
     offset = 0
     while True:
         page = read_records(destination, offset=offset, limit=50_000, memo="skip")
         for record in page.records:
+            values = record.values
+            index = total
+            expected_note = (
+                f"notatka {index % 997:04d}: " + "ąęłóń śźż" * (1 + index % 4)
+            )
+            if (
+                values.get("CODE") != f"C{index:07d}"
+                or values.get("NAME") != f"Jan Maria {index % 1000:04d} z Zamościa"[:30]
+                or values.get("SURNAME") != f"Kowalski-{index % 97:02d}-Nowak"[:25]
+                or values.get("STREET")
+                != f"ul. {(index % 41) * 7 + 1} Kwiatowa, lok. {index % 13}"[:40]
+                or values.get("CITY") != f"Miasteczko {(index % 311):03d}"[:20]
+                or values.get("NOTE") != expected_note[:50]
+            ):
+                character_value_mismatches += 1
             if total == 0:
-                first_name = record.values.get("NAME")
-            last_city = record.values.get("CITY")
+                first_name = values.get("NAME")
+            last_city = values.get("CITY")
             total += 1
         if page.exhausted or page.next_offset is None:
             break
@@ -683,52 +715,76 @@ def _validate_character_output(destination: Path, count: int) -> dict[str, Any]:
         "record_count": total,
         "first_name": first_name,
         "last_city": last_city,
-        "canonical_values_verified": True,
+        "character_value_mismatches": character_value_mismatches,
+        "canonical_values_verified": character_value_mismatches == 0,
         "bounded_validation": True,
     }
 
 
 def _validate_memo_output(
-    destination: Path, count: int, *, new_generation: bool = False
+    destination: Path, count: int, *, generation: str = "NEW", code_prefix: str = "N"
 ) -> dict[str, Any]:
-    """Bounded memo validation via public read_records(memo="inline") (W5/W11)."""
+    """Exact bounded memo validation via public read_records(memo="inline").
+
+    For EVERY record the deterministic text/binary memo values are recomputed
+    from the generator contract and compared; memo TYPE semantics (NOTE str,
+    PICTURE bytes) are verified per record.  Only counters and small facts
+    are retained — O(page size); full memo payloads never enter the artifact.
+    """
     from dbfbridge import read_records
 
     total = 0
+    text_memo_mismatches = 0
+    binary_memo_mismatches = 0
+    memo_type_mismatches = 0
     first_note: str | None = None
     last_note: str | None = None
-    first_picture: bytes | None = None
-    last_picture: bytes | None = None
     offset = 0
     while True:
         page = read_records(destination, offset=offset, limit=50_000, memo="inline")
         for record in page.records:
+            values = record.values
+            index = total
+            note = values.get("NOTE")
+            picture = values.get("PICTURE")
+            if not isinstance(note, str) or not isinstance(picture, bytes):
+                memo_type_mismatches += 1
+                continue
             if total == 0:
-                first_note = record.values.get("NOTE")
-                first_picture = record.values.get("PICTURE")
-            last_note = record.values.get("NOTE")
-            last_picture = record.values.get("PICTURE")
+                first_note = note
+            last_note = note
+            expected_note = f"[{generation} {index % 5000:04d}] " + str(
+                __import__("benchmarks.fixtures", fromlist=["MEMO_TEXT"]).MEMO_TEXT
+            )
+            expected_binary = bytes(
+                (index * 31 + offset) % 256 for offset in range(8 + index % 200)
+            )
+            expected_binary = (b"\xA0" if generation == "OLD" else b"\x5A") + expected_binary
+            if note != expected_note:
+                text_memo_mismatches += 1
+            if picture != expected_binary:
+                binary_memo_mismatches += 1
             total += 1
         if page.exhausted or page.next_offset is None:
             break
         offset = page.next_offset
     assert total == count
-    result = {
+    return {
         "record_count": total,
         "first_note_prefix": (first_note or "")[:6],
         "last_note_prefix": (last_note or "")[:6],
-        "first_picture_bytes": len(first_picture) if first_picture else 0,
-        "last_picture_bytes": len(last_picture) if last_picture else 0,
-        "memo_semantics_verified": bool(first_note) and bool(last_picture),
+        "text_memo_mismatches": text_memo_mismatches,
+        "binary_memo_mismatches": binary_memo_mismatches,
+        "memo_type_mismatches": memo_type_mismatches,
+        "memo_semantics_verified": (
+            text_memo_mismatches == 0
+            and binary_memo_mismatches == 0
+            and memo_type_mismatches == 0
+        ),
+        "generation": generation,
         "fpt_published": True,
         "bounded_validation": True,
     }
-    if new_generation:
-        result["new_generation_verified"] = bool(
-            (first_note or "").startswith("[0000]")
-            and (last_note or "").startswith(f"[{(count - 1) % 5000:04d}]")
-        )
-    return result
 
 
 def _validate_deleted_output(
@@ -776,12 +832,20 @@ def _validate_deleted_output(
         "bounded_validation": True,
     }
 
+def _validate_encoding_output(
+    destination: Path, count: int, encoding: str, language_driver: int
+) -> dict[str, Any]:
+    """Exact bounded encoding round-trip validation (W7/W8/W9).
 
-def _validate_encoding_output(destination: Path, count: int, encoding: str) -> dict[str, Any]:
-    """Bounded encoding round-trip validation (W7/W8/W9)."""
+    For EVERY record all three Character fields (CODE, NAZWA, MIASTO) are
+    compared against the deterministic Polish expectations; the intended
+    language driver is verified via PUBLIC ``read_schema`` read-back.
+    """
     from benchmarks.fixtures import POLISH_TEXT
-    from dbfbridge import read_records
+    from dbfbridge import read_records, read_schema
 
+    schema = read_schema(destination)
+    schema_driver_verified = schema.language_driver == language_driver
     total = 0
     first_nazwa: str | None = None
     last_nazwa: str | None = None
@@ -790,15 +854,24 @@ def _validate_encoding_output(destination: Path, count: int, encoding: str) -> d
     while True:
         page = read_records(destination, offset=offset, limit=50_000, memo="skip")
         for record in page.records:
-            expected = (
-                f"{POLISH_TEXT[total % len(POLISH_TEXT)]} {total % 10_000:04d}"
-            )
-            actual = record.values.get("NAZWA")
-            if total == 0:
-                first_nazwa = actual
-            last_nazwa = actual
-            if actual != expected:
+            values = record.values
+            index = total
+            expected = {
+                "CODE": f"{index % 100_000:05d}",
+                "NAZWA": (
+                    f"{POLISH_TEXT[index % len(POLISH_TEXT)]} {index % 10_000:04d}"
+                ),
+                "MIASTO": POLISH_TEXT[(index * 3) % len(POLISH_TEXT)],
+            }
+            if (
+                values.get("CODE") != expected["CODE"]
+                or values.get("NAZWA") != expected["NAZWA"]
+                or values.get("MIASTO") != expected["MIASTO"]
+            ):
                 canonical_mismatches += 1
+            if total == 0:
+                first_nazwa = values.get("NAZWA")
+            last_nazwa = values.get("NAZWA")
             total += 1
         if page.exhausted or page.next_offset is None:
             break
@@ -809,7 +882,12 @@ def _validate_encoding_output(destination: Path, count: int, encoding: str) -> d
         "first_nazwa": first_nazwa,
         "last_nazwa": last_nazwa,
         "canonical_mismatches": canonical_mismatches,
-        "encoding_round_trip_verified": canonical_mismatches == 0,
+        "encoding": encoding,
+        "language_driver": f"0x{language_driver:02X}",
+        "schema_driver_verified": schema_driver_verified,
+        "schema_resolved_encoding": schema.encoding,
+        "encoding_round_trip_verified": canonical_mismatches == 0
+        and schema_driver_verified,
         "bounded_validation": True,
     }
 
@@ -1070,6 +1148,7 @@ def _scenario_w2(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     write_table(source, schema=schema, records=flat_records(count))
     source_sha_before = hashlib.sha256(source.read_bytes()).hexdigest()
     source_bytes = source.stat().st_size
+    source_mtime_before = source.stat().st_mtime_ns
     destination = output_dir / "w2_transformed.dbf"
     spool = SpoolTracker(staging)
 
@@ -1103,8 +1182,18 @@ def _scenario_w2(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
         else {"verified": False}
     )
     source_sha_after = hashlib.sha256(source.read_bytes()).hexdigest()
-    validation["source_sha256"] = source_sha_after
-    validation["source_unchanged"] = source_sha_before == source_sha_after
+    source_stat_after = source.stat()
+    validation["source_sha256_before"] = source_sha_before
+    validation["source_sha256_after"] = source_sha_after
+    validation["source_size_before"] = source_bytes
+    validation["source_size_after"] = source_stat_after.st_size
+    validation["source_mtime_ns_before"] = source_mtime_before
+    validation["source_mtime_ns_after"] = source_stat_after.st_mtime_ns
+    validation["source_unchanged"] = (
+        source_sha_before == source_sha_after
+        and source_mtime_before == source_stat_after.st_mtime_ns
+    )
+    validation["source_fpt_applicable"] = False  # W2 flat source has no FPT
     fpt_path = destination.with_suffix(".fpt")
     return _run_row(
         SCENARIO_W2,
@@ -1168,7 +1257,7 @@ def _scenario_w5(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
             write_table(
                 destination,
                 schema=schema,
-                records=memo_heavy_records(count),
+                records=memo_heavy_records(count, generation="NEW", code_prefix="M"),
                 staging_directory=staging,
             )
 
@@ -1176,7 +1265,7 @@ def _scenario_w5(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
         run, input_bytes=None, input_records=count, output_dir=output_dir
     )
     validation = (
-        _validate_memo_output(destination, count)
+        _validate_memo_output(destination, count, generation="NEW", code_prefix="M")
         if measured.get("status") == STATUS_MEASURED
         else {"verified": False}
     )
@@ -1202,7 +1291,7 @@ def _scenario_w6(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
 
     destination = output_dir / "w6_deleted.dbf"
     schema = _deleted_schema()
-    expected_deleted = len([index for index in range(count) if index % 3 == 2])
+    expected_deleted = count // 3  # O(1): index % 3 == 2 (F2-BLK-05)
     spool = SpoolTracker(staging)
 
     def run() -> None:
@@ -1263,12 +1352,10 @@ def _scenario_encoding(
         run, input_bytes=None, input_records=count, output_dir=output_dir
     )
     validation = (
-        _validate_encoding_output(destination, count, encoding)
+        _validate_encoding_output(destination, count, encoding, language_driver)
         if measured.get("status") == STATUS_MEASURED
         else {"verified": False}
     )
-    validation["encoding"] = encoding
-    validation["language_driver"] = f"0x{language_driver:02X}"
     return _run_row(
         scenario_id,
         measured,
@@ -1284,38 +1371,40 @@ def _scenario_encoding(
 def _scenario_w11(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     """``W11 overwrite_transaction_staging_cost`` — measured transaction cost.
 
-    A pre-existing DBF+FPT pair (memo schema) is replaced through the normal
-    overwrite transaction (staging, fsync, backup rename, ``os.replace``).
-    Transaction semantics are NOT weakened and failure semantics remain the
-    authority of the existing failure-injection tests.
+    A pre-existing DBF+FPT pair (OLD generation: CODE prefix ``O``, OLD text/
+    binary memo markers) is replaced through the normal overwrite transaction
+    with a DETERMINISTICALLY DIFFERENT NEW generation (CODE prefix ``N``, NEW
+    memo markers).  Transaction semantics are NOT weakened; failure semantics
+    remain the authority of the existing failure-injection tests.
     """
+    import hashlib
+
     from dbfbridge import write_table
 
     destination = output_dir / "w11_pair.dbf"
     schema = _memo_heavy_schema()
-    # Pre-existing pair OUTSIDE the measured window (live prefix "O").
+    # Pre-existing OLD-generation pair OUTSIDE the measured window.
     write_table(
         destination,
         schema=schema,
-        records=memo_heavy_records(count),
+        records=memo_heavy_records(count, generation="OLD", code_prefix="O"),
         staging_directory=staging,
     )
     preexisting_dbf = destination.stat().st_size
     preexisting_fpt = destination.with_suffix(".fpt").stat().st_size
+    preexisting_dbf_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+    preexisting_fpt_sha = hashlib.sha256(
+        destination.with_suffix(".fpt").read_bytes()
+    ).hexdigest()
     spool = SpoolTracker(staging)
     moves = BackupMoveTracker(output_dir)
-
-    def overwritten_records():
-        for index, record in enumerate(memo_heavy_records(count)):
-            record["CODE"] = f"N{index:07d}"  # new generation marker
-            yield record
 
     def run() -> None:
         with spool, moves:
             write_table(
                 destination,
                 schema=schema,
-                records=overwritten_records(),
+                records=memo_heavy_records(count, generation="NEW", code_prefix="N"),
                 overwrite=True,
                 staging_directory=staging,
             )
@@ -1324,11 +1413,25 @@ def _scenario_w11(output_dir: Path, staging: Path, count: int) -> dict[str, Any]
         run, input_bytes=None, input_records=count, output_dir=output_dir
     )
     validation = (
-        _validate_memo_output(destination, count, new_generation=True)
+        _validate_memo_output(destination, count, generation="NEW", code_prefix="N")
         if measured.get("status") == STATUS_MEASURED
         else {"verified": False}
     )
     fpt_path = destination.with_suffix(".fpt")
+    final_dbf_sha = hashlib.sha256(destination.read_bytes()).hexdigest()
+    final_fpt_sha = hashlib.sha256(fpt_path.read_bytes()).hexdigest()
+    validation["final_dbf_sha256"] = final_dbf_sha
+    validation["final_fpt_sha256"] = final_fpt_sha
+    validation["preexisting_dbf_sha256"] = preexisting_dbf_sha
+    validation["preexisting_fpt_sha256"] = preexisting_fpt_sha
+    validation["old_new_dbf_differ"] = preexisting_dbf_sha != final_dbf_sha
+    validation["old_new_fpt_differ"] = preexisting_fpt_sha != final_fpt_sha
+    validation["new_generation_verified"] = (
+        validation.get("memo_semantics_verified") is True
+        and validation.get("generation") == "NEW"
+        and validation["old_new_dbf_differ"]
+        and validation["old_new_fpt_differ"]
+    )
     row = _run_row(
         SCENARIO_W11,
         measured,
