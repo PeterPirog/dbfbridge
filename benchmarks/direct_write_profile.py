@@ -17,19 +17,36 @@ regression baseline (DBFB-PERF-006): the artifact validator enforces only
 structural/correctness gates (zero intermediate JSONL, zero residue, correct
 counts, one-shot input), never performance thresholds.
 
+Temporary byte model (DBFB-STREAM-006/DBFB-COST-002)
+----------------------------------------------------
+Three DISTINCT counters, never merged or derived from one another:
+
+- ``temporary_publish_bytes_written`` — logical size of the atomic
+  ``.partial`` publication files at ``os.replace`` time (existing
+  ``AtomicPublishTracker``);
+- ``private_spool_bytes_written`` — logical size of the Direct Write private
+  ``.direct-write.spool`` files, OBSERVED at unlink time inside the
+  scenario-local staging directory supplied through the PUBLIC
+  ``write_table(staging_directory=...)`` parameter (benchmark-only
+  interception; no production instrumentation, no private imports);
+- ``temporary_bytes_written`` = publish + spool (the architecture metric);
+  ``null`` + reason when the instrumentation is incomplete.
+
+``temporary_bytes_left`` counts ALL staging residues (``.partial``,
+``.publish-backup``, ``.direct-write.spool``) after a handled run — 0 for
+every completed scenario.  ``intermediate_jsonl_bytes`` is the explicit
+constant 0 (Direct Write has no JSONL transport); the validator rejects any
+non-zero value.
+
 Scenarios in this bounded task
 ------------------------------
 - ``direct_write_190k_flat`` (W1) — the plain flat path;
 - ``direct_write_1m_flat`` (W3) — DBFB-PERF-004 bounded-input evidence from a
   lazy generator (the full input is NEVER materialized);
 - ``direct_write_varchar_nullflags`` (W10) — the private bounded replay/spool
-  path;
+  path (full profile spills to disk and reports measured spool bytes);
 - ``cancellation_cleanup_smoke`` (W12) — FUNCTIONAL cleanup evidence
   (``functional_cleanup``), never a throughput claim.
-
-``intermediate_jsonl_bytes`` is the explicit constant 0 for every scenario;
-the validator rejects any non-zero value.  ``private_spool_bytes`` is
-reported NOT_AVAILABLE rather than derived (no production instrumentation).
 """
 
 from __future__ import annotations
@@ -75,7 +92,8 @@ SCENARIO_KINDS = {
 INTERMEDIATE_JSONL_BYTES = 0
 
 #: Architecture record counts for the FULL profile (W12 is functional and
-#: only needs a bounded stream ceiling).
+#: only needs a bounded stream ceiling; W10's 100k exceeds the bounded
+#: spool memory threshold, so the full profile MUST spill to disk).
 FULL_COUNTS = {
     SCENARIO_W1: 190_000,
     SCENARIO_W3: 1_000_000,
@@ -94,9 +112,7 @@ SMOKE_COUNTS = {
 REQUIRED_ROW_KEYS = (
     "benchmark_contract",
     "benchmark_contract_version",
-    "git_sha",
-    "python_version",
-    "platform",
+    "measured_code_sha",
     "scenario",
     "scenario_kind",
     "status",
@@ -104,18 +120,22 @@ REQUIRED_ROW_KEYS = (
     "wall_seconds",
     "cpu_seconds",
     "records_per_second",
-    "source_mib_per_second",
     "output_dbf_fpt_mib_per_second",
+    "rss_before_bytes",
     "peak_rss_bytes",
+    "peak_rss_delta_bytes",
+    "rss_after_bytes",
+    "temporary_publish_bytes_written",
+    "private_spool_bytes_written",
     "temporary_bytes_written",
     "temporary_bytes_left",
     "final_output_bytes",
     "intermediate_jsonl_bytes",
+    "validation",
 )
 
-_PRIVATE_SPOOL_NOT_AVAILABLE = (
-    "not instrumented without production runtime changes (NOT_AVAILABLE)"
-)
+#: Direct Write staging-residue name conventions (benchmark-side observation).
+_RESIDUE_PATTERNS = ("*.partial*", "*.publish-backup*", "*.direct-write.spool*")
 
 
 def _git_sha() -> str:
@@ -131,6 +151,85 @@ def _git_sha() -> str:
 def _new_run_id() -> str:
     """Stable ``run-<32 hex>`` identifier (existing artifact convention)."""
     return f"run-{secrets.token_hex(16)}"
+
+
+# ---------------------------------------------------------------------------
+# benchmark-side staging/spool instrumentation (no private imports)
+# ---------------------------------------------------------------------------
+
+
+class SpoolTracker:
+    """Observe the Direct Write staging area WITHOUT production changes.
+
+    The scenario supplies an explicit ``staging_directory`` through the
+    PUBLIC ``write_table`` API; this tracker scopes itself to exactly that
+    directory:
+
+    - it intercepts ``pathlib.Path.unlink`` ONLY for names carrying the
+      ``.direct-write.spool`` segment inside the staging root, stats the
+      file's logical size BEFORE the real unlink, calls the original
+      implementation and restores it in ``finally`` (exception-safe);
+    - it never inspects anything outside the authorized scenario staging
+      root and never imports private writer modules.
+    """
+
+    SPOOL_SEGMENT = ".direct-write.spool"
+
+    def __init__(self, staging_root: Path) -> None:
+        self.staging_root = staging_root.resolve()
+        self.spool_bytes = 0
+        self.spool_unlink_count = 0
+        self.complete = True
+        self.unavailable_reason: str | None = None
+        self._original_unlink = None
+
+    def _inside_staging_spool(self, path: Path) -> bool:
+        if self.SPOOL_SEGMENT not in path.name:
+            return False
+        try:
+            return path.resolve().is_relative_to(self.staging_root)
+        except (OSError, ValueError):
+            return False
+
+    def __enter__(self) -> SpoolTracker:
+        import pathlib
+
+        self._original_unlink = pathlib.Path.unlink
+        tracker = self
+
+        def _tracked_unlink(path_self: Path, missing_ok: bool = False) -> None:
+            if tracker._inside_staging_spool(path_self):
+                try:
+                    size = path_self.stat().st_size
+                except OSError as exc:
+                    tracker.complete = False
+                    if tracker.unavailable_reason is None:
+                        tracker.unavailable_reason = f"could not stat spool: {exc}"
+                else:
+                    tracker.spool_bytes += size
+                    tracker.spool_unlink_count += 1
+            return tracker._original_unlink(path_self, missing_ok)
+
+        pathlib.Path.unlink = _tracked_unlink  # type: ignore[assignment]
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        import pathlib
+
+        if self._original_unlink is not None:
+            pathlib.Path.unlink = self._original_unlink  # type: ignore[assignment]
+            self._original_unlink = None
+        return False
+
+
+def _staging_residue(root: Path) -> list[Path]:
+    """Direct Write staging residue under *root* (partial/backup/spool)."""
+    if not root.is_dir():
+        return []
+    residue: list[Path] = []
+    for pattern in _RESIDUE_PATTERNS:
+        residue.extend(path for path in root.rglob(pattern) if path.is_file())
+    return residue
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +256,10 @@ def _flat_schema():
     """The flat schema (format-consistent with the Direct Write contract tests)."""
     from dbfbridge import FieldInfo, TableSchema
 
-    def field(ordinal: int, name: str, dbf_type: str, length: int, *, address: int, decimals: int = 0) -> FieldInfo:
+    def field(
+        ordinal: int, name: str, dbf_type: str, length: int, *,
+        address: int, decimals: int = 0,
+    ) -> FieldInfo:
         return FieldInfo(
             ordinal=ordinal, name=name, dbf_type=dbf_type, length=length,
             decimal_count=decimals, address=address, flags=0, index_field_flag=0,
@@ -237,9 +339,7 @@ def varchar_records(count: int, schema):
     replay path must carry.  The ``_NullFlags`` system column is
     writer-managed and never part of the record stream.
     """
-    varchar_name = next(
-        field.name for field in schema.fields if field.dbf_type == "V"
-    )
+    varchar_name = next(field.name for field in schema.fields if field.dbf_type == "V")
     for index in range(count):
         row: dict[str, Any] = {"CODE": f"V{index:07d}"}
         if index % 10 == 0:
@@ -258,55 +358,84 @@ def varchar_records(count: int, schema):
 
 
 # ---------------------------------------------------------------------------
-# public Direct Read validation
+# public Direct Read validation — BOUNDED (O(page), never O(total))
 # ---------------------------------------------------------------------------
 
 
-def _read_all_records(destination: Path, *, memo: str = "skip", limit: int = 50_000):
-    """Bounded public Direct Read paging (never an unbounded single response)."""
+def _validate_flat_output(destination: Path, count: int) -> dict[str, Any]:
+    """Page-by-page public Direct Read validation of a flat write.
+
+    Only the running count, first/last facts and small deterministic state
+    are retained — the validation memory complexity is O(page size), never
+    O(total records).
+    """
     from dbfbridge import read_records
 
-    collected = []
+    total = 0
+    first_code: str | None = None
+    last_code: str | None = None
+    first_amount: float | None = None
+    last_flag: bool | None = None
     offset = 0
     while True:
-        page = read_records(destination, offset=offset, limit=limit, memo="skip")
-        collected.extend(page.records)
+        page = read_records(destination, offset=offset, limit=50_000, memo="skip")
+        for record in page.records:
+            if total == 0:
+                first_code = record.values.get("CODE")
+                first_amount = record.values.get("AMOUNT")
+            last_code = record.values.get("CODE")
+            last_flag = record.values.get("FLAG")
+            total += 1
         if page.exhausted or page.next_offset is None:
-            return collected, page
+            break
         offset = page.next_offset
-
-
-def _validate_flat_output(destination: Path, count: int) -> dict[str, Any]:
-    """Public Direct Read validation of a flat write (DBFB-WRITE-002)."""
-    records, _page = _read_all_records(destination)
-    assert len(records) == count, (len(records), count)
-    first = records[0].values
-    last = records[-1].values
+    assert total == count, (total, count)
     return {
-        "record_count": len(records),
-        "first_code": first.get("CODE"),
-        "last_code": last.get("CODE"),
-        "first_amount": first.get("AMOUNT"),
-        "last_flag": last.get("FLAG"),
+        "record_count": total,
+        "first_code": first_code,
+        "last_code": last_code,
+        "first_amount": first_amount,
+        "last_flag": last_flag,
         "canonical_values_verified": True,
+        "bounded_validation": True,
     }
 
 
 def _validate_varchar_output(destination: Path, count: int) -> dict[str, Any]:
-    """Public Direct Read validation incl. NULL/Varchar semantics (W10)."""
-    records, _page = _read_all_records(destination, memo="inline")
-    assert len(records) == count
-    null_varchars = sum(1 for record in records if record.values.get("TXT") is None)
-    null_notes = sum(1 for record in records if record.values.get("NOTE") is None)
+    """Bounded page-by-page validation incl. NULL/Varchar semantics (W10)."""
+    from dbfbridge import read_records
+
+    total = 0
+    null_varchars = 0
+    null_notes = 0
+    first_code: str | None = None
+    last_code: str | None = None
+    offset = 0
+    while True:
+        page = read_records(destination, offset=offset, limit=50_000, memo="inline")
+        for record in page.records:
+            if total == 0:
+                first_code = record.values.get("CODE")
+            last_code = record.values.get("CODE")
+            if record.values.get("TXT") is None:
+                null_varchars += 1
+            if record.values.get("NOTE") is None:
+                null_notes += 1
+            total += 1
+        if page.exhausted or page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert total == count
     assert null_varchars == count // 10 + (1 if count % 10 else 0)
     assert null_notes == count // 5 + (1 if count % 5 else 0)
     return {
-        "record_count": len(records),
+        "record_count": total,
         "null_varchar_count": null_varchars,
         "null_note_count": null_notes,
-        "first_code": records[0].values.get("CODE"),
-        "last_code": records[-1].values.get("CODE"),
+        "first_code": first_code,
+        "last_code": last_code,
         "varchar_null_semantics_verified": True,
+        "bounded_validation": True,
     }
 
 
@@ -323,19 +452,34 @@ def _run_row(
     validation: dict[str, Any],
     dbf_bytes: int,
     fpt_bytes: int,
+    spool: SpoolTracker,
+    residue_paths: list[Path],
 ) -> dict[str, Any]:
-    """Assemble one artifact row from an existing ``metrics.run`` measurement.
+    """Assemble one artifact row with the DISTINCT temporary byte model.
 
-    ``private_spool_bytes`` stays NOT_AVAILABLE (never derived from other
-    counters); ``intermediate_jsonl_bytes`` is the explicit architecture
-    constant 0.
+    ``temporary_publish_bytes_written`` (atomic ``.partial`` publishes) and
+    ``private_spool_bytes_written`` (observed staging-area spool unlinks) are
+    separate measurements; ``temporary_bytes_written`` is their sum when the
+    instrumentation is complete, ``null`` + reason otherwise.
     """
     wall = measured.get("wall_seconds") or 0.0
     total_output = dbf_bytes + fpt_bytes
+    publish_bytes = measured.get("temporary_bytes_written")
+    spool_bytes = spool.spool_bytes
+    if publish_bytes is None or not spool.complete:
+        temporary_written: int | None = None
+        temporary_reason = (
+            spool.unavailable_reason
+            or "publish-byte instrumentation incomplete (NOT_AVAILABLE)"
+        )
+    else:
+        temporary_written = publish_bytes + spool_bytes
+        temporary_reason = None
+    residue_bytes = sum(path.stat().st_size for path in residue_paths)
     row: dict[str, Any] = {
         "benchmark_contract": CONTRACT_DIRECT_WRITE,
         "benchmark_contract_version": CONTRACT_DIRECT_WRITE_VERSION,
-        "git_sha": _git_sha(),
+        "measured_code_sha": _git_sha(),
         "python_version": sys.version.split()[0],
         "platform": sys.platform,
         "scenario": scenario_id,
@@ -351,32 +495,44 @@ def _run_row(
             if wall > 0 and total_output > 0
             else None
         ),
+        "rss_before_bytes": measured.get("rss_before_bytes"),
         "peak_rss_bytes": measured.get("peak_rss_bytes"),
-        "rss_samples": measured.get("rss_samples"),
-        "temporary_bytes_written": measured.get("temporary_bytes_written"),
-        "temporary_bytes_left": measured.get("temporary_bytes_left"),
+        "peak_rss_delta_bytes": measured.get("peak_rss_delta_bytes"),
+        "rss_after_bytes": measured.get("rss_after_bytes"),
+        "temporary_publish_bytes_written": publish_bytes,
+        "private_spool_bytes_written": spool_bytes,
+        "temporary_bytes_written": temporary_written,
+        "temporary_bytes_left": residue_bytes,
+        "temporary_residue_paths": [path.name for path in residue_paths],
         "final_output_bytes": total_output,
         "dbf_bytes": dbf_bytes,
         "fpt_bytes": fpt_bytes,
-        "private_spool_bytes": None,
-        "private_spool_bytes_reason": _PRIVATE_SPOOL_NOT_AVAILABLE,
         "intermediate_jsonl_bytes": INTERMEDIATE_JSONL_BYTES,
         "validation": validation,
     }
+    if temporary_reason is not None:
+        row["temporary_bytes_written_reason"] = temporary_reason
     if measured.get("status") == STATUS_FAILED:
         row["error"] = measured.get("error")
     return row
 
 
-def _scenario_w1(output_dir: Path, count: int) -> dict[str, Any]:
+def _scenario_w1(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     """``W1 direct_write_190k_flat`` — the plain flat Direct Write path."""
     from dbfbridge import write_table
 
     destination = output_dir / "w1_flat.dbf"
     schema = _flat_schema()
+    spool = SpoolTracker(staging)
 
     def run() -> None:
-        write_table(destination, schema=schema, records=flat_records(count))
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=flat_records(count),
+                staging_directory=staging,
+            )
 
     measured = measure_run(
         run, input_bytes=None, input_records=count, output_dir=output_dir
@@ -394,18 +550,27 @@ def _scenario_w1(output_dir: Path, count: int) -> dict[str, Any]:
         validation=validation,
         dbf_bytes=destination.stat().st_size if destination.exists() else 0,
         fpt_bytes=fpt_path.stat().st_size if fpt_path.exists() else 0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
     )
 
 
-def _scenario_w3(output_dir: Path, count: int) -> dict[str, Any]:
+def _scenario_w3(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     """``W3 direct_write_1m_flat`` — DBFB-PERF-004 bounded-input evidence."""
     from dbfbridge import write_table
 
     destination = output_dir / "w3_flat.dbf"
     schema = _flat_schema()
+    spool = SpoolTracker(staging)
 
     def run() -> None:
-        write_table(destination, schema=schema, records=flat_records(count))
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=flat_records(count),
+                staging_directory=staging,
+            )
 
     measured = measure_run(
         run, input_bytes=None, input_records=count, output_dir=output_dir
@@ -423,22 +588,33 @@ def _scenario_w3(output_dir: Path, count: int) -> dict[str, Any]:
         validation=validation,
         dbf_bytes=destination.stat().st_size if destination.exists() else 0,
         fpt_bytes=fpt_path.stat().st_size if fpt_path.exists() else 0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
     )
 
 
-def _scenario_w10(output_dir: Path, count: int) -> dict[str, Any]:
-    """``W10 direct_write_varchar_nullflags`` — the bounded replay/spool path."""
+def _scenario_w10(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
+    """``W10 direct_write_varchar_nullflags`` — the bounded replay/spool path.
+
+    The full profile's 100,000 records exceed the bounded spool's memory
+    threshold, so the path MUST spill to the private staging spool; the
+    spool bytes are OBSERVED at unlink time inside the scenario-local
+    staging directory (never derived from the DBF size).
+    """
     from dbfbridge import write_table
 
     schema = _varchar_schema(output_dir)
     destination = output_dir / "w10_varchar.dbf"
+    spool = SpoolTracker(staging)
 
     def run() -> None:
-        write_table(
-            destination,
-            schema=schema,
-            records=varchar_records(count, schema),
-        )
+        with spool:
+            write_table(
+                destination,
+                schema=schema,
+                records=varchar_records(count, schema),
+                staging_directory=staging,
+            )
 
     measured = measure_run(
         run, input_bytes=None, input_records=count, output_dir=output_dir
@@ -456,15 +632,18 @@ def _scenario_w10(output_dir: Path, count: int) -> dict[str, Any]:
         validation=validation,
         dbf_bytes=destination.stat().st_size if destination.exists() else 0,
         fpt_bytes=fpt_path.stat().st_size if fpt_path.exists() else 0,
+        spool=spool,
+        residue_paths=_staging_residue(output_dir),
     )
 
 
-def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
+def _scenario_w12(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     """``W12 cancellation_cleanup_smoke`` — FUNCTIONAL, never throughput.
 
     Deterministic cancellation after a bounded number of records, before
-    publication.  The typed ``WRITE_CANCELLED`` family is expected; nothing
-    may be published and no residue may remain (`.partial`, backups, spool).
+    publication, on the FLAT path (no spool is applicable — stated
+    truthfully).  The typed ``WRITE_CANCELLED`` family is expected; nothing
+    may be published and no residue may remain.
     """
     from dbfbridge import WriteCancelledError, write_table
 
@@ -476,6 +655,7 @@ def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
         "write_cancelled_typed": False,
         "error_code": None,
     }
+    spool = SpoolTracker(staging)
 
     def cancel_after_ten() -> bool:
         return state["consumed"] >= 10
@@ -486,24 +666,27 @@ def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
             yield record
 
     def run() -> None:
-        try:
-            write_table(
-                destination,
-                schema=schema,
-                records=records(),
-                overwrite=False,
-                cancel_check=cancel_after_ten,
-            )
-            state["cancelled"] = False
-        except WriteCancelledError as exc:
-            state["cancelled"] = True
-            state["write_cancelled_typed"] = True
-            code = exc.code
-            state["error_code"] = getattr(code, "value", str(code))
+        with spool:
+            try:
+                write_table(
+                    destination,
+                    schema=schema,
+                    records=records(),
+                    overwrite=False,
+                    staging_directory=staging,
+                    cancel_check=cancel_after_ten,
+                )
+                state["cancelled"] = False
+            except WriteCancelledError as exc:
+                state["cancelled"] = True
+                state["write_cancelled_typed"] = True
+                code = exc.code
+                state["error_code"] = getattr(code, "value", str(code))
 
     measured = measure_run(
         run, input_bytes=None, input_records=None, output_dir=output_dir
     )
+    residue_paths = _staging_residue(output_dir)
     validation = {
         "cancelled": state["cancelled"],
         "write_cancelled_typed": state["write_cancelled_typed"],
@@ -511,13 +694,17 @@ def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
         "records_consumed_before_cancel": state["consumed"],
         "destination_absent": not destination.exists(),
         "fpt_absent": not destination.with_suffix(".fpt").exists(),
-        "no_partial_residue": measured.get("temporary_bytes_left") == 0
-        and measured.get("temporary_files_left", 1) == 0,
-        "no_backup_residue": not list(output_dir.glob("*.publish-backup*")),
+        "no_partial_residue": not any("partial" in path.name for path in residue_paths),
+        "no_backup_residue": not any("publish-backup" in path.name for path in residue_paths),
+        "no_spool_residue": not any(
+            SpoolTracker.SPOOL_SEGMENT in path.name for path in residue_paths
+        ),
+        "spool_applicable": False,  # flat path: truthfully not applicable
         "cleanup_verified": (
             state["cancelled"]
             and state["write_cancelled_typed"]
             and not destination.exists()
+            and not residue_paths
         ),
     }
     row = _run_row(
@@ -527,6 +714,8 @@ def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
         validation=validation,
         dbf_bytes=0,
         fpt_bytes=0,
+        spool=spool,
+        residue_paths=residue_paths,
     )
     # W12 is functional: no throughput claim may be derived from it.
     row["records_per_second"] = None
@@ -538,20 +727,82 @@ def _scenario_w12(output_dir: Path, count: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _memory_comparison(rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Evidence-limited W1-vs-W3 memory interpretation (DBFB-PERF-004).
+
+    The reported facts are the measured counts, RSS baselines, peaks and
+    retained deltas.  Materializing the input records would make the
+    retained delta grow ~linearly with the record count, i.e.
+    ``peak_rss_delta_ratio`` would approach ``record_count_ratio``.  The
+    classification rule is transparent and evidence-derived:
+
+    - ``peak_rss_delta_ratio >= 0.8 * record_count_ratio`` ->
+      ``POTENTIAL_DBFB_PERF_004_BLOCKER`` (reported, never hidden);
+    - ``>= 0.5`` -> ``INCONCLUSIVE``;
+    - below -> ``NO_INPUT_MATERIALIZATION_EVIDENCE``.
+    """
+    w1 = rows[SCENARIO_W1]
+    w3 = rows[SCENARIO_W3]
+    facts: dict[str, Any] = {
+        "smaller_point": SCENARIO_W1,
+        "larger_point": SCENARIO_W3,
+        "same_generator_family": True,
+        "w1_record_count": w1.get("record_count"),
+        "w1_rss_before_bytes": w1.get("rss_before_bytes"),
+        "w1_peak_rss_bytes": w1.get("peak_rss_bytes"),
+        "w1_peak_rss_delta_bytes": w1.get("peak_rss_delta_bytes"),
+        "w3_record_count": w3.get("record_count"),
+        "w3_rss_before_bytes": w3.get("rss_before_bytes"),
+        "w3_peak_rss_bytes": w3.get("peak_rss_bytes"),
+        "w3_peak_rss_delta_bytes": w3.get("peak_rss_delta_bytes"),
+    }
+    w1_count = w1.get("record_count") or 0
+    w3_count = w3.get("record_count") or 0
+    w1_delta = w1.get("peak_rss_delta_bytes")
+    w3_delta = w3.get("peak_rss_delta_bytes")
+    if w1_count and w3_count and isinstance(w1_delta, int) and isinstance(w3_delta, int):
+        facts["record_count_ratio"] = round(w3_count / w1_count, 4)
+        w1_peak = w1.get("peak_rss_bytes")
+        w3_peak = w3.get("peak_rss_bytes")
+        if isinstance(w1_peak, int) and w1_peak > 0 and isinstance(w3_peak, int):
+            facts["peak_rss_ratio"] = round(w3_peak / w1_peak, 4)
+        facts["peak_rss_delta_ratio"] = round(w3_delta / w1_delta, 4) if w1_delta > 0 else None
+        delta_ratio = facts.get("peak_rss_delta_ratio")
+        record_ratio = facts["record_count_ratio"]
+        if delta_ratio is None:
+            facts["conclusion"] = "NOT_AVAILABLE"
+        elif delta_ratio >= 0.8 * record_ratio:
+            facts["conclusion"] = "POTENTIAL_DBFB_PERF_004_BLOCKER"
+        elif delta_ratio >= 0.5:
+            facts["conclusion"] = "INCONCLUSIVE"
+        else:
+            facts["conclusion"] = "NO_INPUT_MATERIALIZATION_EVIDENCE"
+    else:
+        facts["conclusion"] = "NOT_AVAILABLE"
+    facts["note"] = (
+        "The conclusion is derived from the two measured points plus the "
+        "source-level proof that the input is a one-shot generator; no O(1) "
+        "memory claim is made."
+    )
+    return facts
+
+
 def validate_artifact(payload: dict[str, Any]) -> list[str]:
     """Structural validator for the Direct Write benchmark artifact.
 
-    Hard gates ONLY (DBFB-PERF-006): contract identity, scenario coverage,
-    required metric keys, explicit zero intermediate JSONL, zero residue for
-    completed throughput scenarios, correct W12 functional semantics and
-    public-read record-count parity.  Performance values are measured and
-    reported — never gated against a threshold.
+    Hard gates ONLY (DBFB-PERF-006): contract identity, provenance, scenario
+    coverage, required metric keys, explicit zero intermediate JSONL, zero
+    residue for completed throughput scenarios, correct W12 functional
+    semantics and public-read record-count parity.  Performance values are
+    measured and reported — never gated against a threshold.
     """
     problems: list[str] = []
     if payload.get("benchmark_contract") != CONTRACT_DIRECT_WRITE:
         problems.append("unexpected benchmark_contract")
     if payload.get("benchmark_contract_version") != CONTRACT_DIRECT_WRITE_VERSION:
         problems.append("unexpected benchmark_contract_version")
+    if not payload.get("measured_code_sha"):
+        problems.append("missing measured_code_sha provenance")
     rows = payload.get("scenarios")
     if not isinstance(rows, list) or not rows:
         problems.append("no scenario rows")
@@ -597,19 +848,25 @@ def validate_artifact(payload: dict[str, Any]) -> list[str]:
 
 
 def build_artifact(mode: str, counts: dict[str, int], root: Path) -> dict[str, Any]:
-    """Run W1/W3/W10/W12 and assemble the measured artifact payload."""
-    rows = []
+    """Run W1/W3/W10/W12 and assemble the measured artifact payload.
+
+    The caller owns *root*'s lifetime (the CLI wraps it in a
+    ``TemporaryDirectory`` so scenario artifacts are transient while the
+    JSON/Markdown evidence is written to ``--out`` separately).
+    """
     for sub in ("w1", "w3", "w10", "w12"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     rows = [
-        _scenario_w1(root / "w1", counts[SCENARIO_W1]),
-        _scenario_w3(root / "w3", counts[SCENARIO_W3]),
-        _scenario_w10(root / "w10", counts[SCENARIO_W10]),
-        _scenario_w12(root / "w12", counts[SCENARIO_W12]),
+        _scenario_w1(root / "w1", root / "w1" / "staging", counts[SCENARIO_W1]),
+        _scenario_w3(root / "w3", root / "w3" / "staging", counts[SCENARIO_W3]),
+        _scenario_w10(root / "w10", root / "w10" / "staging", counts[SCENARIO_W10]),
+        _scenario_w12(root / "w12", root / "w12" / "staging", counts[SCENARIO_W12]),
     ]
+    by_scenario = {row["scenario"]: row for row in rows}
     return {
         "benchmark_contract": CONTRACT_DIRECT_WRITE,
         "benchmark_contract_version": CONTRACT_DIRECT_WRITE_VERSION,
+        "measured_code_sha": _git_sha(),
         "run_id": _new_run_id(),
         "mode": mode,
         "git_sha": _git_sha(),
@@ -618,16 +875,7 @@ def build_artifact(mode: str, counts: dict[str, int], root: Path) -> dict[str, A
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "counts": dict(counts),
         "scenarios": rows,
-        "w1_w3_comparison": {
-            "smaller_point": SCENARIO_W1,
-            "larger_point": SCENARIO_W3,
-            "same_generator_family": True,
-            "evidence_limited_conclusion": (
-                "No evidence of linear input-record materialization (the "
-                "conclusion is limited to the two measured points; no O(1) "
-                "memory claim is made)."
-            ),
-        },
+        "w1_w3_comparison": _memory_comparison(by_scenario),
     }
 
 
@@ -636,34 +884,46 @@ def markdown_summary(payload: dict[str, Any]) -> str:
     lines = [
         "# dbfbridge Direct Write measured profile (dbfbridge-direct-write-v1)",
         "",
-        f"Mode: `{payload['mode']}` · git: `{payload['git_sha']}` · "
+        f"Mode: `{payload['mode']}` · measured at: `{payload['measured_code_sha']}` · "
         f"Python: `{payload['python_version']}` · platform: `{payload['platform']}` "
         f"· run: `{payload['run_id']}`",
         "",
         "| scenario | kind | status | records | wall (s) | rec/s |"
-        " peak RSS (MiB) | temp written (B) | residue (B) | JSONL (B) | final out (KiB) |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        " peak Δ RSS (MiB) | publish temp (B) | spool (B) | temp total (B) |"
+        " residue (B) | JSONL (B) | final out (KiB) |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in payload["scenarios"]:
-        peak = row.get("peak_rss_bytes")
-        peak_mib = f"{peak / 1048576:.1f}" if isinstance(peak, int) else "NOT_AVAILABLE"
+        delta = row.get("peak_rss_delta_bytes")
+        delta_mib = (
+            f"{delta / 1048576:.1f}"
+            if isinstance(delta, int)
+            else ("NOT_AVAILABLE" if row.get("status") == "MEASURED" else "n/a")
+        )
         rate = row.get("records_per_second")
         rate_text = str(round(rate)) if isinstance(rate, (int, float)) else "n/a"
         final_kib = f"{(row.get('final_output_bytes') or 0) / 1024:.1f}"
         lines.append(
             f"| {row['scenario']} | {row['scenario_kind']} | {row['status']} | "
             f"{row.get('record_count')} | {row.get('wall_seconds')} | {rate_text} | "
-            f"{peak_mib} | {row.get('temporary_bytes_written')} | "
+            f"{delta_mib} | {row.get('temporary_publish_bytes_written')} | "
+            f"{row.get('private_spool_bytes_written')} | "
+            f"{row.get('temporary_bytes_written')} | "
             f"{row.get('temporary_bytes_left')} | "
             f"{row.get('intermediate_jsonl_bytes')} | {final_kib} |"
         )
+    comparison = payload.get("w1_w3_comparison") or {}
     lines += [
         "",
+        f"Memory comparison ({comparison.get('conclusion')}): "
+        f"record ratio {comparison.get('record_count_ratio')} · "
+        f"peak RSS ratio {comparison.get('peak_rss_ratio')} · "
+        f"peak Δ ratio {comparison.get('peak_rss_delta_ratio')}.",
+        "",
         "W12 is functional cleanup evidence (`functional_cleanup`), not a "
-        "throughput claim.  `private_spool_bytes` is NOT_AVAILABLE without "
-        "production instrumentation; `intermediate_jsonl_bytes` is 0 for "
-        "every scenario.  These are MEASURED EVIDENCE, not a regression "
-        "baseline and not an optimization claim.",
+        "throughput claim.  `intermediate_jsonl_bytes` is 0 for every "
+        "scenario.  These are MEASURED EVIDENCE, not a regression baseline "
+        "and not an optimization claim.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -680,8 +940,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     counts = dict(FULL_COUNTS if args.mode == "full" else SMOKE_COUNTS)
-    scenario_root = Path(tempfile.mkdtemp(prefix="dbfbridge-dw-profile-"))
-    payload = build_artifact(args.mode, counts, scenario_root)
+    # Deterministic cleanup: the scenario workspace (DBF/FPT/staging/spool)
+    # is transient and removed when this invocation exits — handled failure
+    # included — while the JSON/Markdown evidence survives in --out.
+    with tempfile.TemporaryDirectory(prefix="dbfbridge-dw-profile-") as scenario_root:
+        payload = build_artifact(args.mode, counts, Path(scenario_root))
     problems = validate_artifact(payload)
     payload["validation_problems"] = problems
     args.out.mkdir(parents=True, exist_ok=True)
@@ -696,6 +959,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{row['scenario']}: {row['status']} records={row.get('record_count')} "
             f"wall={row.get('wall_seconds')}s peak_rss={row.get('peak_rss_bytes')} "
+            f"spool={row.get('private_spool_bytes_written')} "
             f"jsonl={row.get('intermediate_jsonl_bytes')} "
             f"residue={row.get('temporary_bytes_left')}"
         )

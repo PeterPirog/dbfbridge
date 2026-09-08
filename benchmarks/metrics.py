@@ -413,6 +413,25 @@ def run(
         result["rss_sample_interval_seconds"] = None
         result["peak_rss_unavailable_reason"] = sampler.unavailable_reason
 
+    # RSS provenance (benchmark instrumentation only): the before/after
+    # process snapshots already exist; expose them so artifacts can report
+    # the DELTA the measured block actually retained, not just an absolute
+    # peak that includes the host interpreter's baseline footprint.
+    if before is not None and before.get("rss_bytes") is not None:
+        result["rss_before_bytes"] = before["rss_bytes"]
+    else:
+        result["rss_before_bytes"] = None
+    if after is not None and after.get("rss_bytes") is not None:
+        result["rss_after_bytes"] = after["rss_bytes"]
+    else:
+        result["rss_after_bytes"] = None
+    peak_value = result.get("peak_rss_bytes")
+    rss_before_value = result.get("rss_before_bytes")
+    if isinstance(peak_value, int) and isinstance(rss_before_value, int):
+        result["peak_rss_delta_bytes"] = max(0, peak_value - rss_before_value)
+    else:
+        result["peak_rss_delta_bytes"] = None
+
     if before is not None and after is not None:
         io_read_delta = after["io_read_bytes"] - before["io_read_bytes"]
         io_write_delta = after["io_write_bytes"] - before["io_write_bytes"]
