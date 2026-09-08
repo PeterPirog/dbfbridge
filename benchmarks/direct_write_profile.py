@@ -726,17 +726,21 @@ def _validate_memo_output(
 ) -> dict[str, Any]:
     """Exact bounded memo validation via public read_records(memo="inline").
 
-    For EVERY record the deterministic text/binary memo values are recomputed
-    from the generator contract and compared; memo TYPE semantics (NOTE str,
-    PICTURE bytes) are verified per record.  Only counters and small facts
-    are retained — O(page size); full memo payloads never enter the artifact.
+    For EVERY record the deterministic CODE, text memo and binary memo values
+    are recomputed from the generator contract and compared; memo TYPE
+    semantics (NOTE str, PICTURE bytes) are verified per record.  Only
+    counters and small first/last facts are retained — O(page size); full
+    memo payloads never enter the artifact.
     """
     from dbfbridge import read_records
 
     total = 0
+    code_mismatches = 0
     text_memo_mismatches = 0
     binary_memo_mismatches = 0
     memo_type_mismatches = 0
+    first_code: str | None = None
+    last_code: str | None = None
     first_note: str | None = None
     last_note: str | None = None
     offset = 0
@@ -745,14 +749,19 @@ def _validate_memo_output(
         for record in page.records:
             values = record.values
             index = total
+            code = values.get("CODE")
             note = values.get("NOTE")
             picture = values.get("PICTURE")
+            if code != f"{code_prefix}{index:07d}":
+                code_mismatches += 1
+            if total == 0:
+                first_code = code
+                first_note = note
+            last_code = code
+            last_note = note
             if not isinstance(note, str) or not isinstance(picture, bytes):
                 memo_type_mismatches += 1
                 continue
-            if total == 0:
-                first_note = note
-            last_note = note
             expected_note = f"[{generation} {index % 5000:04d}] " + str(
                 __import__("benchmarks.fixtures", fromlist=["MEMO_TEXT"]).MEMO_TEXT
             )
@@ -771,13 +780,17 @@ def _validate_memo_output(
     assert total == count
     return {
         "record_count": total,
+        "first_code": first_code,
+        "last_code": last_code,
         "first_note_prefix": (first_note or "")[:6],
         "last_note_prefix": (last_note or "")[:6],
+        "code_mismatches": code_mismatches,
         "text_memo_mismatches": text_memo_mismatches,
         "binary_memo_mismatches": binary_memo_mismatches,
         "memo_type_mismatches": memo_type_mismatches,
         "memo_semantics_verified": (
-            text_memo_mismatches == 0
+            code_mismatches == 0
+            and text_memo_mismatches == 0
             and binary_memo_mismatches == 0
             and memo_type_mismatches == 0
         ),
@@ -1191,6 +1204,7 @@ def _scenario_w2(output_dir: Path, staging: Path, count: int) -> dict[str, Any]:
     validation["source_mtime_ns_after"] = source_stat_after.st_mtime_ns
     validation["source_unchanged"] = (
         source_sha_before == source_sha_after
+        and source_bytes == source_stat_after.st_size
         and source_mtime_before == source_stat_after.st_mtime_ns
     )
     validation["source_fpt_applicable"] = False  # W2 flat source has no FPT
@@ -1426,9 +1440,26 @@ def _scenario_w11(output_dir: Path, staging: Path, count: int) -> dict[str, Any]
     validation["preexisting_fpt_sha256"] = preexisting_fpt_sha
     validation["old_new_dbf_differ"] = preexisting_dbf_sha != final_dbf_sha
     validation["old_new_fpt_differ"] = preexisting_fpt_sha != final_fpt_sha
+    validation["preexisting_dbf_bytes"] = preexisting_dbf
+    validation["preexisting_fpt_bytes"] = preexisting_fpt
+    validation["final_dbf_bytes"] = (
+        destination.stat().st_size if destination.exists() else 0
+    )
+    validation["final_fpt_bytes"] = (
+        fpt_path.stat().st_size if fpt_path.exists() else 0
+    )
+    # F2-BLK-06: NEW-generation proof requires exact CODE evidence, not
+    # merely a hash difference.
+    expected_first_code = f"N{0:07d}"
+    expected_last_code = f"N{(count - 1):07d}"
+    validation["expected_first_code"] = expected_first_code
+    validation["expected_last_code"] = expected_last_code
     validation["new_generation_verified"] = (
         validation.get("memo_semantics_verified") is True
         and validation.get("generation") == "NEW"
+        and validation.get("code_mismatches") == 0
+        and validation.get("first_code") == expected_first_code
+        and validation.get("last_code") == expected_last_code
         and validation["old_new_dbf_differ"]
         and validation["old_new_fpt_differ"]
     )
@@ -1446,6 +1477,10 @@ def _scenario_w11(output_dir: Path, staging: Path, count: int) -> dict[str, Any]
         ),
     )
     row["preexisting_final_bytes"] = preexisting_dbf + preexisting_fpt
+    row["preexisting_dbf_bytes"] = preexisting_dbf
+    row["preexisting_fpt_bytes"] = preexisting_fpt
+    row["final_dbf_bytes"] = row["dbf_bytes"]
+    row["final_fpt_bytes"] = row["fpt_bytes"]
     row["backup_moves"] = moves.moves
     return row
 
