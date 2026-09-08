@@ -51,6 +51,8 @@ benchmarks/results/
 # Accepted benchmark baselines are intentional, versioned evidence.
 !benchmarks/baselines/*.json
 !benchmarks/regression/*.json
+# Maintained machine-readable contract examples (docs assets).
+!docs/schemas/*.json
 # Schema/metadata/report files (generated)
 *.schema.jsonl
 *.metadata.json

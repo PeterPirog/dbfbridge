@@ -26,7 +26,9 @@ install profiles, progress/cancellation, and the JSON-safe boundary.
 patterns for MCP servers, JSON-RPC services, agent tools, and job workers:
 bounded paging, projection, memo/raw policy, JSON boundary, error mapping,
 progress/cancellation, path-security responsibility, offline/vendored
-deployment. **INTEGRATION GUIDE** — generic; no specific downstream project
+deployment, the host-opt-in Direct Write workflow, and the
+[schemas/write-result.schema.json](schemas/write-result.schema.json) output
+contract. **INTEGRATION GUIDE** — generic; no specific downstream project
 is referenced.
 
 ## Stable 1.x API contract

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PeterPirog/dbfbridge/docs/schemas/write-result.schema.json",
+  "title": "dbfbridge WriteResult (JSON-safe tool boundary)",
+  "description": "Machine-readable contract for dbfbridge.WriteResult.to_dict() (DBFB-MCP-010, DBFB-RESULT-001). The host tool server declares this shape as its output schema instead of serializing __dict__/repr. Paths are POSIX-form strings; fpt_path and fpt_sha256 are null when the write publishes no memo companion; warnings carry limitation text only and never record or memo values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "destination",
+    "fpt_path",
+    "fpt_published",
+    "records_written",
+    "deleted_records",
+    "structural_cdx",
+    "index_rebuild_required",
+    "dbc_bound",
+    "dbf_sha256",
+    "fpt_sha256",
+    "warnings"
+  ],
+  "properties": {
+    "destination": {
+      "type": "string",
+      "description": "Final published DBF path, serialized through the public POSIX-form boundary (Path.as_posix())."
+    },
+    "fpt_path": {
+      "type": ["string", "null"],
+      "description": "Final published FPT path (public POSIX-form serialization), or null when no memo companion was published."
+    },
+    "fpt_published": {
+      "type": "boolean"
+    },
+    "records_written": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deleted_records": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "structural_cdx": {
+      "type": "boolean",
+      "description": "True when the schema declared a structural CDX index (presence only; never an index-validity claim)."
+    },
+    "index_rebuild_required": {
+      "type": "boolean",
+      "description": "True when the destination must have its index rebuilt externally before use."
+    },
+    "dbc_bound": {
+      "type": "boolean",
+      "description": "True when the schema declared DBC binding; the written table is standalone."
+    },
+    "dbf_sha256": {
+      "type": "string",
+      "description": "SHA-256 of the final published DBF (lowercase hex).",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fpt_sha256": {
+      "type": ["string", "null"],
+      "description": "SHA-256 of the final published FPT (lowercase hex), or null when none was published.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable limitation notices (e.g. structural CDX, DBC); never record or memo payload values."
+    }
+  }
+}

@@ -79,9 +79,24 @@ files, and loads no CLI/reporting modules or heavy dependencies. A cheap
 startup probe uses public metadata only — **never perform a DBF read merely
 for service discovery**.
 
-The probe must be **fail-closed**: a transport/service adapter must not
-report a backend as available merely because `import dbfbridge` succeeded if
-the public operations it requires are missing.
+The probe must be **fail-closed** and must separate **four layers**. Direct
+Write availability is the fail-closed conjunction of the first three — a
+successful `import dbfbridge` alone is never sufficient to declare a
+writable backend (DBFB-MCP-009):
+
+1. **API surface available** — the public operation symbols exist on
+   `import dbfbridge` (a *derived API fact*);
+2. **`[write]` capability configured** — the host *deployment
+   configuration* installed/targeted the write profile (a *host
+   configuration fact*; the probe never installs, imports `dbf`, or runs a
+   destructive test write to discover it);
+3. **write exposed by host policy** — the host explicitly decided to
+   expose write operations (an *authorization fact* owned by the host);
+4. **optional dependency actually usable at operation time** — `[write]`
+   provides the physical writer dependency lazily; a configured-but-broken
+   environment still fails as a typed `OptionalDependencyMissingError` when
+   an operation runs. Configured capability is therefore **not** a
+   destructive runtime probe.
 
 ```python
 import dbfbridge
@@ -94,24 +109,50 @@ DIRECT_READ_API = (
     "iter_raw_records",
 )
 
+WRITE_API = ("write_table", "WriteResult", "DirectWriteError")
 
-def backend_status():
+
+def backend_status(
+    *,
+    write_enabled: bool = False,
+    write_capability_configured: bool = False,
+):
+    # Fail-closed capability model (DBFB-MCP-009).
+    # - API facts are DERIVED from public symbols;
+    # - deployment/profile capability comes from HOST CONFIGURATION
+    #   (defaults fail closed);
+    # - authorization/exposure comes from HOST POLICY;
+    # - the physical dependency may still fail typed at operation time
+    #   (`OptionalDependencyMissingError`) — configured capability is not
+    #   verified by a destructive runtime probe.
     direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
+    write_api_ok = all(hasattr(dbfbridge, name) for name in WRITE_API)
+    direct_write_ok = (
+        write_api_ok and write_capability_configured and write_enabled
+    )
 
     return {
         "available": direct_read_ok,
         "version": dbfbridge.__version__,
         "direct_read": direct_read_ok,
+        "write_api_available": write_api_ok,
+        "write_capability_configured": bool(write_capability_configured),
+        "write_enabled_by_policy": bool(write_enabled),
+        "direct_write_available": direct_write_ok,
         "public_api": {
             name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
+        },
+        "write_api": {
+            name: hasattr(dbfbridge, name) for name in WRITE_API
         },
     }
 ```
 
 For write/XLSX capability discovery, do **not** perform destructive test
-calls. Treat the deployment configuration / install profile as the capability
-declaration and let the operation's typed `OptionalDependencyMissingError`
-provide the authoritative runtime failure. dbfbridge intentionally exposes no
+calls (no test DBF write, no runtime install, no network call). Treat the
+deployment configuration / install profile as the capability declaration and
+let the operation's typed `OptionalDependencyMissingError` provide the
+authoritative runtime failure. dbfbridge intentionally exposes no
 capability-registry API — do not invent one.
 
 ## 5. Bounded reads at the tool boundary
@@ -155,11 +196,15 @@ remains a host responsibility.
   needed; the FPT is never opened.
 - `memo="lazy"` — useful inside local Python code: memo fields are returned
   as `LazyMemoValue` handles. A `LazyMemoValue` is a pointer/reference
-  contract, **not** remote memo content — do not send the handle object over
-  a transport.
+  contract, **not** remote memo content — **never serialize it across a
+  tool/MCP/JSON transport** (DBFB-MCP-004): it is a local Python handle only
+  and carries no payload data.
 - `memo="inline"` — when the response explicitly needs memo values.
 
-For large remote results, avoid blindly inlining every memo.
+For large remote results, avoid blindly inlining every memo. Where memo
+content is genuinely required remotely, use a separate, explicitly bounded
+memo-read policy over the public read APIs (`memo="inline"` with field
+projection and a finite page size) instead of transporting handle objects.
 
 ## 8. Raw data policy
 
@@ -175,9 +220,22 @@ a change to the API contract.
 Public models expose `to_dict()` as the supported JSON-safe boundary —
 `TableInfo`, `TableSchema`, `DirectRecord`, `RecordPage`,
 `ExportRunResult`, `ReconstructionRunResult`, `VerificationRunResult`,
-`QualityRunResult`, and every public error. Do not use
+`QualityRunResult`, `WriteResult` (v1.1), and every public error. Do not use
 `dataclasses.asdict(...)`, `obj.__dict__`, or `repr(obj)` as the integration
 contract.
+
+### 9.1 `WriteResult` output schema (v1.1)
+
+`WriteResult.to_dict()` is the intended tool-result body for a write
+operation: `destination`, `fpt_path`, `fpt_published`, `records_written`,
+`deleted_records`, `structural_cdx`, `index_rebuild_required`, `dbc_bound`,
+`dbf_sha256`, `fpt_sha256`, `warnings` — JSON-safe, POSIX paths, and no
+record/memo values. The maintained machine-readable example lives in
+[docs/schemas/write-result.schema.json](schemas/write-result.schema.json)
+and is regression-checked against a real runtime payload
+(`tests/test_tool_server_integration_contract.py`). A host tool server may
+declare this shape as its output schema (DBFB-MCP-010); it must never
+serialize `__dict__`/`repr` instead.
 
 **Intentional serialization exceptions** (frozen runtime contract):
 
@@ -268,6 +326,53 @@ The error payload **families differ intentionally** (see
 - `OptionalDependencyMissingError`: `{code, dependency, extra, operation, install_command, purpose?}`;
 - `DBFBridgeRunError`: `{code, message, details: [...]}`.
 
+### 11.1 Direct Write error mapping (v1.1)
+
+The write family is mapped by the same rule — `error.code` + `to_dict()`,
+never the message text:
+
+```python
+import dbfbridge
+from dbfbridge import (
+    DirectWriteError,
+    OperationOutputExistsError,
+    OptionalDependencyMissingError,
+)
+
+WRITE_ERROR_CODES = frozenset({
+    "WRITE_SCHEMA_INVALID",
+    "WRITE_FIELD_UNSUPPORTED",
+    "WRITE_VALUE_INVALID",
+    "WRITE_MEMO_FAILED",
+    "WRITE_PUBLICATION_FAILED",
+    "WRITE_CANCELLED",
+    "DESTINATION_IO_ERROR",
+    "OUTPUT_EXISTS",
+    "OPTIONAL_DEPENDENCY_MISSING",
+})
+
+
+def write_error_payload(exc: Exception) -> dict:
+    # Classify by the structured code; never by regex/startswith on the
+    # English message (DBFB-MCP-008).
+    if isinstance(exc, (OperationOutputExistsError, OptionalDependencyMissingError)):
+        return exc.to_dict()
+    if isinstance(exc, DirectWriteError):
+        payload = exc.to_dict()
+        assert payload["code"] in WRITE_ERROR_CODES
+        return payload
+    raise exc
+```
+
+The reused public codes (`OUTPUT_EXISTS` from `OperationOutputExistsError`,
+`OPTIONAL_DEPENDENCY_MISSING`) keep their 1.0 shape; the write-family codes
+come from `DirectWriteError.to_dict()` —
+`{code, message, path, context}`, JSON-safe, with no record or memo values.
+The reused families (`OperationOutputExistsError`:
+`{code, message, path, operation, table, context}`,
+`OptionalDependencyMissingError`: `{code, dependency, extra, operation,
+install_command, purpose?}`) intentionally have their own shapes.
+
 ## 12. Complete transport-neutral example
 
 ```python
@@ -288,16 +393,35 @@ DIRECT_READ_API = (
     "iter_raw_records",
 )
 
+WRITE_API = ("write_table", "WriteResult", "DirectWriteError")
 
-def backend_status() -> dict:
-    # Fail-closed: availability is DERIVED, never hardcoded.
+
+def backend_status(
+    *,
+    write_enabled: bool = False,
+    write_capability_configured: bool = False,
+) -> dict:
+    # Fail-closed: the direct-read fact is DERIVED from public symbols; the
+    # writable capability is the fail-closed conjunction of API presence,
+    # host configuration and host policy (see the capability-probe section).
     direct_read_ok = all(hasattr(dbfbridge, name) for name in DIRECT_READ_API)
+    write_api_ok = all(hasattr(dbfbridge, name) for name in WRITE_API)
+    direct_write_ok = (
+        write_api_ok and write_capability_configured and write_enabled
+    )
     return {
         "available": direct_read_ok,
         "version": dbfbridge.__version__,
         "direct_read": direct_read_ok,
+        "write_api_available": write_api_ok,
+        "write_capability_configured": bool(write_capability_configured),
+        "write_enabled_by_policy": bool(write_enabled),
+        "direct_write_available": direct_write_ok,
         "public_api": {
             name: hasattr(dbfbridge, name) for name in DIRECT_READ_API
+        },
+        "write_api": {
+            name: hasattr(dbfbridge, name) for name in WRITE_API
         },
     }
 
@@ -370,8 +494,36 @@ for record in iter_records(path, cancel_check=should_cancel):
 
 When the callable returns `True`, the read stops at the next record boundary
 and raises `ReadCancelledError` (`READ_CANCELLED`) — a normal,
-machine-classifiable outcome carrying the resume context. High-level write
-operations do not expose `cancel_check`; do not invent cancellation for them.
+machine-classifiable outcome carrying the resume context. The nine high-level
+1.0 operations (`export_dbf`, `reconstruct_dbf`, …) do not expose
+`cancel_check`; do not invent cancellation for them.
+
+**Direct Write (v1.1) is the exception by contract:** `write_table()` accepts
+`cancel_check` and `progress`. The host maps its request-cancellation state
+into the callable; a cooperative cancellation stops at a record boundary or
+before publication, raises `WriteCancelledError` (`WRITE_CANCELLED`), cleans
+staging/spool, and **publishes nothing** — the previous pair stays intact
+under `overwrite=True`:
+
+```python
+from dbfbridge import WriteCancelledError, write_table
+
+cancelled = False
+
+
+def write_bounded(destination, schema, records, *, cancel_check, progress):
+    try:
+        return write_table(
+            destination,
+            schema=schema,
+            records=records,
+            cancel_check=cancel_check,  # host maps request cancellation here
+            progress=progress,
+        )
+    except WriteCancelledError as exc:
+        # normal, machine-classifiable outcome: nothing was published
+        return {"ok": False, "error": exc.to_dict()}
+```
 
 ## 15. Progress bridging
 
@@ -404,7 +556,10 @@ def on_progress(event):
 
 The hosting adapter may map `ProgressEvent` to its own
 progress/notification mechanism (for example an MCP progress notification);
-dbfbridge does not assume any protocol-specific progress API.
+dbfbridge does not assume any protocol-specific progress API. Direct Write
+(v1.1) emits the same canonical `ProgressEvent` objects with
+`operation="write"` — the same host-side serializer above covers them; no
+second progress system exists.
 
 ## 16. Path security (host responsibility)
 
@@ -439,7 +594,11 @@ the library imposes no transport and no default authorization:
   same-volume atomicity rule for `staging_directory`;
 - **source != destination** - Direct Write never reads or modifies a source
   table (the source is not even an argument); hosts should still reject
-  destination paths that alias protected locations;
+  destination paths that alias protected locations; for a copy/transform
+  workflow the host **must** reject a destination that resolves (after
+  canonicalization) to a protected source location **even when the caller
+  requests `overwrite=True`** (DBFB-MCP-007) — overwrite policy and
+  source-immutability policy are two separate host decisions;
 - **overwrite policy** - `overwrite` defaults to `False` and returns the
   stable `OUTPUT_EXISTS` code; a host may hard-code it to `False` for
   append-only workflows;
@@ -454,6 +613,109 @@ the library imposes no transport and no default authorization:
 - **serialize `WriteResult.to_dict()`** - the JSON-safe payload (POSIX
   paths, counters, final SHA-256 digests, warnings list) is the intended
   tool-result body.
+
+### 17.2 Bounded Direct Write workflow (host patterns)
+
+`write_table` consumes its records iterable **exactly once** and streams it
+(flat tables O(1)/O(batch); the Varchar/`_NullFlags` second pass replays a
+bounded private spool). That contract is what makes safe host integration
+possible — and it imposes one host rule:
+
+> **Never accept an unbounded record array as ONE tool argument**
+> (DBFB-MCP-006). A server adapter must not take millions of records as a
+> single JSON/RPC list and hand `list(records)` to `write_table`.
+
+Two transport-neutral host patterns — both keep the library API unchanged:
+
+**Pattern A — service-layer stream (the host creates the iterator):**
+
+```python
+from dbfbridge import write_table
+
+MAX_RECORDS_PER_WRITE = 50_000  # HOST POLICY, not a dbfbridge limit
+
+
+def write_from_host_stream(schema, bounded_batches, *, destination):
+    """The host already owns bounded batches; it yields ONE iterator that
+    `write_table` consumes exactly once."""
+    def records():
+        produced = 0
+        for batch in bounded_batches(bounded_batches_cap=10_000):
+            for row in batch:
+                if produced >= MAX_RECORDS_PER_WRITE:
+                    raise RuntimeError("host record cap exceeded")
+                produced += 1
+                yield row
+
+    return write_table(destination, schema=schema, records=records())
+
+
+def bounded_batches(bounded_batches_cap):
+    """Host-owned bounded source (request chunks, queue, files) — placeholder
+    for the host's own transport; the library never sees the transport."""
+    yield ()
+```
+
+**Pattern B — bounded job/workspace input** (for RPC/MCP hosts where one
+request cannot stream records): the host prepares/uploads records into a
+job/workspace input **under host control** (size-capped), then creates the
+iterator over that bounded input and calls `write_table` inside its own
+worker:
+
+```python
+from dbfbridge import write_table
+
+
+def run_write_job(schema, job, *, destination, progress=None):
+    """`job.records_path` is a bounded host-managed input file created before
+    this job started; `iter_job_rows` is host-owned. dbfbridge receives a
+    plain iterable — no JSONL transport, no spool on the caller side."""
+    def records():
+        for row in iter_job_rows(job.records_path):
+            yield row
+
+    return write_table(
+        destination,
+        schema=schema,
+        records=records(),
+        overwrite=False,
+        progress=progress,
+        cancel_check=job.cancel_check,
+    )
+```
+
+Two boundaries this must not cross:
+
+- **Direct Write does not require JSONL** — `write_table` takes any iterable
+  of `DirectRecord`/mapping objects; do not introduce a mandatory JSONL
+  conversion in front of it and do not add a transport spool to the library;
+- **the iterable is consumed exactly once** — a host iterator must be a
+  fresh, single-pass object per call (one-shot generators are supported).
+
+### 17.3 Host request example (NOT an MCP protocol definition)
+
+A generic host-side request payload for a write action is a host
+integration example — it is **not** a dbfbridge public API, **not** an MCP
+protocol object, and never embeds an unbounded record array:
+
+```json
+{
+  "tool": "dbf_write_table",
+  "destination": "exports/2024/klienci-copy.dbf",
+  "overwrite": false,
+  "staging_directory": "exports/2024/.staging",
+  "schema_ref": "jobs/42/klienci.schema.json",
+  "input_ref": "jobs/42/records.part-0001",
+  "input_record_cap": 50000
+}
+```
+
+Host responsibilities implied by this shape: validate and authorize the
+request, resolve `destination` and `staging_directory` against the allowed
+roots (same filesystem/volume for staging — the library refuses otherwise),
+load the typed schema the host planned, stream the bounded input as the
+records iterable, and surface `WriteResult.to_dict()` as the response
+payload.
 
 ## 17a. Source immutability vs write operations (historical note)
 
@@ -487,6 +749,7 @@ because an OS path is writable.
 | `reconstruct_dbf` | reconstruction action | `[write]` (+`[xlsx]` for XLSX input) | none | yes (DBF/FPT + report) | per-table results | `ReconstructionRunResult.to_dict()` |
 | `verify_conversion` | consistency check | base (+`[xlsx]` for XLSX) | none | **only when `write_report=True`** | per-file checks | `VerificationRunResult.to_dict()` |
 | `check_conversion_quality` | diagnostic round-trip action | `[write]` | none | yes (retained workspace) | per-table | `QualityRunResult.to_dict()` |
+| `write_table` *(v1.1)* | **host opt-in** write action | `[write]` | none | yes (fresh DBF/FPT pair) | iterable consumed exactly once; flat O(1)/O(batch) | `WriteResult.to_dict()` ([schema](schemas/write-result.schema.json)) |
 
 Server-authors' notes:
 
@@ -577,7 +840,10 @@ The adapter must remain thin:
 - parsing English exception messages: **NO** (classify by `code`);
 - duplicating schema or memo decoding logic: **NO**;
 - inventing a decoder for unsupported field types: **NO** (use the typed
-  compatibility classification — see §20).
+  compatibility classification — see §20);
+- importing MCP/JSON-RPC/HTTP protocol SDKs or session/token state INTO
+  dbfbridge: **NO** (DBFB-MCP-011 / DBFB-NOGO-011 — the library stays
+  transport-neutral; protocol state lives in the host adapter only).
 
 All DBF/FPT domain knowledge stays inside dbfbridge; the transport owns only
 transport concerns.
