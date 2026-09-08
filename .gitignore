@@ -53,6 +53,8 @@ benchmarks/results/
 !benchmarks/regression/*.json
 # Maintained machine-readable contract examples (docs assets).
 !docs/schemas/*.json
+# Direct Write measured-evidence profile (NOT a regression baseline).
+!benchmarks/evidence/*.json
 # Schema/metadata/report files (generated)
 *.schema.jsonl
 *.metadata.json
