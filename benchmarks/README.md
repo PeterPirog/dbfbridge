@@ -429,29 +429,56 @@ to expected counts, sizes and SHA-256.
 ## Direct Write measured profile (v1.1, `dbfbridge-direct-write-v1`)
 
 A **separate** versioned benchmark contract for the public v1.1 Direct Write
-surface (`write_table`).  It measures W1 (190k flat), W3 (1M flat, lazy
-generator input), W10 (Varchar/`_NullFlags` replay path) and W12
-(functional cancellation/cleanup smoke) with the SAME
-`benchmarks/metrics.py` machinery (sampled peak RSS, atomic-publish
-temporary bytes, residue), validates every output through public Direct
-Read, and reports `intermediate_jsonl_bytes = 0` explicitly for every
-scenario (regression-protected).  The first profile is **MEASURED
-EVIDENCE**, not a regression baseline (DBFB-PERF-006); the validator
-enforces structural gates only (zero JSONL, zero residue, correct counts,
-one-shot input), never performance thresholds.  Historical Phase 0/1/3
-baselines are untouched.
+surface (`write_table`).  It measures the complete architecture-defined
+minimal scenario suite:
+
+- **W1** `direct_write_190k_flat` - 190k flat records (plain path);
+- **W2** `direct_read_transform_write_190k` - public `iter_records` -> lazy
+  transform -> `write_table` (190k; source prepared outside the measured
+  window and verified byte-for-byte unchanged);
+- **W3** `direct_write_1m_flat` - 1M flat records from a lazy generator
+  (bounded-input evidence);
+- **W4** `direct_write_character_heavy` - 100k records across six Character
+  fields with varied payload lengths;
+- **W5** `direct_write_memo_heavy` - 100k records with text (M) + binary (G)
+  memos (significant FPT output; memo semantics validated via public
+  `read_records(memo="inline")`);
+- **W6** `direct_write_deleted_include` - 100k records, every third deleted
+  (markers, ordering and counts validated via public Direct Read);
+- **W7/W8/W9** `direct_write_cp1250` / `direct_write_cp852` /
+  `direct_write_mazovia` - 50k records of genuine Polish diacritics per
+  codepage, round-trip validated through public Direct Read;
+- **W10** `direct_write_varchar_nullflags` - 100k Varchar/`_NullFlags`
+  records (private bounded replay/spool path; spool bytes observed);
+- **W11** `overwrite_transaction_staging_cost` - 20k DBF+FPT overwrite
+  through the full transaction (staging/fsync/backup/rename preserved);
+- **W12** `cancellation_cleanup_smoke` - functional cancellation evidence
+  (NOT a throughput claim).
+
+The scenario counts for W4-W9/W11 are deterministic repository choices
+(documented per scenario via `count_rationale` in the artifact), NOT
+architecture prescriptions.  The SAME `benchmarks/metrics.py` machinery
+(sampled peak RSS, atomic-publish temporary bytes, residue) is reused; the
+private staging spool bytes are OBSERVED through the benchmark-side tracker
+(scoped to the scenario-local `staging_directory` supplied via the public
+API).  `intermediate_jsonl_bytes = 0` is explicit for every scenario and
+regression-protected.  The profile is **MEASURED EVIDENCE**, not a
+regression baseline (DBFB-PERF-006); the validator enforces structural
+gates only (zero JSONL, zero residue, correct counts, one-shot input),
+never performance thresholds.  Historical Phase 0/1/3 baselines are
+untouched.
 
 ```powershell
 # smoke (CI-feasible; wiring/contract validation, not final evidence):
 python -m benchmarks.direct_write_profile --mode smoke
 
-# full architecture counts (W1=190k, W3=1M, W10=100k, W12 functional):
+# full architecture counts (W1=190k, W2=190k, W3=1M, W10=100k, W4-W9/W11 per
+# count_rationale, W12 functional):
 python -m benchmarks.direct_write_profile --mode full
 ```
 
 Artifacts land in `benchmarks/evidence/direct-write-v1-<mode>.{json,md}`
-(generated from the same payload — one source of truth).  W2/W4–W9/W11
-belong to the NEXT bounded Phase F task.
+(generated from the same payload - one source of truth).
 
 ## Profiles
 
