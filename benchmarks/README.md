@@ -480,6 +480,34 @@ python -m benchmarks.direct_write_profile --mode full
 Artifacts land in `benchmarks/evidence/direct-write-v1-<mode>.{json,md}`
 (generated from the same payload - one source of truth).
 
+## Direct Write regression calibration (F3A, `dbfbridge-direct-write-calibration-v1`)
+
+A **separate offline calibration layer** (distinct from the benchmark
+contract) collects multi-sample Direct Write evidence for the future F3B
+regression policy (DBFB-PERF-006).  The offline collector
+(`benchmarks/direct_write_calibration.py`, stdlib-only, never benchmarks)
+consumes saved full W1-W12 profile reports and emits compact deterministic
+calibration evidence: safe per-sample provenance, descriptive min/median/
+max/MAD statistics, and DESCRIPTIVE_ONLY same-run ratio candidates
+(W3/W2/W5/W10 wall-per-record vs W1, W3/W1 peak-RSS-delta).  Sample
+identity is `(workflow_run_id, replica_id)` — five matrix jobs of one
+workflow invocation legitimately share the workflow_run_id; duplicates are
+rejected.  The collector validates the complete set fail-closed (sample
+count >= 5, unique identities/run ids, one source SHA, one contract,
+mode=full, all W1-W12 MEASURED, zero JSONL/residue, W10 spool evidence,
+W12 functional-only, privacy sentinels).  It establishes NO performance
+threshold; the versioned regression policy is F3B's job.
+
+```powershell
+python -m benchmarks.direct_write_calibration --report replica-1=<json> ... `
+  --workflow-run-id <id> --reference-commit <sha> `
+  --output calibration.json --markdown calibration.md
+```
+
+The five-replica collection runs in
+`.github/workflows/direct-write-calibration.yml` (path-filtered, additive;
+never touches Phase 3 artifacts).
+
 ## Profiles
 
 `fast` is the control profile (**19 `MEASURED`** scenarios, 0 `NOT_IMPLEMENTED`).
