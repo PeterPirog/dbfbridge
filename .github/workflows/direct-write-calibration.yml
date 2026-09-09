@@ -60,7 +60,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Record dependency provenance
+      - name: Run full W1-W12 Direct Write profile
+        shell: pwsh
+        run: |
+          python -m benchmarks.direct_write_profile --mode full --out "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}"
+
+      - name: Record run provenance (deterministic JSON)
         shell: pwsh
         env:
           GITHUB_SHA: ${{ github.sha }}
@@ -68,47 +73,18 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          python -c "
-          import json, os, platform, sys
-          from importlib.metadata import version
-          event = os.environ.get('GITHUB_EVENT_NAME', '')
-          if event == 'pull_request':
-              source_context = 'pull_request_merge_ref'
-          else:
-              source_context = 'main_push'
-          payload = {
-              'provenance_contract': 'dbfbridge-direct-write-run-provenance-v1',
-              'provenance_contract_version': 1,
-              'workflow_run_id': os.environ.get('GITHUB_RUN_ID', ''),
-              'replica_id': 'replica-' + os.environ['REPLICA'],
-              'github_sha': os.environ.get('GITHUB_SHA', ''),
-              'source_context': source_context,
-              'branch_head_sha': os.environ.get('PR_HEAD_SHA') or None,
-              'base_sha': os.environ.get('BASE_SHA') or None,
-              'runner_os': platform.system(),
-              'runner_arch': platform.machine(),
-              'python_version': sys.version.split()[0],
-              'python_implementation': platform.python_implementation(),
-              'sys_platform': sys.platform,
-              'machine': platform.machine(),
-              'install_recipe': 'pip install -e \\\".[dev]\\\"',
-              'dependencies': {
-                  'dbf': __import__('importlib.metadata', fromlist=['version']).version('dbf'),
-                  'dbfread': __import__('importlib.metadata', fromlist=['version']).version('dbfread'),
-                  'psutil': __import__('importlib.metadata', fromlist=['version']).version('psutil'),
-              },
-          }
-          Path = __import__('pathlib').Path
-          target = Path(os.environ['RUNNER_TEMP']) / ('dw-calibration-replica-' + os.environ['REPLICA']) / 'direct-write-provenance.json'
-          target.parent.mkdir(parents=True, exist_ok=True)
-          target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
-          print('provenance written to ' + str(target))
-          "
-
-      - name: Run full W1-W12 Direct Write profile
-        shell: pwsh
-        run: |
-          python -m benchmarks.direct_write_profile --mode full --out "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}"
+          $sourceContext = "main_push"
+          if ("${{ github.event_name }}" -eq "pull_request") { $sourceContext = "pull_request_merge_ref" }
+          $prHead = "${{ github.event.pull_request.head.sha }}"
+          $baseSha = "${{ github.event.pull_request.base.sha }}"
+          python -m benchmarks.direct_write_run_provenance `
+            --workflow-run-id "${{ github.run_id }}" `
+            --replica-id "replica-${{ matrix.replica }}" `
+            --github-sha "${{ github.sha }}" `
+            --source-context $sourceContext `
+            --branch-head-sha $prHead `
+            --base-sha $baseSha `
+            --output "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}\direct-write-provenance.json"
 
       - name: Structurally validate the replica report
         shell: pwsh
@@ -124,7 +100,7 @@ jobs:
           path: |
             ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}/direct-write-v1-full.json
             ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}/direct-write-v1-full.md
-            ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}-provenance.json
+            ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}/direct-write-provenance.json
           if-no-files-found: error
 
   aggregate:
