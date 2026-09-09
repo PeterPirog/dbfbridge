@@ -47,6 +47,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any
@@ -148,7 +149,6 @@ def validate_sample_reports(
     contract_versions: set[Any] = set()
     modes: set[str] = set()
     scenario_sets: set[tuple[str, ...]] = set()
-    runtime_recipes: set[str] = set()
     for position, report in enumerate(reports):
         label = f"report[{position}]"
         if not isinstance(report, dict):
@@ -229,8 +229,6 @@ def validate_sample_reports(
         problems.append("non-full mode mixed into calibration")
     if len(scenario_sets) > 1:
         problems.append("different scenario sets across reports")
-    if len(runtime_recipes) > 1:
-        problems.append("incompatible runtime recipes")
     return problems
 
 
@@ -252,6 +250,233 @@ def _check_privacy(label: str, payload: dict[str, Any]) -> list[str]:
             if key in validation:
                 problems.append(f"{label}/{row.get('scenario')}: privacy sentinel {key!r}")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# provenance contract (F3A-BLK-01/04) — strict whitelist, fail-closed
+# ---------------------------------------------------------------------------
+
+#: Versioned run-provenance contract consumed by the collector.
+PROVENANCE_CONTRACT = "dbfbridge-direct-write-run-provenance-v1"
+PROVENANCE_CONTRACT_VERSION = 1
+
+#: Required provenance fields (whitelist — arbitrary fields are rejected).
+_REQUIRED_PROVENANCE_KEYS = (
+    "provenance_contract",
+    "provenance_contract_version",
+    "workflow_run_id",
+    "replica_id",
+    "github_sha",
+    "runner_os",
+    "runner_arch",
+    "python_version",
+    "python_implementation",
+    "sys_platform",
+    "machine",
+    "install_recipe",
+    "dependencies",
+)
+
+#: Optional bounded provenance fields (merge-ref semantics; all validated).
+_OPTIONAL_PROVENANCE_KEYS = (
+    "source_context",
+    "branch_head_sha",
+    "base_sha",
+    "runner_image",
+)
+
+#: Credential-like provenance key fragments rejected case-insensitively.
+_PROVENANCE_SECRET_KEY_PATTERNS = (
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "authorization",
+    "cookie",
+)
+
+_REQUIRED_DEPENDENCIES = ("dbf", "dbfread", "psutil")
+
+_SHA40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+_PROVENANCE_ALLOWLIST = frozenset(
+    list(_REQUIRED_PROVENANCE_KEYS) + list(_OPTIONAL_PROVENANCE_KEYS)
+)
+
+
+def _valid_sha(value: Any) -> bool:
+    return isinstance(value, str) and _SHA40_PATTERN.match(value) is not None
+
+
+_SHA40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+
+def validate_provenance(
+    entry: Any,
+    *,
+    replica_id: Any,
+    workflow_run_id: Any,
+    measured_code_sha: Any,
+) -> list[str]:
+    """Strict provenance-contract validation for ONE replica (F3A-BLK-01/04).
+
+    Whitelist-only: unknown fields, credential-like keys, wrong contract,
+    missing required fields and cross-sample mismatches are rejected.
+    """
+    problems: list[str] = []
+    label = f"provenance[{replica_id}]"
+    if not isinstance(entry, dict):
+        return [f"{label}: provenance must be an object"]
+    unknown = set(entry) - _PROVENANCE_ALLOWLIST
+    if unknown:
+        problems.append(f"{label}: unknown provenance fields {sorted(unknown)}")
+    for pattern in _PROVENANCE_SECRET_KEY_PATTERNS:
+        if any(pattern in str(key).casefold() for key in entry):
+            problems.append(f"{label}: provenance secret field {pattern!r}")
+    if entry.get("provenance_contract") != PROVENANCE_CONTRACT:
+        problems.append(
+            f"{label}: provenance contract must be {PROVENANCE_CONTRACT!r}"
+        )
+    if entry.get("provenance_contract_version") != PROVENANCE_CONTRACT_VERSION:
+        problems.append(f"{label}: wrong provenance contract version")
+    for key in _REQUIRED_PROVENANCE_KEYS:
+        if entry.get(key) in (None, "", {}, []):
+            problems.append(f"{label}: missing provenance field {key!r}")
+    if problems:
+        return problems
+    dependencies = entry["dependencies"]
+    if not isinstance(dependencies, dict):
+        return [f"{label}: provenance dependencies must be an object"]
+    for dependency in _REQUIRED_DEPENDENCIES:
+        version = dependencies.get(dependency)
+        if not isinstance(version, str) or not version.strip():
+            problems.append(f"{label}: missing dependency version {dependency!r}")
+    if problems:
+        return problems
+    # cross-sample identity checks (F3A provenance acceptance §9)
+    if str(entry["replica_id"]) != str(replica_id):
+        problems.append(
+            f"{label}/replica_id mismatch: provenance {entry['replica_id']!r} "
+            f"vs sample {replica_id!r}"
+        )
+    if str(entry["workflow_run_id"]) != str(workflow_run_id):
+        problems.append(
+            f"{label}/workflow_run_id mismatch: provenance "
+            f"{entry['workflow_run_id']!r} vs sample {workflow_run_id!r}"
+        )
+    if entry["github_sha"] != measured_code_sha:
+        problems.append(
+            f"{label}/github_sha mismatch: provenance {entry['github_sha']!r} "
+            f"vs sample measured_code_sha {measured_code_sha!r}"
+        )
+    source_context = entry.get("source_context")
+    if source_context is not None and source_context not in {
+        "pull_request_merge_ref",
+        "main_push",
+    }:
+        problems.append(f"{label}: invalid source_context {source_context!r}")
+    for optional_sha in ("branch_head_sha", "base_sha"):
+        value = entry.get(optional_sha)
+        if value is not None and not _valid_sha(value):
+            problems.append(f"{label}: invalid {optional_sha} {value!r}")
+    return problems
+
+
+def _runtime_recipe_from_provenance(entry: dict[str, Any]) -> str:
+    """Deterministic runtime recipe string from VALIDATED provenance."""
+    major_minor = ".".join(str(entry["python_version"]).split(".")[:2])
+    dependencies = entry["dependencies"]
+    return "|".join(
+        (
+            entry["runner_os"],
+            entry["runner_arch"],
+            f"python-{major_minor}",
+            entry["install_recipe"],
+            f"dbf={dependencies['dbf']}",
+            f"dbfread={dependencies['dbfread']}",
+            f"psutil={dependencies['psutil']}",
+        )
+    )
+
+
+def _python_major_minor(version: str) -> str:
+    return ".".join(str(version).split(".")[:2])
+
+
+def _validate_provenance_set(
+    samples: list[dict[str, Any]],
+    provenance_entries: list[dict[str, Any]],
+) -> tuple[list[str], dict[str, dict[str, Any]], str]:
+    """Validate the provenance set against the samples (F3A-BLK-01..05).
+
+    Returns (problems, provenance_by_replica, common_runtime_recipe).
+    """
+    problems: list[str] = []
+    if len(provenance_entries) != len(samples):
+        problems.append(
+            f"provenance count {len(provenance_entries)} does not match "
+            f"sample count {len(samples)}"
+        )
+        return problems, {}, ""
+    by_replica: dict[str, dict[str, Any]] = {}
+    duplicate_replicas: set[str] = set()
+    for entry in provenance_entries:
+        if not isinstance(entry, dict) or not entry.get("replica_id"):
+            problems.append("provenance entries must carry a replica_id")
+            continue
+        replica_key = str(entry["replica_id"])
+        if replica_key in by_replica:
+            duplicate_replicas.add(replica_key)
+        by_replica[replica_key] = entry
+    if duplicate_replicas:
+        problems.append(
+            f"duplicate provenance replica ids {sorted(duplicate_replicas)}"
+        )
+        return problems, {}, ""
+    recipes: set[str] = set()
+    runner_os_values: set[str] = set()
+    runner_arch_values: set[str] = set()
+    python_minor_values: set[str] = set()
+    install_recipes: set[str] = set()
+    dependency_sets: set[str] = set()
+    for sample in samples:
+        replica_id = str(sample.get("replica_id"))
+        entry = by_replica.get(replica_id)
+        if entry is None:
+            problems.append(f"{replica_id}: provenance missing")
+            continue
+        problems.extend(
+            validate_provenance(
+                entry,
+                replica_id=sample.get("replica_id"),
+                workflow_run_id=sample.get("workflow_run_id"),
+                measured_code_sha=sample.get("measured_code_sha"),
+            )
+        )
+        recipes.add(_runtime_recipe_from_provenance(entry))
+        runner_os_values.add(str(entry["runner_os"]))
+        runner_arch_values.add(str(entry["runner_arch"]))
+        python_minor_values.add(_python_major_minor(entry["python_version"]))
+        install_recipes.add(str(entry["install_recipe"]))
+        dependency_sets.add(
+            json.dumps(entry["dependencies"], sort_keys=True)
+        )
+    missing = [str(s.get("replica_id")) for s in samples if str(s.get("replica_id")) not in by_replica]
+    if missing:
+        problems.append(f"provenance missing for replicas {missing}")
+    if len(recipes) > 1:
+        problems.append("incompatible runtime recipes across provenance")
+    if len(runner_os_values) > 1:
+        problems.append("incompatible runner_os across provenance")
+    if len(runner_arch_values) > 1:
+        problems.append("incompatible runner architectures")
+    if len(python_minor_values) > 1:
+        problems.append("incompatible Python major.minor across provenance")
+    if len(install_recipes) > 1:
+        problems.append("incompatible install recipes across provenance")
+    if len(dependency_sets) > 1:
+        problems.append("incompatible dependency versions across provenance")
+    return problems, by_replica, (next(iter(recipes), "") if len(recipes) == 1 else "")
 
 
 # ---------------------------------------------------------------------------
@@ -520,22 +745,47 @@ def build_calibration(
     *,
     reference_commit: str,
     workflow_run_id: str | None = None,
-    runtime_recipe: str,
-    provenance_entries: list[dict[str, Any]] | None = None,
+    runtime_recipe: str | None = None,
+    provenance_entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Validate the sample set and emit the compact calibration payload.
 
     ``samples`` are FULL saved ``dbfbridge-direct-write-v1`` reports, each
-    already annotated with its replica identity/provenance.  The complete set
-    is validated fail-closed (§11); any problem rejects the calibration.
+    annotated with its replica identity.  ``provenance_entries`` are the
+    per-replica run-provenance documents (STRICT whitelist contract) — a
+    valid GitHub calibration REQUIRES complete, consistent provenance.
+    The complete set is validated fail-closed; any problem rejects it.
     """
     problems = validate_sample_reports(samples)
+    # F3A-BLK-01/04: provenance is authoritative and REQUIRED for a valid
+    # GitHub calibration; it is cross-checked against every sample.
+    provenance_problems, provenance_by_replica, derived_recipe = (
+        _validate_provenance_set(samples, provenance_entries)
+    )
+    problems.extend(provenance_problems)
+    # F3A-BLK-03: reference_commit MUST equal the common measured_code_sha.
+    measured_shas = {sample.get("measured_code_sha") for sample in samples}
+    if len(measured_shas) != 1 or not _valid_sha(next(iter(measured_shas), None)):
+        problems.append(
+            "calibration requires exactly one valid SHA-shaped measured_code_sha"
+        )
+    common_measured_sha = next(iter(measured_shas), "")
+    if reference_commit and reference_commit != common_measured_sha:
+        problems.append(
+            f"reference_commit {reference_commit!r} does not equal the common "
+            f"measured_code_sha {common_measured_sha!r}"
+        )
+    if not reference_commit:
+        problems.append("missing reference_commit")
+    elif not _valid_sha(reference_commit):
+        problems.append(f"invalid reference_commit {reference_commit!r}")
+    if runtime_recipe is not None and runtime_recipe != derived_recipe:
+        problems.append(
+            f"runtime recipe mismatch: declared {runtime_recipe!r} vs "
+            f"provenance-derived {derived_recipe!r}"
+        )
     if problems:
         return {"accepted": False, "problems": problems}
-    measured_shas = {
-        sample.get("measured_code_sha") for sample in samples
-    }
-    reference_commit = reference_commit or next(iter(measured_shas), "")
     scenario_ids = tuple(sorted(str(item) for item in SCENARIO_IDS))
     run_ids = sorted(
         str(sample.get("run_id")) for sample in samples if sample.get("run_id")
@@ -556,14 +806,13 @@ def build_calibration(
         "calibration_contract_version": CALIBRATION_CONTRACT_VERSION,
         "benchmark_contract": BENCHMARK_CONTRACT,
         "benchmark_contract_version": BENCHMARK_CONTRACT_VERSION,
-        "reference_commit": reference_commit,
+        "reference_commit": common_measured_sha,
         "calibration_count": len(samples),
         "scenario_ids": list(scenario_ids),
         "workflow_run_ids": workflow_run_ids,
         "benchmark_run_ids": run_ids,
         "replica_ids": replica_ids,
-        "runtime_recipe": runtime_recipe,
-        "provenance": provenance_entries or [],
+        "runtime_recipe": derived_recipe,
         "report_sha256_by_replica": report_shas,
         "samples": [
             {
@@ -572,16 +821,48 @@ def build_calibration(
                 "benchmark_run_id": sample.get("run_id"),
                 "measured_code_sha": sample.get("measured_code_sha"),
                 "git_commit": sample.get("git_sha"),
-                "python": sample.get("python_version"),
-                "os": sample.get("platform"),
-                "arch": sample.get("platform"),
-                "runner": None,
-                "runner_reason": (
-                    "hosted-runner image identity is not exposed by the "
-                    "benchmark artifact (NOT_AVAILABLE)"
-                ),
-                "dependency_versions": sample.get("dependencies"),
                 "report_sha256": sample.get("report_sha256"),
+                # F3A-BLK-05: truthful OS/architecture metadata from the
+                # validated provenance (never platform duplicated as arch).
+                "source_context": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ].get("source_context"),
+                "branch_head_sha": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ].get("branch_head_sha"),
+                "base_sha": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ].get("base_sha"),
+                "runner_os": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["runner_os"],
+                "runner_arch": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["runner_arch"],
+                "python_version": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["python_version"],
+                "python_implementation": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["python_implementation"],
+                "sys_platform": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["sys_platform"],
+                "machine": provenance_by_replica[str(sample.get("replica_id"))][
+                    "machine"
+                ],
+                "install_recipe": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["install_recipe"],
+                "os": provenance_by_replica[str(sample.get("replica_id"))][
+                    "sys_platform"
+                ],
+                "arch": provenance_by_replica[str(sample.get("replica_id"))][
+                    "machine"
+                ],
+                "dependency_versions": provenance_by_replica[
+                    str(sample.get("replica_id"))
+                ]["dependencies"],
                 "scenarios": [
                     _compact_row(row) for row in sample.get("scenarios", [])
                 ],
@@ -651,14 +932,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--provenance",
         action="append",
-        default=[],
+        required=True,
         metavar="REPLICA=path.json",
-        help="optional per-replica provenance JSON (python/os/deps)",
+        help="per-replica provenance JSON (strict whitelist contract)",
     )
     parser.add_argument("--workflow-run-id", default=None)
     parser.add_argument(
         "--runtime-recipe",
-        default="windows-latest + Python 3.12 + pip install -e \".[dev]\"",
+        default=None,
+        help="optional declared recipe; MUST match the provenance-derived recipe",
     )
     parser.add_argument("--reference-commit", default="")
     parser.add_argument("--output", type=Path, required=True)
@@ -680,12 +962,9 @@ def main(argv: list[str] | None = None) -> int:
         samples.append(report)
     for pair in args.provenance:
         replica, _, path_text = pair.partition("=")
-        provenance_entries.append(
-            {
-                "replica_id": replica,
-                **json.loads(Path(path_text).read_text(encoding="utf-8")),
-            }
-        )
+        entry = json.loads(Path(path_text).read_text(encoding="utf-8"))
+        entry.setdefault("replica_id", replica)
+        provenance_entries.append(entry)
     payload = build_calibration(
         samples,
         reference_commit=args.reference_commit,

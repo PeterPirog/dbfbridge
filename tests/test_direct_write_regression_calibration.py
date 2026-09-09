@@ -173,6 +173,33 @@ def _valid_set(replica_count: int = 5, *, run_id: str = "30000000000") -> list[d
     ]
 
 
+def _valid_provenance(replica_id: str, workflow_run_id: str) -> dict:
+    """A minimal VALID run-provenance document (strict whitelist contract)."""
+    return {
+        "provenance_contract": calibration.PROVENANCE_CONTRACT,
+        "provenance_contract_version": calibration.PROVENANCE_CONTRACT_VERSION,
+        "workflow_run_id": workflow_run_id,
+        "replica_id": replica_id,
+        "github_sha": "a" * 40,
+        "source_context": "main_push",
+        "runner_os": "Windows",
+        "runner_arch": "X64",
+        "python_version": "3.12.10",
+        "python_implementation": "CPython",
+        "sys_platform": "win32",
+        "machine": "AMD64",
+        "install_recipe": 'pip install -e ".[dev]"',
+        "dependencies": {"dbf": "0.99.13", "dbfread": "2.0.7", "psutil": "7.0.0"},
+    }
+
+
+def _provenance_for(samples: list[dict]) -> list[dict]:
+    return [
+        _valid_provenance(sample["replica_id"], sample["workflow_run_id"])
+        for sample in samples
+    ]
+
+
 def _rejects(samples: list[dict]) -> list[str]:
     """True when the collector rejects the set (fail-closed)."""
     return calibration.validate_sample_reports(samples)
@@ -184,8 +211,8 @@ def test_valid_five_sample_set_with_shared_workflow_run_id_is_accepted() -> None
     payload = calibration.build_calibration(
         _valid_set(),
         reference_commit="a" * 40,
-        runtime_recipe="windows-latest + Python 3.12 + pip install -e \".[dev]\"",
         workflow_run_id="30000000000",
+        provenance_entries=_provenance_for(_valid_set()),
     )
     assert payload["accepted"] is True
     assert payload["calibration_contract"] == calibration.CALIBRATION_CONTRACT
@@ -196,6 +223,18 @@ def test_valid_five_sample_set_with_shared_workflow_run_id_is_accepted() -> None
     assert len(payload["replica_ids"]) == 5
     assert payload["thresholds"] is None
     assert payload["descriptive_statistics"]["descriptive_only"] is True
+    # provenance is authoritative and populated (never empty for GitHub runs)
+    assert "provenance" not in payload  # normalized per-sample (F3A-BLK-04)
+    sample0 = payload["samples"][0]
+    assert sample0["runner_os"] == "Windows"
+    assert sample0["runner_arch"] == "X64"
+    assert sample0["machine"] == "AMD64"
+    assert sample0["sys_platform"] == "win32"
+    assert sample0["source_context"] == "main_push"
+    assert sample0["install_recipe"] == 'pip install -e ".[dev]"'
+    assert sample0["dependency_versions"] == {
+        "dbf": "0.99.13", "dbfread": "2.0.7", "psutil": "7.0.0",
+    }
 
 
 def test_duplicate_sample_identity_under_same_workflow_is_rejected() -> None:
@@ -323,7 +362,7 @@ def test_descriptive_statistics_contain_no_thresholds() -> None:
     payload = calibration.build_calibration(
         _valid_set(),
         reference_commit="a" * 40,
-        runtime_recipe="test recipe",
+        provenance_entries=_provenance_for(_valid_set()),
     )
     serialized = json.dumps(payload)
     for forbidden in ("fail_threshold", "hard_gate", "regression_envelope", "hard threshold"):
@@ -341,9 +380,311 @@ def test_descriptive_statistics_contain_no_thresholds() -> None:
         assert fact["classification"] == "DESCRIPTIVE_ONLY"
 
 
+# ---------------------------------------------------------------------------
+# F3A provenance acceptance repairs (F3A-BLK-01..05)
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_missing_is_rejected() -> None:
+    payload = calibration.build_calibration(
+        _valid_set(),
+        reference_commit="a" * 40,
+        provenance_entries=[],
+    )
+    assert payload["accepted"] is False
+    assert any("provenance count" in item for item in payload["problems"])
+
+
+def test_duplicate_provenance_replica_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[1] = _valid_provenance(
+        samples[0]["replica_id"], samples[0]["workflow_run_id"]
+    )
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("duplicate provenance replica" in item for item in payload["problems"])
+
+
+def test_provenance_missing_entry_for_replica_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)[:-1]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("does not match sample count" in item for item in payload["problems"])
+
+
+def test_provenance_unknown_field_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0]["environment_dump"] = {"PATH": "C:\\windows"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("unknown provenance fields" in item for item in payload["problems"])
+
+
+def test_provenance_wrong_contract_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0]["provenance_contract"] = "some-other/1"
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("provenance contract must be" in item for item in payload["problems"])
+
+
+def test_provenance_wrong_version_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0]["provenance_contract_version"] = 2
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("provenance contract version" in item for item in payload["problems"])
+
+
+def test_provenance_missing_required_field_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    del provenance[0]["machine"]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing provenance field" in item for item in payload["problems"])
+
+
+def test_provenance_replica_mismatch_is_rejected() -> None:
+    """Replica mismatch is caught at the validate_provenance level: an entry
+    keyed under replica-1 whose replica_id field says replica-9 fails."""
+    problems = calibration.validate_provenance(
+        _valid_provenance("replica-9", "30000000000"),
+        replica_id="replica-1",
+        workflow_run_id="30000000000",
+        measured_code_sha="a" * 40,
+    )
+    assert any("replica_id mismatch" in item for item in problems)
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {**provenance[0], "replica_id": "replica-9"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+
+
+def test_provenance_workflow_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = _valid_provenance(samples[0]["replica_id"], "99999999999")
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("workflow_run_id mismatch" in item for item in payload["problems"])
+
+
+def test_provenance_github_sha_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0]["github_sha"] = "f" * 40
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("github_sha mismatch" in item for item in payload["problems"])
+
+
+def test_reference_commit_must_equal_measured_sha() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    payload = calibration.build_calibration(
+        samples, reference_commit="f" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any(
+        "does not equal the common measured_code_sha" in item
+        for item in payload["problems"]
+    )
+
+
+def test_invalid_measured_sha_is_rejected() -> None:
+    samples = _valid_set()
+    for sample in samples:
+        sample["measured_code_sha"] = None
+    provenance = _provenance_for(samples)
+    payload = calibration.build_calibration(
+        samples, reference_commit="", provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any(
+        "exactly one valid SHA-shaped measured_code_sha" in item
+        for item in payload["problems"]
+    )
+
+
+def test_install_recipe_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[1] = {
+        **provenance[1],
+        "install_recipe": "pip install dbfbridge",
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("install recipes" in item for item in payload["problems"])
+
+
+def test_dependency_version_mismatches_are_rejected() -> None:
+    for dependency, other in (
+        ("dbf", "1.0.0"),
+        ("dbfread", "3.0.0"),
+        ("psutil", "6.9.9"),
+    ):
+        samples = _valid_set()
+        provenance = _provenance_for(samples)
+        provenance[2] = {
+            **provenance[2],
+            "dependencies": {**provenance[2]["dependencies"], dependency: other},
+        }
+        payload = calibration.build_calibration(
+            samples, reference_commit="a" * 40, provenance_entries=provenance
+        )
+        assert payload["accepted"] is False, dependency
+        assert any(
+            "dependency versions" in item for item in payload["problems"]
+        ), dependency
+
+
+def test_python_major_minor_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[1] = {**provenance[1], "python_version": "3.13.1"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("Python major.minor" in item for item in payload["problems"])
+
+
+def test_runner_arch_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[1] = {**provenance[1], "runner_arch": "ARM64"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("runner architectures" in item for item in payload["problems"])
+
+
+def test_provenance_secret_fields_are_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    for secret_key in ("TOKEN", "secret", "password", "api_key", "authorization", "cookie"):
+        provenance[0] = {
+            **provenance[0],
+            secret_key: "hunter2",
+        }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("provenance secret field" in item for item in payload["problems"])
+
+
+def test_malformed_provenance_json_is_rejected() -> None:
+    problems = calibration.validate_provenance(
+        "not-an-object",
+        replica_id="replica-1",
+        workflow_run_id="30000000000",
+        measured_code_sha="a" * 40,
+    )
+    assert problems == ["provenance[replica-1]: provenance must be an object"]
+
+
+def test_pull_request_merge_ref_semantics_are_represented() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    for entry in provenance:
+        entry["source_context"] = "pull_request_merge_ref"
+        entry["branch_head_sha"] = "c" * 40
+        entry["base_sha"] = "d" * 40
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is True
+    sample0 = payload["samples"][0]
+    assert sample0["source_context"] == "pull_request_merge_ref"
+    assert sample0["branch_head_sha"] == "c" * 40
+    # the checked-out merge-ref SHA (measured_code_sha) is NOT the branch head
+    assert sample0["measured_code_sha"] == "a" * 40
+    assert sample0["measured_code_sha"] != sample0["branch_head_sha"]
+
+
+# ---------------------------------------------------------------------------
+# workflow contract (static assertions, not human YAML inspection)
+# ---------------------------------------------------------------------------
+
+
+def _workflow_text() -> str:
+    return (ROOT / ".github" / "workflows" / "direct-write-calibration.yml").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_workflow_creates_json_provenance_and_uploads_it() -> None:
+    text = _workflow_text()
+    assert "direct-write-provenance.json" in text
+    assert "json.dumps(payload" in text  # real JSON document, not plain text
+    # provenance uploaded with the raw replica artifact
+    upload = text.split("Upload raw replica report", 1)[1]
+    assert "direct-write-provenance.json" in upload
+
+
+def test_aggregate_passes_five_provenance_args() -> None:
+    text = _workflow_text()
+    aggregate = " ".join(text.split("Aggregate calibration evidence", 1)[1].split())
+    # the aggregate loop emits --provenance args for replicas 1..5
+    assert text.count('"--provenance"') == 1
+    assert (
+        'replica-$replica=raw-reports/dw-calibration-replica-$replica/'
+        'direct-write-provenance.json'
+    ) in aggregate
+
+
+def test_workflow_uses_five_windows_replicas_and_python_312() -> None:
+    text = _workflow_text()
+    assert "matrix:\n        replica: [1, 2, 3, 4, 5]" in text
+    assert 'runs-on: windows-latest' in text
+    assert 'python-version: "3.12"' in text
+
+
+def test_workflow_has_no_repository_write_and_no_commit() -> None:
+    text = _workflow_text()
+    assert "permissions:\n  contents: read" in text
+    assert "git push" not in text
+    assert "git commit" not in text
+    assert "actions/upload-artifact" in text  # evidence is uploaded, not committed
+    # the workflow comment explicitly disclaims threshold establishment
+    assert "NEVER establishes a performance threshold" in text
+
+
 def test_memory_facts_retained_per_sample() -> None:
     payload = calibration.build_calibration(
-        _valid_set(), reference_commit="a" * 40, runtime_recipe="test"
+        _valid_set(),
+        reference_commit="a" * 40,
+        provenance_entries=_provenance_for(_valid_set()),
     )
     for entry in payload["memory_facts"]:
         assert entry["assessment"] == "MEASURED_FACTS_ONLY"
@@ -355,7 +696,9 @@ def test_memory_facts_retained_per_sample() -> None:
 
 def test_markdown_summary_derives_from_the_payload() -> None:
     payload = calibration.build_calibration(
-        _valid_set(), reference_commit="a" * 40, runtime_recipe="test"
+        _valid_set(),
+        reference_commit="a" * 40,
+        provenance_entries=_provenance_for(_valid_set()),
     )
     markdown = calibration.markdown_summary(payload)
     assert "dbfbridge-direct-write-calibration-v1" in markdown
@@ -366,7 +709,9 @@ def test_markdown_summary_derives_from_the_payload() -> None:
 
 def test_ratio_facts_are_descriptive_only() -> None:
     payload = calibration.build_calibration(
-        _valid_set(), reference_commit="a" * 40, runtime_recipe="test"
+        _valid_set(),
+        reference_commit="a" * 40,
+        provenance_entries=_provenance_for(_valid_set()),
     )
     labels = [fact["label"] for fact in payload["ratio_facts"]]
     assert labels == [
