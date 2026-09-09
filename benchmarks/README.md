@@ -480,6 +480,51 @@ python -m benchmarks.direct_write_profile --mode full
 Artifacts land in `benchmarks/evidence/direct-write-v1-<mode>.{json,md}`
 (generated from the same payload - one source of truth).
 
+## Direct Write regression policy and comparator (F3B1, `dbfbridge-direct-write-regression-policy-v1`)
+
+The authoritative main_push calibration (artifact 10104538589, workflow
+34352345104, reference commit `ebc47bf…`) is captured as a repository-controlled
+input (`benchmarks/regression/direct-write-regression-calibration-inputs-v1.json`)
+and converted by a deterministic policy generator
+(`benchmarks/calibrate_direct_write_regression.py`) into the committed
+versioned Direct Write regression policy
+(`benchmarks/regression/direct-write-regression-policy-v1.json`).
+
+Policy semantics (all mechanically derived, no hand-edited classification):
+
+- ABSOLUTE scenario wall times are **ADVISORY ONLY** — hosted-runner wall
+  variance is material; the advisory envelope can never hard-fail;
+- the ratio candidate set is EXACTLY five: W3/W2/W5/W10 wall-seconds-per-record
+  relative to W1, plus W3/W1 peak-RSS-delta; each ratio's envelope is
+  `max(center + max(3.0*MAD, max_observed_deviation), max(values)*1.15)` and a
+  ratio is `hard_gate` only when its envelope stays within 50 percent of the
+  calibrated center — in the authoritative calibration ALL FIVE ratios
+  hard-gate;
+- the offline comparator (`benchmarks/compare_direct_write_regression.py`,
+  stdlib-only, never benchmarks) validates the policy strictly (tampering,
+  unknown parameters, mispaired ratios, non-finite values and hidden
+  thresholds all rejected), runs CORRECTNESS gates that always hard-fail
+  regardless of environment, classifies comparability
+  (COMPARABLE/PARTIALLY_COMPARABLE/NOT_COMPARABLE) against the run provenance,
+  and evaluates hard ratio gates only on COMPARABLE evidence —
+  NOT_COMPARABLE never creates a false regression, correctness still
+  hard-fails when not comparable, and smoke candidates report
+  `NOT_EVALUATED_IN_SMOKE` for gates whose scenarios are absent;
+- raw variability is preserved (no outlier removal, no normalization);
+- rebaselining requires an explicit architecture-reviewed task — the policy
+  is never rewritten automatically from CI runs.
+
+```powershell
+python -m benchmarks.calibrate_direct_write_regression --output policy.json
+python -m benchmarks.compare_direct_write_regression `
+  --policy benchmarks/regression/direct-write-regression-policy-v1.json `
+  --candidate <profile.json> --candidate-provenance <provenance.json> `
+  --mode full --output-json result.json --output-md result.md
+```
+
+The comparator is NOT yet wired into GitHub Actions — CI enforcement is F3B2
+after architect review of this policy.
+
 ## Direct Write regression calibration (F3A, `dbfbridge-direct-write-calibration-v1`)
 
 A **separate offline calibration layer** (distinct from the benchmark
