@@ -296,16 +296,27 @@ def test_validation_problems_must_be_empty() -> None:
 
 
 def test_privacy_sentinel_content_is_rejected() -> None:
-    """F3A privacy: record/memo/secret values must never enter calibration."""
+    """F3A privacy: memo/record-payload/secret values must never enter
+    calibration evidence.  The accepted F2 artifact's synthetic first/last
+    fixture markers are NOT sentinels (deterministic benchmark values)."""
     samples = _valid_set()
     for sample in samples:
         for row in sample["scenarios"]:
             if row["scenario"] == "direct_write_memo_heavy":
                 row["validation"] = {
                     "NOTE": "secret memo text",  # memo content sentinel
-                    "first_code": "M0000000",  # record value sentinel
+                    "PICTURE": b"binary",  # memo binary sentinel
                 }
     assert any("privacy sentinel" in item for item in _rejects(samples))
+    # and credential-like sentinels
+    samples = _valid_set()
+    for sample in samples:
+        for row in sample["scenarios"]:
+            if row["scenario"] == "direct_write_memo_heavy":
+                row["validation"] = {"token": "hunter2"}
+    assert any("privacy sentinel" in item for item in _rejects(samples))
+    # the accepted F2 synthetic fixture facts are NOT sentinels
+    assert _rejects(_valid_set()) == []
 
 
 def test_descriptive_statistics_contain_no_thresholds() -> None:
