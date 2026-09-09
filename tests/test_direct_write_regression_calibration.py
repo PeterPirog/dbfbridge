@@ -645,8 +645,10 @@ def _workflow_text() -> str:
 
 def test_workflow_creates_json_provenance_and_uploads_it() -> None:
     text = _workflow_text()
+    # provenance is generated as a REAL deterministic JSON document by the
+    # committed module (no plain-text-in-.json, no inline quoting hazards)
+    assert "benchmarks.direct_write_run_provenance" in text
     assert "direct-write-provenance.json" in text
-    assert "json.dumps(payload" in text  # real JSON document, not plain text
     # provenance uploaded with the raw replica artifact
     upload = text.split("Upload raw replica report", 1)[1]
     assert "direct-write-provenance.json" in upload
