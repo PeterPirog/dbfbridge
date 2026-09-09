@@ -235,18 +235,22 @@ def validate_sample_reports(
 
 
 def _check_privacy(label: str, payload: dict[str, Any]) -> list[str]:
-    """Sentinel scan: record/memo/secret content must never enter calibration."""
+    """Sentinel scan: memo/record-payload/secret content must never enter
+    calibration evidence.
+
+    The accepted F2 artifact's synthetic first/last canonical facts
+    (``first_code``/``first_nazwa``/…) are deterministic benchmark-fixture
+    markers (``K0000000``-style), committed as part of the accepted F2
+    contract and are NOT user data; they are deliberately NOT sentinels.
+    Prohibited content is: DBF record payloads, memo text/binary content and
+    credential-like values.
+    """
     problems: list[str] = []
     for row in payload.get("scenarios", []):
         validation = row.get("validation") or {}
         for key in _PRIVACY_SENTINEL_KEYS:
-            if key in validation and key != "NOTE":
+            if key in validation:
                 problems.append(f"{label}/{row.get('scenario')}: privacy sentinel {key!r}")
-        for sentinel in ("first_code", "last_code", "first_nazwa", "last_name"):
-            if sentinel in validation:
-                problems.append(
-                    f"{label}/{row.get('scenario')}: privacy sentinel {sentinel!r}"
-                )
     return problems
 
 
