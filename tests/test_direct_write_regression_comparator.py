@@ -151,7 +151,7 @@ def test_hard_ratio_inside_envelope_passes() -> None:
 def test_hard_ratio_above_envelope_fails_when_comparable() -> None:
     """W5 (numerator) slows 3x while W1 stays constant: W5/W1 exceeds its
     envelope -> REGRESSION on comparable evidence."""
-    overrides = {scenario: wall for scenario, wall in _base_walls().items()}
+    overrides = dict(_base_walls())
     overrides["direct_write_memo_heavy"] = (
         _base_walls()["direct_write_memo_heavy"] * 3.0
     )
@@ -184,7 +184,6 @@ def _base_walls() -> dict[str, float]:
     W1 wall = 13.0 s for 190k records; every other scenario's wall derives
     from the policy's calibrated ratio (wall/record) relative to W1."""
     w1_wall = 13.0
-    w1_count = 190_000
     policy = _policy()
     counts = {
         "direct_write_190k_flat": 190_000,
@@ -197,7 +196,6 @@ def _base_walls() -> dict[str, float]:
         "direct_write_cp852": 50_000,
         "direct_write_mazovia": 50_000,
         "direct_write_varchar_nullflags": 100_000,
-        "direct_write_190k_flat": 190_000,
         "overwrite_transaction_staging_cost": 20_000,
     }
     walls = {"direct_write_190k_flat": w1_wall}
@@ -512,9 +510,7 @@ def test_result_contract_json_safe() -> None:
 
 def test_memo_heavy_candidate_wall_values_not_massaged() -> None:
     """Raw candidate wall values are reported as measured — no normalization."""
-    slow_walls = {
-        scenario: wall for scenario, wall in _base_walls().items()
-    }
+    slow_walls = dict(_base_walls())
     slow_walls["direct_write_memo_heavy"] = 60.0  # an outlier
     payload = comparator.compare_candidate(
         _policy(), _candidate(slow_walls), _PROVENANCE, mode="full"
