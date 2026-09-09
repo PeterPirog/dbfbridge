@@ -1,0 +1,411 @@
+{
+  "accepted": true,
+  "advisory_ratio_labels": [],
+  "benchmark_contract": "dbfbridge-direct-write-v1",
+  "benchmark_contract_version": 1,
+  "calibration_contract": "dbfbridge-direct-write-calibration-v1",
+  "calibration_contract_version": 1,
+  "calibration_count": 5,
+  "calibration_sources": {
+    "artifact_digest": "sha256:93d2f3b873b64e821a01401862fe67703ef4a6b321fd8d44865b3df128af6d9f",
+    "artifact_id": 10104538589,
+    "benchmark_run_ids": [
+      "run-720a517b88cea173c48e7c3cdca76987",
+      "run-99b1fe9db0739754ce669e8caa4c2b1a",
+      "run-b37ff774d0f5246dab884f6e6ba79fb9",
+      "run-c4239b10476a7a1795476931ea447b7e",
+      "run-dc08fc76ebaa3f9b332b3e4da9cde85d"
+    ],
+    "compact_json_sha256": "c7113378d154a823e80c8e56f9f00b47bcbc2f9186d7fe72af40616e07125e28",
+    "rebaseline_rule": "The Direct Write policy may NOT be automatically rewritten from CI runs.  Rebaselining requires a separate explicit architecture-reviewed task with reason, new calibration evidence, comparison to the previous policy, no correctness regression and an explicit policy version decision.",
+    "report_sha256_by_replica": {
+      "replica-1": "3f1f78851652b4631a944cab7551449f4dc2fab5c2025f89c6a4d608a2a687dd",
+      "replica-2": "d1c03b610ef8327e98b6096a8de0705cc073780b1075f73147710c98db114272",
+      "replica-3": "c42727673c2590c445f2ecbd09204d25aa8adea120c6569140dfc83deaa5073e",
+      "replica-4": "2b2c853eb58b326dda8dcc0b2dad2d0007207abf6fa2ebae712d6e6a910455bf",
+      "replica-5": "f71b515d0703298079f26aae20a29295d5711d26767c7b2073d1e9dfd45e84c0"
+    },
+    "source_context": "main_push",
+    "workflow_run_id": "34352345104"
+  },
+  "comparability_contract": {
+    "classifications": [
+      "COMPARABLE",
+      "PARTIALLY_COMPARABLE",
+      "NOT_COMPARABLE"
+    ],
+    "compared_fields": [
+      "runner_os",
+      "runner_arch",
+      "python major.minor",
+      "install_recipe",
+      "dbf version",
+      "dbfread version",
+      "psutil version"
+    ],
+    "contract": "dbfbridge-direct-write-run-provenance-v1",
+    "rule": "Performance hard gates apply only on COMPARABLE evidence; correctness gates ALWAYS run and hard-fail regardless."
+  },
+  "correctness_gates": [
+    "benchmark contract/version correct",
+    "mode matches policy evaluation mode",
+    "all W1-W12 present exactly once",
+    "all scenarios MEASURED",
+    "validation_problems empty",
+    "intermediate_jsonl_bytes == 0 for every scenario",
+    "temporary_bytes_left == 0 for every measured scenario",
+    "W10 private_spool_bytes_written > 0 (full mode)",
+    "W12 functional_cleanup with records_per_second null and cleanup verified"
+  ],
+  "derivation": "center = median(values); mad = median(|v - center|); envelope_upper = max(center + max(mad_multiplier*mad, max_observed_deviation), max(values)*small_sample_guard_band); hard_gate iff envelope_upper <= center * hard_gate_discrimination_bound",
+  "hard_ratio_labels": [
+    "W10/W1 wall-seconds-per-record",
+    "W2/W1 wall-seconds-per-record",
+    "W3/W1 peak-RSS-delta ratio",
+    "W3/W1 wall-seconds-per-record",
+    "W5/W1 wall-seconds-per-record"
+  ],
+  "parameters": {
+    "hard_gate_discrimination_bound": {
+      "kind": "engineering_policy_parameter",
+      "rationale": "A ratio is hard-gated only when its envelope stays within 50 percent of the calibrated center; beyond that the policy could not distinguish a genuine regression from calibration noise.",
+      "value": 1.5
+    },
+    "mad_multiplier": {
+      "kind": "engineering_policy_parameter",
+      "rationale": "Standard 3-MAD dispersion envelope from the repository's proven Phase 3 regression methodology; captures expected run-to-run variance without following hosted-runner outliers.",
+      "value": 3.0
+    },
+    "small_sample_guard_band": {
+      "kind": "engineering_policy_parameter",
+      "rationale": "Small-sample tail guard: five calibration samples cannot bound the true distribution tail, so the envelope additionally covers 15 percent above the maximum observed value.",
+      "value": 1.15
+    }
+  },
+  "policy_contract": "dbfbridge-direct-write-regression-policy-v1",
+  "policy_version": 1,
+  "privacy_note": "No DBF record values, memo contents or credentials are contained in this policy.",
+  "problems": [],
+  "ratio_calibration": {
+    "W10/W1 wall-seconds-per-record": {
+      "center": 1.0158666755025711,
+      "classification": "hard_gate",
+      "denominator": "direct_write_190k_flat.wall_seconds",
+      "envelope_upper": 1.243822404,
+      "envelope_upper_over_center": 1.224395,
+      "label": "W10/W1 wall-seconds-per-record",
+      "mad": 0.030320650375622038,
+      "max_observed_deviation": 0.06571802351737754,
+      "numerator": "direct_write_varchar_nullflags.wall_seconds",
+      "relative_mad": 0.029847,
+      "spread_based": 1.106828627,
+      "tail_based": 1.243822404,
+      "values": [
+        0.9855460251269491,
+        1.0815846990199487,
+        1.0161299294447472,
+        0.9598718505598662,
+        1.0158666755025711
+      ]
+    },
+    "W2/W1 wall-seconds-per-record": {
+      "center": 1.191591666826306,
+      "classification": "hard_gate",
+      "denominator": "direct_write_190k_flat.wall_seconds",
+      "envelope_upper": 1.428856178,
+      "envelope_upper_over_center": 1.199116,
+      "label": "W2/W1 wall-seconds-per-record",
+      "mad": 0.003005743842171782,
+      "max_observed_deviation": 0.050891966404600586,
+      "numerator": "direct_read_transform_write_190k.wall_seconds",
+      "relative_mad": 0.002522,
+      "spread_based": 1.242483633,
+      "tail_based": 1.428856178,
+      "values": [
+        1.1937772920075793,
+        1.191591666826306,
+        1.1661530091712686,
+        1.1885859229841342,
+        1.2424836332309066
+      ]
+    },
+    "W3/W1 peak-RSS-delta ratio": {
+      "center": 3.481296,
+      "classification": "hard_gate",
+      "denominator": "direct_write_190k_flat.peak_rss_delta_bytes",
+      "envelope_upper": 4.011453,
+      "envelope_upper_over_center": 1.152287,
+      "label": "W3/W1 peak-RSS-delta ratio",
+      "mad": 0.006924000000000152,
+      "max_observed_deviation": 0.04968199999999978,
+      "numerator": "direct_write_1m_flat.peak_rss_delta_bytes",
+      "relative_mad": 0.001989,
+      "spread_based": 3.530978,
+      "tail_based": 4.011453,
+      "values": [
+        3.481296,
+        3.431614,
+        3.487174,
+        3.452797,
+        3.48822
+      ]
+    },
+    "W3/W1 wall-seconds-per-record": {
+      "center": 0.9902604010803056,
+      "classification": "hard_gate",
+      "denominator": "direct_write_190k_flat.wall_seconds",
+      "envelope_upper": 1.174684379,
+      "envelope_upper_over_center": 1.186238,
+      "label": "W3/W1 wall-seconds-per-record",
+      "mad": 0.012599189811939193,
+      "max_observed_deviation": 0.05719859333865651,
+      "numerator": "direct_write_1m_flat.wall_seconds",
+      "relative_mad": 0.012723,
+      "spread_based": 1.047458994,
+      "tail_based": 1.174684379,
+      "values": [
+        1.0214646772609786,
+        0.9951332646501805,
+        0.9776612112683664,
+        0.933061807741649,
+        0.9902604010803056
+      ]
+    },
+    "W5/W1 wall-seconds-per-record": {
+      "center": 1.377352605454371,
+      "classification": "hard_gate",
+      "denominator": "direct_write_190k_flat.wall_seconds",
+      "envelope_upper": 1.707874726,
+      "envelope_upper_over_center": 1.239969,
+      "label": "W5/W1 wall-seconds-per-record",
+      "mad": 0.06771698078114996,
+      "max_observed_deviation": 0.1155267174620509,
+      "numerator": "direct_write_memo_heavy.wall_seconds",
+      "relative_mad": 0.049165,
+      "spread_based": 1.580503548,
+      "tail_based": 1.707874726,
+      "values": [
+        1.4851084574383413,
+        1.338608230895978,
+        1.26182588799232,
+        1.377352605454371,
+        1.445069586235521
+      ]
+    }
+  },
+  "reference_commit": "ebc47bf0039329c32a039c98dca58d1a86175944",
+  "runtime_recipe": "Windows|X64|python-3.12|pip install -e \".[dev]\"|dbf=0.99.11|dbfread=2.0.7|psutil=7.2.2",
+  "scenario_calibration": {
+    "direct_read_transform_write_190k": {
+      "advisory_envelope_upper": 42.15563165,
+      "center": 27.681304,
+      "classification": "advisory_only",
+      "mad": 1.122159,
+      "max_observed_deviation": 8.975767000000001,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.040539,
+      "scenario": "direct_read_transform_write_190k",
+      "values": [
+        36.657071,
+        35.890685,
+        27.681304,
+        26.559145,
+        26.717343
+      ]
+    },
+    "direct_write_190k_flat": {
+      "advisory_envelope_upper": 35.3128108,
+      "center": 23.737283,
+      "classification": "advisory_only",
+      "mad": 2.2341080000000026,
+      "max_observed_deviation": 6.969508999999999,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.094118,
+      "scenario": "direct_write_190k_flat",
+      "values": [
+        30.706792,
+        30.119953,
+        23.737283,
+        22.345162,
+        21.503175
+      ]
+    },
+    "direct_write_1m_flat": {
+      "advisory_envelope_upper": 189.8462573,
+      "center": 122.142215,
+      "classification": "advisory_only",
+      "mad": 12.408439999999999,
+      "max_observed_deviation": 42.941486999999995,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.10159,
+      "scenario": "direct_write_1m_flat",
+      "values": [
+        165.083702,
+        157.754564,
+        122.142215,
+        109.733775,
+        112.07233
+      ]
+    },
+    "direct_write_character_heavy": {
+      "advisory_envelope_upper": 19.99370565,
+      "center": 14.460923,
+      "classification": "advisory_only",
+      "mad": 1.4261,
+      "max_observed_deviation": 2.9249080000000003,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.098617,
+      "scenario": "direct_write_character_heavy",
+      "values": [
+        17.385831,
+        17.167045,
+        14.460923,
+        13.034823,
+        13.270063
+      ]
+    },
+    "direct_write_cp1250": {
+      "advisory_envelope_upper": 7.33598685,
+      "center": 5.059518,
+      "classification": "advisory_only",
+      "mad": 0.688421,
+      "max_observed_deviation": 1.3196010000000005,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.136065,
+      "scenario": "direct_write_cp1250",
+      "values": [
+        6.369216,
+        6.379119,
+        5.059518,
+        4.430812,
+        4.371097
+      ]
+    },
+    "direct_write_cp852": {
+      "advisory_envelope_upper": 8.52322385,
+      "center": 5.126154,
+      "classification": "advisory_only",
+      "mad": 0.6579899999999999,
+      "max_observed_deviation": 2.2853450000000004,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.128359,
+      "scenario": "direct_write_cp852",
+      "values": [
+        6.428038,
+        7.411499,
+        5.126154,
+        4.468164,
+        4.528474
+      ]
+    },
+    "direct_write_deleted_include": {
+      "advisory_envelope_upper": 15.844286,
+      "center": 9.799716,
+      "classification": "advisory_only",
+      "mad": 1.088197000000001,
+      "max_observed_deviation": 3.977924,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.111044,
+      "scenario": "direct_write_deleted_include",
+      "values": [
+        13.77764,
+        13.626171,
+        9.799716,
+        8.711519,
+        9.055408
+      ]
+    },
+    "direct_write_mazovia": {
+      "advisory_envelope_upper": 9.02053215,
+      "center": 5.57997,
+      "classification": "advisory_only",
+      "mad": 0.7382220000000004,
+      "max_observed_deviation": 2.2639709999999997,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.132299,
+      "scenario": "direct_write_mazovia",
+      "values": [
+        6.923074,
+        7.843941,
+        5.57997,
+        4.841748,
+        4.882543
+      ]
+    },
+    "direct_write_memo_heavy": {
+      "advisory_envelope_upper": 27.60176525,
+      "center": 16.354518,
+      "classification": "advisory_only",
+      "mad": 0.5901399999999981,
+      "max_observed_deviation": 7.647017000000002,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.036084,
+      "scenario": "direct_write_memo_heavy",
+      "values": [
+        24.001535,
+        21.22043,
+        15.764378,
+        16.198509,
+        16.354518
+      ]
+    },
+    "direct_write_varchar_nullflags": {
+      "advisory_envelope_upper": 19.71782755,
+      "center": 12.694823,
+      "classification": "advisory_only",
+      "mad": 1.4061430000000001,
+      "max_observed_deviation": 4.4511140000000005,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.110765,
+      "scenario": "direct_write_varchar_nullflags",
+      "values": [
+        15.927872,
+        17.145937,
+        12.694823,
+        11.28868,
+        11.497031
+      ]
+    },
+    "overwrite_transaction_staging_cost": {
+      "advisory_envelope_upper": 5.118548,
+      "center": 4.112198,
+      "classification": "advisory_only",
+      "mad": 0.2455809999999996,
+      "max_observed_deviation": 1.0063500000000003,
+      "metric": "wall_seconds",
+      "note": "Absolute wall time varies materially across hosted runners; this envelope is informational only and can NEVER hard-fail.",
+      "relative_mad": 0.05972,
+      "scenario": "overwrite_transaction_staging_cost",
+      "values": [
+        4.357779,
+        4.311568,
+        3.105848,
+        4.112198,
+        3.301783
+      ]
+    }
+  },
+  "smoke_scenarios": [
+    "direct_write_190k_flat",
+    "direct_read_transform_write_190k",
+    "direct_write_1m_flat",
+    "direct_write_character_heavy",
+    "direct_write_memo_heavy",
+    "direct_write_deleted_include",
+    "direct_write_cp1250",
+    "direct_write_cp852",
+    "direct_write_mazovia",
+    "direct_write_varchar_nullflags",
+    "overwrite_transaction_staging_cost"
+  ]
+}
