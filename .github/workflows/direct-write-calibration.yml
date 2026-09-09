@@ -16,6 +16,7 @@ on:
       - "benchmarks/direct_write_profile.py"
       - "benchmarks/metrics.py"
       - "benchmarks/direct_write_calibration.py"
+      - "benchmarks/direct_write_run_provenance.py"
       - "tests/test_benchmark_direct_write_profile.py"
       - "tests/test_direct_write_regression_calibration.py"
       - ".github/workflows/direct-write-calibration.yml"
@@ -28,10 +29,10 @@ on:
       - "benchmarks/direct_write_profile.py"
       - "benchmarks/metrics.py"
       - "benchmarks/direct_write_calibration.py"
+      - "benchmarks/direct_write_run_provenance.py"
       - "tests/test_benchmark_direct_write_profile.py"
       - "tests/test_direct_write_regression_calibration.py"
       - ".github/workflows/direct-write-calibration.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -69,22 +70,36 @@ jobs:
         shell: pwsh
         env:
           GITHUB_SHA: ${{ github.sha }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          $sourceContext = "main_push"
-          if ("${{ github.event_name }}" -eq "pull_request") { $sourceContext = "pull_request_merge_ref" }
-          $prHead = "${{ github.event.pull_request.head.sha }}"
-          $baseSha = "${{ github.event.pull_request.base.sha }}"
-          python -m benchmarks.direct_write_run_provenance `
-            --workflow-run-id "${{ github.run_id }}" `
-            --replica-id "replica-${{ matrix.replica }}" `
-            --github-sha "${{ github.sha }}" `
-            --source-context $sourceContext `
-            --branch-head-sha $prHead `
-            --base-sha $baseSha `
-            --output "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}\direct-write-provenance.json"
+          # F3A-BLK-06: build the provenance argument list per event type.
+          # For pull_request: GitHub measured the synthetic merge ref; the PR
+          # head/base SHAs are REQUIRED.  For main push: the checked-out SHA
+          # IS the branch head; base_sha is OMITTED (never passed empty).
+          $p = @(
+            "-m", "benchmarks.direct_write_run_provenance",
+            "--workflow-run-id", "${{ github.run_id }}",
+            "--replica-id", "replica-${{ matrix.replica }}",
+            "--github-sha", "${{ github.sha }}",
+            "--runner-os", "${{ runner.os }}",
+            "--runner-arch", "${{ runner.arch }}"
+          )
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $p += @("--source-context", "pull_request_merge_ref")
+            $p += @("--branch-head-sha", "${{ github.event.pull_request.head.sha }}")
+            $p += @("--base-sha", "${{ github.event.pull_request.base.sha }}")
+          }
+          else {
+            # push to main: source_context = main_push
+            $p += @("--source-context", "main_push")
+            $p += @("--branch-head-sha", "${{ github.sha }}")
+          }
+          $p += @(
+            "--output",
+            "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}\direct-write-provenance.json"
+          )
+          python @p
 
       - name: Structurally validate the replica report
         shell: pwsh

@@ -174,7 +174,8 @@ def _valid_set(replica_count: int = 5, *, run_id: str = "30000000000") -> list[d
 
 
 def _valid_provenance(replica_id: str, workflow_run_id: str) -> dict:
-    """A minimal VALID run-provenance document (strict whitelist contract)."""
+    """A minimal VALID run-provenance document (strict whitelist contract,
+    main_push semantics: branch_head_sha == github_sha, no base_sha)."""
     return {
         "provenance_contract": calibration.PROVENANCE_CONTRACT,
         "provenance_contract_version": calibration.PROVENANCE_CONTRACT_VERSION,
@@ -182,6 +183,7 @@ def _valid_provenance(replica_id: str, workflow_run_id: str) -> dict:
         "replica_id": replica_id,
         "github_sha": "a" * 40,
         "source_context": "main_push",
+        "branch_head_sha": "a" * 40,
         "runner_os": "Windows",
         "runner_arch": "X64",
         "python_version": "3.12.10",
@@ -614,6 +616,8 @@ def test_malformed_provenance_json_is_rejected() -> None:
 
 
 def test_pull_request_merge_ref_semantics_are_represented() -> None:
+    """PR semantics: measured SHA is the synthetic merge ref, distinct from
+    the branch head; both PR SHAs are required valid SHAs."""
     samples = _valid_set()
     provenance = _provenance_for(samples)
     for entry in provenance:
@@ -627,9 +631,234 @@ def test_pull_request_merge_ref_semantics_are_represented() -> None:
     sample0 = payload["samples"][0]
     assert sample0["source_context"] == "pull_request_merge_ref"
     assert sample0["branch_head_sha"] == "c" * 40
+    assert sample0["base_sha"] == "d" * 40
     # the checked-out merge-ref SHA (measured_code_sha) is NOT the branch head
     assert sample0["measured_code_sha"] == "a" * 40
     assert sample0["measured_code_sha"] != sample0["branch_head_sha"]
+
+
+# ---------------------------------------------------------------------------
+# F3A-BLK-09 / F3A-BLK-06: source_context REQUIRED + conditional semantics
+# ---------------------------------------------------------------------------
+
+
+def test_missing_source_context_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    del provenance[0]["source_context"]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing provenance field 'source_context'" in item for item in payload["problems"])
+
+
+def test_main_push_with_different_branch_head_sha_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {
+        **provenance[0],
+        "branch_head_sha": "e" * 40,  # != github_sha
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("main_push requires branch_head_sha == github_sha" in item for item in payload["problems"])
+
+
+def test_main_push_with_empty_branch_head_sha_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {**provenance[0], "branch_head_sha": ""}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("main_push requires branch_head_sha == github_sha" in item for item in payload["problems"])
+
+
+def test_main_push_with_pr_base_sha_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {**provenance[0], "base_sha": "d" * 40}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("main_push must not carry a base_sha" in item for item in payload["problems"])
+
+
+def test_pull_request_merge_ref_requires_branch_head_sha() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    for entry in provenance:
+        entry["source_context"] = "pull_request_merge_ref"
+        entry["branch_head_sha"] = None
+        entry["base_sha"] = "d" * 40
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any(
+        "pull_request_merge_ref requires a valid branch_head_sha" in item
+        for item in payload["problems"]
+    )
+
+
+def test_pull_request_merge_ref_requires_base_sha() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    for entry in provenance:
+        entry["source_context"] = "pull_request_merge_ref"
+        entry["branch_head_sha"] = "c" * 40
+        entry["base_sha"] = None
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any(
+        "pull_request_merge_ref requires a valid base_sha" in item
+        for item in payload["problems"]
+    )
+
+
+def test_main_push_semantics_are_accepted_with_matching_branch_head() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is True
+    sample0 = payload["samples"][0]
+    assert sample0["source_context"] == "main_push"
+    assert sample0["branch_head_sha"] == sample0["measured_code_sha"] == "a" * 40
+    assert sample0["base_sha"] is None
+
+
+# ---------------------------------------------------------------------------
+# F3A-BLK-07: exact nested dependency whitelist
+# ---------------------------------------------------------------------------
+
+
+def test_extra_dependency_key_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {
+        **provenance[0],
+        "dependencies": {
+            **provenance[0]["dependencies"],
+            "token": "SECRET",
+        },
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("dependencies must be exactly" in item for item in payload["problems"])
+    assert any("provenance secret dependency field" in item for item in payload["problems"])
+
+
+def test_extra_benign_dependency_key_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {
+        **provenance[0],
+        "dependencies": {**provenance[0]["dependencies"], "pyyaml": "6.0"},
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("dependencies must be exactly" in item for item in payload["problems"])
+
+
+def test_missing_nested_dependency_is_rejected_without_exception() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {
+        **provenance[0],
+        "dependencies": {"dbf": "0.99.13", "psutil": "7.0.0"},  # dbfread missing
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing dependency version 'dbfread'" in item for item in payload["problems"])
+    # fail-closed: no internal exception leaked
+    json.dumps(payload)
+
+
+def test_non_object_dependencies_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {**provenance[0], "dependencies": "0.99.13"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("dependencies must be an object" in item for item in payload["problems"])
+
+
+def test_empty_dependency_version_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[0] = {
+        **provenance[0],
+        "dependencies": {**provenance[0]["dependencies"], "dbf": "  "},
+    }
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing dependency version 'dbf'" in item for item in payload["problems"])
+
+
+def test_missing_runner_fields_are_rejected_without_exception() -> None:
+    """F3A-BLK-08: malformed provenance must reject cleanly (no KeyError)."""
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    del provenance[0]["runner_os"]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing provenance field 'runner_os'" in item for item in payload["problems"])
+    json.dumps(payload)
+
+
+def test_missing_runner_arch_is_rejected_without_exception() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    del provenance[0]["runner_arch"]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing provenance field 'runner_arch'" in item for item in payload["problems"])
+
+
+def test_missing_dependencies_is_rejected_without_exception() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    del provenance[0]["dependencies"]
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("missing provenance field 'dependencies'" in item for item in payload["problems"])
+    json.dumps(payload)
+
+
+def test_runner_os_mismatch_is_rejected() -> None:
+    samples = _valid_set()
+    provenance = _provenance_for(samples)
+    provenance[1] = {**provenance[1], "runner_os": "Linux"}
+    payload = calibration.build_calibration(
+        samples, reference_commit="a" * 40, provenance_entries=provenance
+    )
+    assert payload["accepted"] is False
+    assert any("incompatible runner_os" in item for item in payload["problems"])
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +909,43 @@ def test_workflow_has_no_repository_write_and_no_commit() -> None:
     assert "actions/upload-artifact" in text  # evidence is uploaded, not committed
     # the workflow comment explicitly disclaims threshold establishment
     assert "NEVER establishes a performance threshold" in text
+
+
+def test_workflow_has_no_workflow_dispatch() -> None:
+    """F3A-BLK-09: workflow_dispatch is removed — every non-PR event would
+    otherwise masquerade as main_push."""
+    text = _workflow_text()
+    assert "workflow_dispatch" not in text
+
+
+def test_workflow_path_filters_include_the_provenance_generator() -> None:
+    """F3A-BLK-11: modifying the provenance generator alone must trigger
+    Direct Write calibration."""
+    text = _workflow_text()
+    assert text.count("benchmarks/direct_write_run_provenance.py") == 2
+
+
+def test_workflow_runner_os_and_arch_contexts_are_supplied() -> None:
+    """F3A-BLK-10: runner_os/runner_arch come from GitHub runner contexts."""
+    text = _workflow_text()
+    assert '"--runner-os", "${{ runner.os }}"' in text
+    assert '"--runner-arch", "${{ runner.arch }}"' in text
+
+
+def test_workflow_main_push_never_passes_empty_pr_values() -> None:
+    """F3A-BLK-06: the else-branch (push) passes NO PR head/base args."""
+    text = _workflow_text()
+    provenance_step = text.split("Record run provenance", 1)[1].split(
+        "Structurally validate", 1
+    )[0]
+    else_branch = provenance_step.split("else", 1)[1]
+    assert "main_push" in else_branch
+    assert "branch-head-sha" in else_branch
+    assert "base-sha" not in else_branch  # never passed empty on push
+    # the PR head/base args live only in the pull_request branch
+    pr_branch = provenance_step.split("pull_request_merge_ref", 1)[1]
+    assert "branch-head-sha" in pr_branch
+    assert "base-sha" in pr_branch
 
 
 def test_memory_facts_retained_per_sample() -> None:
