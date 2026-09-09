@@ -1,0 +1,145 @@
+name: Direct Write calibration
+
+# DBFB-PERF-006 stage F3A: multi-sample Direct Write calibration.  This
+# workflow is ADDITIVE and never touches the Phase 3 Performance Regression,
+# the Phase 3 baseline/policy artifacts or any historical threshold.  It runs
+# five independent fresh windows-latest/Python 3.12 replicas of the accepted
+# `dbfbridge-direct-write-v1` FULL W1-W12 profile and aggregates the saved
+# reports into compact calibration evidence.  It NEVER commits to the
+# repository and NEVER establishes a performance threshold.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "benchmarks/direct_write_profile.py"
+      - "benchmarks/metrics.py"
+      - "benchmarks/direct_write_calibration.py"
+      - "tests/test_benchmark_direct_write_profile.py"
+      - "tests/test_direct_write_regression_calibration.py"
+      - ".github/workflows/direct-write-calibration.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "benchmarks/direct_write_profile.py"
+      - "benchmarks/metrics.py"
+      - "benchmarks/direct_write_calibration.py"
+      - "tests/test_benchmark_direct_write_profile.py"
+      - "tests/test_direct_write_regression_calibration.py"
+      - ".github/workflows/direct-write-calibration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replica:
+    name: Direct Write calibration replica ${{ matrix.replica }} (windows, 3.12)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install project with benchmark/write dependencies (same recipe)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Record dependency provenance
+        shell: pwsh
+        run: |
+          python -c "import sys; print(sys.version)" | Out-File -FilePath "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}-provenance.json" -Encoding utf8
+          python -m pip show dbf dbfread psutil 2>$null | Select-String "^(Name|Version)" | Out-File -FilePath "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}-provenance.json" -Append -Encoding utf8
+
+      - name: Run full W1-W12 Direct Write profile
+        shell: pwsh
+        run: |
+          python -m benchmarks.direct_write_profile --mode full --out "$env:RUNNER_TEMP\dw-calibration-replica-${{ matrix.replica }}"
+
+      - name: Structurally validate the replica report
+        shell: pwsh
+        run: |
+          python -c "
+          import json
+          from pathlib import Path
+          payload = json.loads((Path('$env:RUNNER_TEMP') / 'dw-calibration-replica-${{ matrix.replica }}' / 'direct-write-v1-full.json').read_text(encoding='utf-8'))
+          assert payload['benchmark_contract'] == 'dbfbridge-direct-write-v1'
+          assert payload['mode'] == 'full'
+          assert payload['validation_problems'] == [], payload['validation_problems']
+          assert len(payload['scenarios']) == 12
+          assert all(row['status'] == 'MEASURED' for row in payload['scenarios'])
+          assert all(row['intermediate_jsonl_bytes'] == 0 for row in payload['scenarios'])
+          print('replica ${{ matrix.replica }} structural validation OK')
+          "
+
+      - name: Upload raw replica report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dw-calibration-replica-${{ matrix.replica }}
+          path: |
+            ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}/direct-write-v1-full.json
+            ${{ runner.temp }}/dw-calibration-replica-${{ matrix.replica }}/direct-write-v1-full.md
+          if-no-files-found: error
+
+  aggregate:
+    name: Direct Write calibration aggregate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: replica
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download replica reports
+        uses: actions/download-artifact@v4
+        with:
+          path: raw-reports
+          pattern: dw-calibration-replica-*
+          merge-multiple: false
+
+      - name: Aggregate calibration evidence (offline collector)
+        shell: pwsh
+        run: |
+          $pairs = @()
+          foreach ($replica in 1..5) {
+            $pairs += "--report"
+            $pairs += "replica-$replica=raw-reports/dw-calibration-replica-$replica/direct-write-v1-full.json"
+          }
+          $pairs += "--workflow-run-id"
+          $pairs += "${{ github.run_id }}"
+          $pairs += "--reference-commit"
+          $pairs += "${{ github.sha }}"
+          $pairs += "--output"
+          $pairs += "$env:RUNNER_TEMP/direct-write-calibration.json"
+          $pairs += "--markdown"
+          $pairs += "$env:RUNNER_TEMP/direct-write-calibration.md"
+          python -m benchmarks.direct_write_calibration @pairs
+
+      - name: Upload compact calibration artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct-write-calibration
+          path: |
+            ${{ runner.temp }}/direct-write-calibration.json
+            ${{ runner.temp }}/direct-write-calibration.md
+          if-no-files-found: error
