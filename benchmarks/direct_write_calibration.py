@@ -261,12 +261,15 @@ PROVENANCE_CONTRACT = "dbfbridge-direct-write-run-provenance-v1"
 PROVENANCE_CONTRACT_VERSION = 1
 
 #: Required provenance fields (whitelist — arbitrary fields are rejected).
+#: ``source_context`` is REQUIRED (F3A-BLK-09): it distinguishes PR
+#: integration evidence from authoritative main evidence.
 _REQUIRED_PROVENANCE_KEYS = (
     "provenance_contract",
     "provenance_contract_version",
     "workflow_run_id",
     "replica_id",
     "github_sha",
+    "source_context",
     "runner_os",
     "runner_arch",
     "python_version",
@@ -277,24 +280,14 @@ _REQUIRED_PROVENANCE_KEYS = (
     "dependencies",
 )
 
-#: Optional bounded provenance fields (merge-ref semantics; all validated).
+#: Optional bounded provenance fields (all validated).
 _OPTIONAL_PROVENANCE_KEYS = (
-    "source_context",
     "branch_head_sha",
     "base_sha",
     "runner_image",
 )
 
-#: Credential-like provenance key fragments rejected case-insensitively.
-_PROVENANCE_SECRET_KEY_PATTERNS = (
-    "token",
-    "secret",
-    "password",
-    "api_key",
-    "authorization",
-    "cookie",
-)
-
+#: The EXACT nested dependency whitelist (F3A-BLK-07) — no extra keys.
 _REQUIRED_DEPENDENCIES = ("dbf", "dbfread", "psutil")
 
 _SHA40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -322,6 +315,12 @@ def validate_provenance(
 
     Whitelist-only: unknown fields, credential-like keys, wrong contract,
     missing required fields and cross-sample mismatches are rejected.
+    ``source_context`` is REQUIRED (F3A-BLK-09) with conditional semantics:
+
+    - ``pull_request_merge_ref``: ``branch_head_sha`` and ``base_sha`` are
+      REQUIRED and must be valid SHAs (the measured SHA is the merge ref);
+    - ``main_push``: ``branch_head_sha`` MUST equal ``github_sha`` and
+      ``base_sha`` MUST be absent.
     """
     problems: list[str] = []
     label = f"provenance[{replica_id}]"
@@ -330,8 +329,8 @@ def validate_provenance(
     unknown = set(entry) - _PROVENANCE_ALLOWLIST
     if unknown:
         problems.append(f"{label}: unknown provenance fields {sorted(unknown)}")
-    for pattern in _PROVENANCE_SECRET_KEY_PATTERNS:
-        if any(pattern in str(key).casefold() for key in entry):
+    for pattern in _PRIVACY_SENTINEL_KEYS:
+        if any(pattern.casefold() in str(key).casefold() for key in entry):
             problems.append(f"{label}: provenance secret field {pattern!r}")
     if entry.get("provenance_contract") != PROVENANCE_CONTRACT:
         problems.append(
@@ -345,8 +344,27 @@ def validate_provenance(
     if problems:
         return problems
     dependencies = entry["dependencies"]
+    # F3A-BLK-07: EXACT nested whitelist — no extra/secret/missing keys.
     if not isinstance(dependencies, dict):
         return [f"{label}: provenance dependencies must be an object"]
+    dependency_keys = set(dependencies)
+    if {dependency.casefold() for dependency in dependency_keys} != set(
+        _REQUIRED_DEPENDENCIES
+    ):
+        expected = set(_REQUIRED_DEPENDENCIES)
+        actual = set(dependencies)
+        problems.append(
+            f"{label}: dependencies must be exactly {sorted(expected)} "
+            f"(got {sorted(actual)})"
+        )
+    for nested_key in dependencies:
+        if any(
+            pattern.casefold() in str(nested_key).casefold()
+            for pattern in _PRIVACY_SENTINEL_KEYS
+        ):
+            problems.append(
+                f"{label}: provenance secret dependency field {nested_key!r}"
+            )
     for dependency in _REQUIRED_DEPENDENCIES:
         version = dependencies.get(dependency)
         if not isinstance(version, str) or not version.strip():
@@ -369,17 +387,38 @@ def validate_provenance(
             f"{label}/github_sha mismatch: provenance {entry['github_sha']!r} "
             f"vs sample measured_code_sha {measured_code_sha!r}"
         )
-    source_context = entry.get("source_context")
-    if source_context is not None and source_context not in {
-        "pull_request_merge_ref",
-        "main_push",
-    }:
+    # F3A-BLK-09: conditional source-context semantics.
+    source_context = entry["source_context"]
+    branch_head_sha = entry.get("branch_head_sha")
+    base_sha = entry.get("base_sha")
+    if source_context == "pull_request_merge_ref":
+        if not _valid_sha(branch_head_sha):
+            problems.append(
+                f"{label}: pull_request_merge_ref requires a valid "
+                f"branch_head_sha (got {branch_head_sha!r})"
+            )
+        if not _valid_sha(base_sha):
+            problems.append(
+                f"{label}: pull_request_merge_ref requires a valid base_sha "
+                f"(got {base_sha!r})"
+            )
+    elif source_context == "main_push":
+        if branch_head_sha != entry["github_sha"]:
+            problems.append(
+                f"{label}: main_push requires branch_head_sha == github_sha "
+                f"(got {branch_head_sha!r} vs {entry['github_sha']!r})"
+            )
+        if base_sha is not None:
+            problems.append(
+                f"{label}: main_push must not carry a base_sha (got {base_sha!r})"
+            )
+    else:
         problems.append(f"{label}: invalid source_context {source_context!r}")
-    for optional_sha in ("branch_head_sha", "base_sha"):
-        value = entry.get(optional_sha)
-        if value is not None and not _valid_sha(value):
-            problems.append(f"{label}: invalid {optional_sha} {value!r}")
     return problems
+
+
+def dependency_keys(dependencies: dict[str, Any]) -> list[str]:
+    return list(dependencies)
 
 
 def _runtime_recipe_from_provenance(entry: dict[str, Any]) -> str:
@@ -445,14 +484,18 @@ def _validate_provenance_set(
         if entry is None:
             problems.append(f"{replica_id}: provenance missing")
             continue
-        problems.extend(
-            validate_provenance(
-                entry,
-                replica_id=sample.get("replica_id"),
-                workflow_run_id=sample.get("workflow_run_id"),
-                measured_code_sha=sample.get("measured_code_sha"),
-            )
+        # F3A-BLK-08: validate FIRST; recipe derivation only happens for
+        # entries that passed validation — malformed provenance can never
+        # reach ``_runtime_recipe_from_provenance`` and raise KeyError.
+        entry_problems = validate_provenance(
+            entry,
+            replica_id=sample.get("replica_id"),
+            workflow_run_id=sample.get("workflow_run_id"),
+            measured_code_sha=sample.get("measured_code_sha"),
         )
+        problems.extend(entry_problems)
+        if entry_problems:
+            continue
         recipes.add(_runtime_recipe_from_provenance(entry))
         runner_os_values.add(str(entry["runner_os"]))
         runner_arch_values.add(str(entry["runner_arch"]))
