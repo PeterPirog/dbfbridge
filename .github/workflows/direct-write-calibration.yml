@@ -73,19 +73,10 @@ jobs:
 
       - name: Structurally validate the replica report
         shell: pwsh
+        env:
+          REPLICA: ${{ matrix.replica }}
         run: |
-          python -c "
-          import json
-          from pathlib import Path
-          payload = json.loads((Path('$env:RUNNER_TEMP') / 'dw-calibration-replica-${{ matrix.replica }}' / 'direct-write-v1-full.json').read_text(encoding='utf-8'))
-          assert payload['benchmark_contract'] == 'dbfbridge-direct-write-v1'
-          assert payload['mode'] == 'full'
-          assert payload['validation_problems'] == [], payload['validation_problems']
-          assert len(payload['scenarios']) == 12
-          assert all(row['status'] == 'MEASURED' for row in payload['scenarios'])
-          assert all(row['intermediate_jsonl_bytes'] == 0 for row in payload['scenarios'])
-          print('replica ${{ matrix.replica }} structural validation OK')
-          "
+          python -c "import json, os; from pathlib import Path; report = Path(os.environ['RUNNER_TEMP']) / ('dw-calibration-replica-' + os.environ['REPLICA']) / 'direct-write-v1-full.json'; payload = json.loads(report.read_text(encoding='utf-8')); assert payload['benchmark_contract'] == 'dbfbridge-direct-write-v1'; assert payload['mode'] == 'full'; assert payload['validation_problems'] == [], payload['validation_problems']; assert len(payload['scenarios']) == 12; assert all(row['status'] == 'MEASURED' for row in payload['scenarios']); assert all(row['intermediate_jsonl_bytes'] == 0 for row in payload['scenarios']); print('replica ' + os.environ['REPLICA'] + ' structural validation OK')"
 
       - name: Upload raw replica report
         uses: actions/upload-artifact@v4
