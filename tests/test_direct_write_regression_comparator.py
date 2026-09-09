@@ -217,13 +217,12 @@ def _base_walls() -> dict[str, float]:
     w1_per_record = w1_wall / 190_000
     walls.setdefault("direct_write_character_heavy", round(w1_per_record * 100_000, 6))
     walls.setdefault("direct_write_deleted_include", round(w1_per_record * 100_000 / 2.4, 6))
-    for name, ratio in (
-        ("direct_write_cp1250", 0.18),
-        ("direct_write_cp852", 0.19),
-        ("direct_write_mazovia", 0.21),
-        ("overwrite_transaction_staging_cost", 0.5),
-    ):
-        walls.setdefault(scenario, round(w1_wall * ratio, 6))
+    walls.setdefault("direct_write_cp1250", round(w1_wall * 0.18, 6))
+    walls.setdefault("direct_write_cp852", round(w1_wall * 0.19, 6))
+    walls.setdefault("direct_write_mazovia", round(w1_wall * 0.21, 6))
+    walls.setdefault(
+        "overwrite_transaction_staging_cost", round(w1_wall * 0.5, 6)
+    )
     return walls
 
 

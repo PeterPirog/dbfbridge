@@ -204,7 +204,7 @@ def test_parameters_explicit_and_rationaled() -> None:
 
 def test_absolute_wall_never_hard_gate() -> None:
     payload = generator.generate_policy(_inputs())
-    for scenario, spec in payload["scenario_calibration"].items():
+    for spec in payload["scenario_calibration"].values():
         assert spec["classification"] == "advisory_only"
 
 
