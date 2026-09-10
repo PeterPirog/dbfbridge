@@ -23,50 +23,30 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any
+
+from .direct_write_regression_contract import (
+    FULL_SCENARIO_RECORD_COUNTS,
+    MEASURED_SCENARIO_ORDER,
+    RATIO_DEFINITIONS_BY_LABEL,
+    RATIO_LABELS,
+    SERIALIZATION_ROUNDING_TOLERANCE,
+    evaluate_ratio_values,
+)
 
 #: Versioned Direct Write regression policy identity (SEPARATE from Phase 3).
 POLICY_CONTRACT = "dbfbridge-direct-write-regression-policy-v1"
 POLICY_VERSION = 1
 
-#: Exact ratio candidate set (DBFB-PERF-006 / F3B1 §10) — no hidden sixth.
-RATIO_LABELS = (
-    "W3/W1 wall-seconds-per-record",
-    "W2/W1 wall-seconds-per-record",
-    "W5/W1 wall-seconds-per-record",
-    "W10/W1 wall-seconds-per-record",
-    "W3/W1 peak-RSS-delta ratio",
-)
+#: The exact number of authoritative calibration samples (F3B1 §6).
+AUTHORITATIVE_SAMPLE_COUNT = 5
 
-RATIO_DEFINITIONS = {
-    "W3/W1 wall-seconds-per-record": (
-        "direct_write_1m_flat",
-        "direct_write_190k_flat",
-        "wall_seconds",
-    ),
-    "W2/W1 wall-seconds-per-record": (
-        "direct_read_transform_write_190k",
-        "direct_write_190k_flat",
-        "wall_seconds",
-    ),
-    "W5/W1 wall-seconds-per-record": (
-        "direct_write_memo_heavy",
-        "direct_write_190k_flat",
-        "wall_seconds",
-    ),
-    "W10/W1 wall-seconds-per-record": (
-        "direct_write_varchar_nullflags",
-        "direct_write_190k_flat",
-        "wall_seconds",
-    ),
-    "W3/W1 peak-RSS-delta ratio": (
-        "direct_write_1m_flat",
-        "direct_write_190k_flat",
-        "peak_rss_delta_bytes",
-    ),
-}
+_WORKFLOW_RUN_ID_PATTERN = re.compile(r"^[0-9]+$")
+_SHA64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_ARTIFACT_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 #: Versioned engineering policy parameters (repository methodology constants
 #: adopted from the proven Phase 3 calibration methodology; NOT measured
@@ -117,39 +97,20 @@ _CORRECTNESS_GATES = (
     "W12 functional_cleanup with records_per_second null and cleanup verified",
 )
 
-SCENARIO_ORDER = (
-    "direct_write_190k_flat",
-    "direct_read_transform_write_190k",
-    "direct_write_1m_flat",
-    "direct_write_character_heavy",
-    "direct_write_memo_heavy",
-    "direct_write_deleted_include",
-    "direct_write_cp1250",
-    "direct_write_cp852",
-    "direct_write_mazovia",
-    "direct_write_varchar_nullflags",
-    "overwrite_transaction_staging_cost",
-    "cancellation_cleanup_smoke",
-)
-
 #: Scenarios the smoke mode actually measures (all W1-W11 with reduced
 #: counts; W12 is functional in both modes).
-SMOKE_SCENARIOS = tuple(
-    scenario
-    for scenario in SCENARIO_ORDER
-    if scenario != "cancellation_cleanup_smoke"
-)
+SMOKE_SCENARIOS = MEASURED_SCENARIO_ORDER
 
 
 def _median_absolute_deviation(values: list[float], center: float) -> float:
     return statistics.median(abs(value - center) for value in values)
 
 
-def _derive_ratio(label: str, values: list[float], parameters: dict[str, dict]) -> dict[str, Any]:
+def _derive_ratio(definition: Any, values: list[float], parameters: dict[str, dict]) -> dict[str, Any]:
     """Mechanically derive one ratio calibration (F3B1 §10/§12)."""
     finite = [float(value) for value in values]
     if not finite or any(not math.isfinite(value) for value in finite):
-        raise ValueError(f"ratio {label!r} contains non-finite values")
+        raise ValueError(f"ratio {definition.label!r} contains non-finite values")
     center = statistics.median(finite)
     mad = _median_absolute_deviation(finite, center)
     max_observed_deviation = max(abs(value - center) for value in finite)
@@ -164,11 +125,16 @@ def _derive_ratio(label: str, values: list[float], parameters: dict[str, dict]) 
         if center > 0 and envelope_upper <= center * discrimination_bound
         else "advisory_only"
     )
-    numerator_scenario, denominator_scenario, metric = RATIO_DEFINITIONS[label]
     return {
-        "label": label,
-        "numerator": f"{numerator_scenario}.{metric}",
-        "denominator": f"{denominator_scenario}.{metric}",
+        "label": definition.label,
+        "numerator": (
+            f"{definition.numerator_scenario}.{definition.metric}"
+        ),
+        "denominator": (
+            f"{definition.denominator_scenario}.{definition.metric}"
+        ),
+        "metric": definition.metric,
+        "normalization": definition.normalization,
         "values": finite,
         "center": center,
         "mad": mad,
@@ -216,6 +182,232 @@ def _derive_scenario_advisory(
     }
 
 
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _calibration_authority_problems(inputs: dict[str, Any]) -> list[str]:
+    """Strict calibration-authority validation (F3B1 §6, fail-closed).
+
+    The policy may only be derived from the authoritative main_push
+    calibration run: exactly five samples of ONE workflow invocation on the
+    reference commit, with complete, correctly-shaped source provenance.
+    Merely non-empty provenance fields are NOT accepted.
+    """
+    problems: list[str] = []
+    source = inputs.get("source") or {}
+    samples = inputs.get("samples") or []
+    calibration_count = inputs.get("calibration_count")
+    if (
+        calibration_count != len(samples)
+        or len(samples) != AUTHORITATIVE_SAMPLE_COUNT
+    ):
+        problems.append(
+            "calibration_count must equal the sample count and be exactly "
+            f"{AUTHORITATIVE_SAMPLE_COUNT} (calibration_count="
+            f"{calibration_count!r}, samples={len(samples)})"
+        )
+    workflow_run_id = str(source.get("workflow_run_id") or "")
+    if not workflow_run_id or not _WORKFLOW_RUN_ID_PATTERN.match(workflow_run_id):
+        problems.append("source workflow_run_id must be a non-empty numeric ID")
+    for sample in samples:
+        if str(sample.get("workflow_run_id")) != workflow_run_id:
+            problems.append(
+                "calibration samples must share the source workflow_run_id "
+                f"({workflow_run_id!r})"
+            )
+            break
+    if source.get("source_context") != "main_push":
+        problems.append(
+            f"calibration source_context must be main_push "
+            f"(got {source.get('source_context')!r})"
+        )
+    if source.get("github_event") != "push":
+        problems.append(
+            f"calibration source github_event must be push "
+            f"(got {source.get('github_event')!r})"
+        )
+    if source.get("branch") != "main":
+        problems.append(
+            f"calibration source branch must be main "
+            f"(got {source.get('branch')!r})"
+        )
+    artifact_id = source.get("artifact_id")
+    if (
+        not isinstance(artifact_id, int)
+        or isinstance(artifact_id, bool)
+        or artifact_id <= 0
+    ):
+        problems.append("source artifact_id must be a positive integer")
+    artifact_digest = str(source.get("artifact_digest") or "")
+    if not _ARTIFACT_DIGEST_PATTERN.match(artifact_digest):
+        problems.append(
+            "source artifact_digest must match sha256:<64 lowercase hex>"
+        )
+    compact_json_sha256 = str(source.get("compact_json_sha256") or "")
+    if not _SHA64_PATTERN.match(compact_json_sha256):
+        problems.append(
+            "source compact_json_sha256 must be 64 lowercase hex characters"
+        )
+    return problems
+
+
+def _recompute_ratio_values(
+    inputs: dict[str, Any],
+) -> tuple[dict[str, list[float]], list[str]]:
+    """Mechanically recompute every canonical ratio from RAW calibration
+    facts (F3B1-BLK-06).
+
+    The four wall ratios are recomputed from ``wall_seconds_by_scenario``
+    plus the canonical FULL scenario record counts; the RSS ratio is
+    recomputed from ``memory_facts[*].w3_peak_rss_delta_bytes`` /
+    ``memory_facts[*].w1_peak_rss_delta_bytes``.  The deterministic replica
+    ordering is the ``samples`` list order; ``memory_facts`` must match it.
+
+    The stored ``ratio_raw_values`` are NEVER trusted blindly: they are
+    cross-checked against the recomputed facts using only the documented
+    serialization-rounding tolerance (the F3A collector serializes RSS
+    delta ratios with 6-decimal rounding).  Inconsistent evidence is
+    rejected.  The RECOMPUTED values — not the stored ones — are the
+    policy's derivation input.
+    """
+    problems: list[str] = []
+    samples = inputs.get("samples") or []
+    memory_facts = inputs.get("memory_facts") or []
+    walls = inputs.get("wall_seconds_by_scenario") or {}
+    sample_count = len(samples)
+    if len(memory_facts) != sample_count:
+        problems.append(
+            f"memory_facts count ({len(memory_facts)}) does not match the "
+            f"sample count ({sample_count})"
+        )
+        return {}, problems
+    for position, (sample, fact) in enumerate(
+        zip(samples, memory_facts, strict=True)
+    ):
+        if str(fact.get("replica_id")) != str(sample.get("replica_id")):
+            problems.append(
+                f"memory_facts[{position}] replica order does not match "
+                "samples (deterministic replica ordering violated)"
+            )
+            break
+    rss_numerator_rows: list[dict[str, Any]] = []
+    rss_denominator_rows: list[dict[str, Any]] = []
+    for position, fact in enumerate(memory_facts):
+        label = f"memory_facts[{position}]"
+        w1_count = fact.get("w1_record_count")
+        w3_count = fact.get("w3_record_count")
+        w1_delta = fact.get("w1_peak_rss_delta_bytes")
+        w3_delta = fact.get("w3_peak_rss_delta_bytes")
+        if w1_count != FULL_SCENARIO_RECORD_COUNTS["direct_write_190k_flat"]:
+            problems.append(
+                f"{label}: w1_record_count must equal the canonical FULL "
+                f"count ({FULL_SCENARIO_RECORD_COUNTS['direct_write_190k_flat']})"
+            )
+        if w3_count != FULL_SCENARIO_RECORD_COUNTS["direct_write_1m_flat"]:
+            problems.append(
+                f"{label}: w3_record_count must equal the canonical FULL "
+                f"count ({FULL_SCENARIO_RECORD_COUNTS['direct_write_1m_flat']})"
+            )
+        for name, value in (
+            ("w1_peak_rss_delta_bytes", w1_delta),
+            ("w3_peak_rss_delta_bytes", w3_delta),
+        ):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                problems.append(
+                    f"{label}: {name} must be a finite non-negative integer"
+                )
+        if isinstance(w1_delta, int) and not isinstance(w1_delta, bool) and w1_delta <= 0:
+            problems.append(f"{label}: w1_peak_rss_delta_bytes must be > 0")
+        rss_numerator_rows.append({"peak_rss_delta_bytes": w3_delta})
+        rss_denominator_rows.append({"peak_rss_delta_bytes": w1_delta})
+
+    recomputed: dict[str, list[float]] = {}
+    stored_values = inputs.get("ratio_raw_values") or {}
+    for definition in (
+        RATIO_DEFINITIONS_BY_LABEL[label] for label in RATIO_LABELS
+    ):
+        if definition.normalization == "per_record_ratio":
+            numerator_scenario = definition.numerator_scenario
+            denominator_scenario = definition.denominator_scenario
+            numerator_walls = walls.get(numerator_scenario) or []
+            denominator_walls = walls.get(denominator_scenario) or []
+            if len(numerator_walls) != sample_count or len(
+                denominator_walls
+            ) != sample_count:
+                problems.append(
+                    f"ratio {definition.label!r}: raw wall facts unavailable"
+                )
+                continue
+            numerator_rows = [
+                {
+                    "wall_seconds": wall,
+                    "record_count": FULL_SCENARIO_RECORD_COUNTS[
+                        numerator_scenario
+                    ],
+                }
+                for wall in numerator_walls
+            ]
+            denominator_rows = [
+                {
+                    "wall_seconds": wall,
+                    "record_count": FULL_SCENARIO_RECORD_COUNTS[
+                        denominator_scenario
+                    ],
+                }
+                for wall in denominator_walls
+            ]
+        else:  # raw_ratio — the W3/W1 peak-RSS-delta ratio
+            numerator_rows = rss_numerator_rows
+            denominator_rows = rss_denominator_rows
+        values = evaluate_ratio_values(
+            definition, numerator_rows, denominator_rows
+        )
+        if any(value is None for value in values):
+            problems.append(
+                f"ratio {definition.label!r}: raw calibration facts "
+                "incomplete/malformed"
+            )
+            continue
+        fact_values = [float(value) for value in values if value is not None]
+        recomputed[definition.label] = fact_values
+        stored = stored_values.get(definition.label)
+        if not isinstance(stored, list) or len(stored) != sample_count:
+            problems.append(
+                f"ratio {definition.label!r}: stored ratio_raw_values "
+                "missing or wrong length"
+            )
+            continue
+        for position, (fact_value, serialized_value) in enumerate(
+            zip(fact_values, stored, strict=True)
+        ):
+            if not _finite_number(serialized_value):
+                problems.append(
+                    f"ratio {definition.label!r}: stored value "
+                    f"{serialized_value!r} is not a finite number"
+                )
+                continue
+            deviation = abs(float(serialized_value) - fact_value)
+            if deviation > SERIALIZATION_ROUNDING_TOLERANCE:
+                problems.append(
+                    f"ratio {definition.label!r}: stored calibration value "
+                    f"{float(serialized_value)!r} (replica position "
+                    f"{position}) does not match the recomputed fact "
+                    f"{fact_value!r} beyond the documented serialization "
+                    f"rounding tolerance {SERIALIZATION_ROUNDING_TOLERANCE!r}"
+                )
+    return recomputed, problems
+
+
 def validate_inputs(inputs: dict[str, Any]) -> list[str]:
     """Strict validation of the calibration-input document (fail-closed)."""
     problems: list[str] = []
@@ -250,9 +442,8 @@ def validate_inputs(inputs: dict[str, Any]) -> list[str]:
     for key in ("workflow_run_id", "artifact_id", "artifact_digest", "compact_json_sha256"):
         if not source.get(key):
             problems.append(f"missing source provenance {key}")
+    problems.extend(_calibration_authority_problems(inputs))
     samples = inputs.get("samples") or []
-    if len(samples) < 5:
-        problems.append(f"fewer than 5 calibration samples ({len(samples)})")
     identities = set()
     run_ids = set()
     shas = set()
@@ -290,19 +481,31 @@ def validate_inputs(inputs: dict[str, Any]) -> list[str]:
         if any(not math.isfinite(float(value)) for value in values):
             problems.append(f"ratio {label!r}: non-finite value")
     wall = inputs.get("wall_seconds_by_scenario") or {}
-    for scenario in SCENARIO_ORDER:
-        if scenario == "cancellation_cleanup_smoke":
-            continue
+    for scenario in MEASURED_SCENARIO_ORDER:
         if scenario not in wall:
             problems.append(f"missing wall_seconds for {scenario}")
         elif len(wall[scenario]) != len(samples):
             problems.append(f"wall_seconds {scenario}: count != sample count")
+        elif any(
+            not _finite_number(value) for value in wall[scenario]
+        ):
+            problems.append(f"wall_seconds {scenario}: non-finite value")
+    memory_facts = inputs.get("memory_facts") or []
+    if len(memory_facts) != len(samples):
+        problems.append(
+            f"memory_facts count ({len(memory_facts)}) != sample count "
+            f"({len(samples)})"
+        )
     for label, values in ratio_values.items():
         for value in values:
             if isinstance(value, float) and (
                 math.isnan(value) or math.isinf(value)
             ):
                 problems.append(f"ratio {label}: NaN/Infinity")
+    # F3B1-BLK-06: mechanically recompute every ratio from the raw
+    # calibration facts and cross-check the stored serialized values.
+    _, recompute_problems = _recompute_ratio_values(inputs)
+    problems.extend(recompute_problems)
     for sentinel in ("records", "NOTE", "PICTURE", "password", "token", "secret"):
         serialized = json.dumps(inputs)
         if f'"{sentinel}"' in serialized and sentinel not in json.dumps(
@@ -315,12 +518,17 @@ def validate_inputs(inputs: dict[str, Any]) -> list[str]:
 def generate_policy(inputs: dict[str, Any]) -> dict[str, Any]:
     """Deterministically derive the versioned regression policy."""
     problems = validate_inputs(inputs)
+    recomputed_values, recompute_problems = _recompute_ratio_values(inputs)
+    problems.extend(recompute_problems)
     if problems:
         return {"accepted": False, "problems": problems}
     ratio_calibration: dict[str, Any] = {}
-    for label, values in inputs["ratio_raw_values"].items():
+    for label in RATIO_LABELS:
+        definition = RATIO_DEFINITIONS_BY_LABEL[label]
         ratio_calibration[label] = _derive_ratio(
-            label, values, {name: PARAMETERS[name] for name in PARAMETERS}
+            definition,
+            recomputed_values[label],
+            {name: PARAMETERS[name] for name in PARAMETERS},
         )
     hard_ratios = [
         label
@@ -336,9 +544,7 @@ def generate_policy(inputs: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     scenario_calibration = {}
-    for scenario in SCENARIO_ORDER:
-        if scenario == "cancellation_cleanup_smoke":
-            continue
+    for scenario in MEASURED_SCENARIO_ORDER:
         scenario_calibration[scenario] = _derive_scenario_advisory(
             scenario, inputs["wall_seconds_by_scenario"][scenario], PARAMETERS
         )
@@ -356,6 +562,8 @@ def generate_policy(inputs: dict[str, Any]) -> dict[str, Any]:
         "reference_commit": reference_commit,
         "calibration_sources": {
             "source_context": source["source_context"],
+            "github_event": source["github_event"],
+            "branch": source["branch"],
             "workflow_run_id": source["workflow_run_id"],
             "artifact_id": source["artifact_id"],
             "artifact_digest": source["artifact_digest"],

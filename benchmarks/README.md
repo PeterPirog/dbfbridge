@@ -494,22 +494,41 @@ Policy semantics (all mechanically derived, no hand-edited classification):
 
 - ABSOLUTE scenario wall times are **ADVISORY ONLY** — hosted-runner wall
   variance is material; the advisory envelope can never hard-fail;
-- the ratio candidate set is EXACTLY five: W3/W2/W5/W10 wall-seconds-per-record
-  relative to W1, plus W3/W1 peak-RSS-delta; each ratio's envelope is
+- the ratio candidate set is EXACTLY five, with ONE operational definition
+  source (`benchmarks/direct_write_regression_contract.py`, consumed by both
+  the generator and the comparator): W3/W2/W5/W10 wall-seconds-per-record
+  relative to W1 are **per-record normalized**
+  (`(num.wall/count) / (den.wall/count)`), while W3/W1 peak-RSS-delta is the
+  **RAW quotient** `w3_delta_bytes / w1_delta_bytes` — RSS is never divided
+  by record counts (the calibration center is ~3.481296; a candidate with
+  W1 delta 38 MB and W3 delta 132 MB evaluates to ~3.4737, not ~0.66);
+  each ratio's envelope is
   `max(center + max(3.0*MAD, max_observed_deviation), max(values)*1.15)` and a
   ratio is `hard_gate` only when its envelope stays within 50 percent of the
   calibrated center — in the authoritative calibration ALL FIVE ratios
   hard-gate;
+- the policy generator recomputes every ratio from the RAW calibration
+  facts (wall seconds + canonical full record counts, raw W3/W1 RSS byte
+  deltas) and cross-checks the stored serialized values against them with
+  a documented 1e-6 serialization-rounding tolerance; inconsistent
+  calibration evidence is rejected;
 - the offline comparator (`benchmarks/compare_direct_write_regression.py`,
-  stdlib-only, never benchmarks) validates the policy strictly (tampering,
-  unknown parameters, mispaired ratios, non-finite values and hidden
-  thresholds all rejected), runs CORRECTNESS gates that always hard-fail
-  regardless of environment, classifies comparability
-  (COMPARABLE/PARTIALLY_COMPARABLE/NOT_COMPARABLE) against the run provenance,
-  and evaluates hard ratio gates only on COMPARABLE evidence —
-  NOT_COMPARABLE never creates a false regression, correctness still
-  hard-fails when not comparable, and smoke candidates report
-  `NOT_EVALUATED_IN_SMOKE` for gates whose scenarios are absent;
+  stdlib-only, never benchmarks) validates the policy strictly (tampered
+  numerator/denominator/metric/normalization, unknown parameters, NaN/
+  Infinity in any policy numeric, hidden thresholds and label-list
+  inconsistencies all rejected as `INVALID_POLICY`), runs CORRECTNESS gates
+  that always hard-fail regardless of environment, classifies comparability
+  (COMPARABLE/PARTIALLY_COMPARABLE/NOT_COMPARABLE) using the AUTHORITATIVE
+  F3A `validate_provenance` contract (a structurally invalid provenance can
+  never become COMPARABLE), and evaluates hard ratio gates only on
+  COMPARABLE evidence — NOT_COMPARABLE never creates a false regression,
+  correctness still hard-fails when not comparable, malformed candidate
+  numerics report `CANDIDATE_MALFORMED` (deterministic failure, never a
+  crash, never PASS), and COMPARABLE-but-unevaluated hard gates report
+  `INCOMPLETE_EVIDENCE` (a smoke run without its real performance facts can
+  never PASS); both full and smoke candidates must carry the EXACT W1-W12
+  scenario contract (smoke scales the counts down; W10 disk-spool evidence
+  stays full-only, W12 stays functional-only);
 - raw variability is preserved (no outlier removal, no normalization);
 - rebaselining requires an explicit architecture-reviewed task — the policy
   is never rewritten automatically from CI runs.

@@ -17,6 +17,12 @@ ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT))
 
 from benchmarks import calibrate_direct_write_regression as generator  # noqa: E402
+from benchmarks.direct_write_regression_contract import (  # noqa: E402
+    FULL_SCENARIO_RECORD_COUNTS,
+    RATIO_DEFINITIONS_BY_LABEL,
+    SERIALIZATION_ROUNDING_TOLERANCE,
+    evaluate_ratio_values,
+)
 
 
 def _inputs() -> dict:
@@ -49,7 +55,7 @@ def test_fewer_than_five_samples_rejected() -> None:
         inputs["ratio_raw_values"][label] = inputs["ratio_raw_values"][label][:4]
     payload = generator.generate_policy(inputs)
     assert payload["accepted"] is False
-    assert any("fewer than 5" in item for item in payload["problems"])
+    assert any("exactly 5" in item for item in payload["problems"])
 
 
 def test_duplicate_sample_identity_rejected() -> None:
@@ -145,25 +151,54 @@ def test_hard_ratios_exist_in_authoritative_policy() -> None:
 
 
 def test_zero_hard_ratios_rejected_as_nondiscriminating(tmp_path: Path) -> None:
-    """A policy with zero hard ratios is rejected as non-useful."""
+    """A policy with zero hard ratios is rejected as non-useful.  The raw
+    facts AND the stored ratio values are tampered TOGETHER so the
+    mechanical cross-check stays satisfied and the dispersion itself (not a
+    cross-check failure) triggers the rejection."""
+
+    def recompute_walls(scenario: str, count: int, desired: list[float]) -> None:
+        for position, target in enumerate(desired):
+            inputs["wall_seconds_by_scenario"][scenario][position] = (
+                target
+                * inputs["wall_seconds_by_scenario"]["direct_write_190k_flat"][
+                    position
+                ]
+                * count
+                / 190_000
+            )
+        inputs["ratio_raw_values"][label] = [
+            (inputs["wall_seconds_by_scenario"][scenario][position] / count)
+            / (
+                inputs["wall_seconds_by_scenario"]["direct_write_190k_flat"][
+                    position
+                ]
+                / 190_000
+            )
+            for position in range(5)
+        ]
 
     inputs = _inputs()
-    # make every ratio wildly dispersed so none satisfies the bound
-    for label in inputs["ratio_raw_values"]:
-        values = inputs["ratio_raw_values"][label]
-        center = statistics_median(values)
-        inputs["ratio_raw_values"][label] = [
-            center * 0.5, center * 2.5, center, center * 3.5, center * 1.9,
-        ]
+    spread = [0.5, 2.5, 1.0, 3.5, 1.9]
+    for scenario, label in {
+        "direct_write_1m_flat": "W3/W1 wall-seconds-per-record",
+        "direct_read_transform_write_190k": "W2/W1 wall-seconds-per-record",
+        "direct_write_memo_heavy": "W5/W1 wall-seconds-per-record",
+        "direct_write_varchar_nullflags": "W10/W1 wall-seconds-per-record",
+    }.items():
+        count = FULL_SCENARIO_RECORD_COUNTS[scenario]
+        base = inputs["ratio_raw_values"][label][0]
+        recompute_walls(scenario, count, [base * factor for factor in spread])
+    # the RSS ratio facts disperse too (raw W3 deltas + stored values)
+    label = "W3/W1 peak-RSS-delta ratio"
+    base_rss = inputs["ratio_raw_values"][label][0]
+    for position, factor in enumerate(spread):
+        w1_delta = inputs["memory_facts"][position]["w1_peak_rss_delta_bytes"]
+        w3_delta = round(base_rss * factor * w1_delta)
+        inputs["memory_facts"][position]["w3_peak_rss_delta_bytes"] = w3_delta
+        inputs["ratio_raw_values"][label][position] = w3_delta / w1_delta
     payload = generator.generate_policy(inputs)
     if not payload["accepted"]:
         assert any("non-discriminating" in item for item in payload["problems"])
-
-
-def statistics_median(values: list[float]) -> float:
-    import statistics as st
-
-    return st.median(values)
 
 
 def test_policy_reproducible_from_committed_inputs() -> None:
@@ -237,14 +272,18 @@ def test_authoritative_ratio_facts_match_artifact() -> None:
     assert values["W3/W1 peak-RSS-delta ratio"] == [
         3.481296, 3.431614, 3.487174, 3.452797, 3.48822,
     ]
-    # medians match the authoritative calibration facts
+    # wall centers are recomputed BIT-IDENTICALLY from the raw wall facts
     policy = generator.generate_policy(inputs)
     rc = policy["ratio_calibration"]
     assert rc["W3/W1 wall-seconds-per-record"]["center"] == 0.9902604010803056
     assert rc["W2/W1 wall-seconds-per-record"]["center"] == 1.191591666826306
     assert rc["W5/W1 wall-seconds-per-record"]["center"] == 1.377352605454371
     assert rc["W10/W1 wall-seconds-per-record"]["center"] == 1.0158666755025711
-    assert rc["W3/W1 peak-RSS-delta ratio"]["center"] == 3.481296
+    # the RSS center is derived from the raw W3/W1 delta facts and stays
+    # within the documented serialization rounding of 3.481296
+    assert abs(
+        rc["W3/W1 peak-RSS-delta ratio"]["center"] - 3.481296
+    ) < 1e-6
 
 
 def test_parameter_tampering_rejected_by_reproduction() -> None:
@@ -253,3 +292,245 @@ def test_parameter_tampering_rejected_by_reproduction() -> None:
     assert generator.PARAMETERS["mad_multiplier"]["value"] == 3.0
     assert generator.PARAMETERS["small_sample_guard_band"]["value"] == 1.15
     assert generator.PARAMETERS["hard_gate_discrimination_bound"]["value"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-02: explicit policy formula metadata
+# ---------------------------------------------------------------------------
+
+
+def test_ratio_policy_metadata_explicit() -> None:
+    """Every ratio_calibration entry must explicitly carry label, numerator,
+    denominator, metric and normalization (F3B1-BLK-02)."""
+    payload = generator.generate_policy(_inputs())
+    for label, spec in payload["ratio_calibration"].items():
+        assert spec["label"] == label
+        assert spec["numerator"].startswith(
+            RATIO_DEFINITIONS_BY_LABEL[label].numerator_scenario + "."
+        )
+        assert spec["denominator"].startswith(
+            RATIO_DEFINITIONS_BY_LABEL[label].denominator_scenario
+        )
+        assert spec["metric"] == RATIO_DEFINITIONS_BY_LABEL[label].metric
+        assert spec["normalization"] == RATIO_DEFINITIONS_BY_LABEL[label].normalization
+
+
+def test_wall_ratios_are_per_record_and_rss_is_raw() -> None:
+    payload = generator.generate_policy(_inputs())
+    for label in (
+        "W3/W1 wall-seconds-per-record",
+        "W2/W1 wall-seconds-per-record",
+        "W5/W1 wall-seconds-per-record",
+        "W10/W1 wall-seconds-per-record",
+    ):
+        assert payload["ratio_calibration"][label]["normalization"] == "per_record_ratio", label
+    assert (
+        payload["ratio_calibration"]["W3/W1 peak-RSS-delta ratio"][
+            "normalization"
+        ]
+        == "raw_ratio"
+    )
+
+
+def test_rss_raw_formula_arithmetic_proof() -> None:
+    """F3B1-BLK-01 mechanical proof: 132000000 / 38000000 ~= 3.473684 for
+    the W3/W1 RSS delta under the RAW formula (NOT divided by record
+    counts, which would yield ~0.66)."""
+    definition = RATIO_DEFINITIONS_BY_LABEL["W3/W1 peak-RSS-delta ratio"]
+    values = evaluate_ratio_values(
+        definition,
+        [{"peak_rss_delta_bytes": 132_000_000}],
+        [{"peak_rss_delta_bytes": 38_000_000}],
+    )
+    ratio_value = values[0]
+    assert ratio_value is not None
+    assert ratio_value == 132_000_000 / 38_000_000
+    assert abs(ratio_value - 3.473684) < 1e-6  # approx 3.473684
+    assert abs(ratio_value - 0.66) > 2.0  # never the per-record figure
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-06: mechanical recomputation from raw calibration facts
+# ---------------------------------------------------------------------------
+
+
+def test_policy_values_derived_from_recomputed_facts() -> None:
+    """The policy ratio values are the mechanically recomputed facts —
+    wall ratios bit-identical from the raw 6-decimal wall facts, the RSS
+    ratio full-precision from the raw byte deltas."""
+    inputs = _inputs()
+    recomputed, problems = generator._recompute_ratio_values(inputs)
+    assert problems == []
+    policy = generator.generate_policy(inputs)
+    for label, spec in policy["ratio_calibration"].items():
+        assert spec["values"] == recomputed[label], label
+    walls = inputs["wall_seconds_by_scenario"]
+    expected_w3 = (walls["direct_write_1m_flat"][0] / 1_000_000) / (
+        walls["direct_write_190k_flat"][0] / 190_000
+    )
+    assert recomputed["W3/W1 wall-seconds-per-record"][0] == expected_w3
+    rss = recomputed["W3/W1 peak-RSS-delta ratio"]
+    assert rss[0] == (
+        inputs["memory_facts"][0]["w3_peak_rss_delta_bytes"]
+        / inputs["memory_facts"][0]["w1_peak_rss_delta_bytes"]
+    )
+
+
+def test_tampered_w5_ratio_value_rejected() -> None:
+    """A tampered stored W5 ratio value cannot pass the mechanical
+    cross-check against the raw wall facts (F3B1-BLK-06)."""
+    inputs = _inputs()
+    inputs["ratio_raw_values"]["W5/W1 wall-seconds-per-record"][2] = 9.99
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any(
+        "W5/W1 wall-seconds-per-record" in item and "does not match" in item
+        for item in payload["problems"]
+    )
+
+
+def test_tampered_rss_ratio_value_rejected() -> None:
+    inputs = _inputs()
+    inputs["ratio_raw_values"]["W3/W1 peak-RSS-delta ratio"][1] = 0.66
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any(
+        "W3/W1 peak-RSS-delta ratio" in item and "does not match" in item
+        for item in payload["problems"]
+    )
+
+
+def test_tampered_raw_w3_rss_delta_rejected() -> None:
+    """A tampered RAW W3 RSS delta (memory_facts) must be caught: the
+    stored ratio no longer matches the recomputed facts."""
+    inputs = _inputs()
+    inputs["memory_facts"][2]["w3_peak_rss_delta_bytes"] = 132_000_000
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any(
+        "W3/W1 peak-RSS-delta ratio" in item and "does not match" in item
+        for item in payload["problems"]
+    )
+
+
+def test_memory_fact_replica_order_mismatch_rejected() -> None:
+    inputs = _inputs()
+    inputs["memory_facts"][1], inputs["memory_facts"][2] = (
+        inputs["memory_facts"][2],
+        inputs["memory_facts"][1],
+    )
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("replica order" in item for item in payload["problems"])
+
+
+def test_memory_fact_record_count_mismatch_rejected() -> None:
+    inputs = _inputs()
+    inputs["memory_facts"][0]["w3_record_count"] = 500_000
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("w3_record_count" in item for item in payload["problems"])
+    assert FULL_SCENARIO_RECORD_COUNTS["direct_write_1m_flat"] == 1_000_000
+
+
+def test_zero_w1_rss_delta_in_facts_rejected() -> None:
+    inputs = _inputs()
+    inputs["memory_facts"][0]["w1_peak_rss_delta_bytes"] = 0
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("must be > 0" in item for item in payload["problems"])
+
+
+def test_tampering_within_serialization_tolerance_is_accepted() -> None:
+    """A stored value deviating by LESS than the documented serialization
+    rounding tolerance is still accepted (the tolerance exists exactly for
+    the F3A 6-decimal serialization)."""
+    inputs = _inputs()
+    inputs["ratio_raw_values"]["W3/W1 peak-RSS-delta ratio"][0] += (
+        SERIALIZATION_ROUNDING_TOLERANCE / 2
+    )
+    problems = generator.validate_inputs(inputs)
+    assert problems == []
+
+
+# ---------------------------------------------------------------------------
+# F3B1 §6: calibration authority validation
+# ---------------------------------------------------------------------------
+
+
+def test_wrong_source_context_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["source_context"] = "pull_request_merge_ref"
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("source_context must be main_push" in item for item in payload["problems"])
+
+
+def test_wrong_github_event_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["github_event"] = "workflow_dispatch"
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("github_event must be push" in item for item in payload["problems"])
+
+
+def test_wrong_branch_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["branch"] = "perf/v1.1-direct-write-regression-policy"
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("branch must be main" in item for item in payload["problems"])
+
+
+def test_non_numeric_workflow_run_id_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["workflow_run_id"] = "run-abc"
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("non-empty numeric ID" in item for item in payload["problems"])
+
+
+def test_zero_artifact_id_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["artifact_id"] = 0
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("artifact_id must be a positive integer" in item for item in payload["problems"])
+
+
+def test_wrong_artifact_digest_format_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["artifact_digest"] = "93d2f3b8"  # missing sha256: prefix
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any(
+        "artifact_digest must match sha256:<64 lowercase hex>" in item
+        for item in payload["problems"]
+    )
+
+
+def test_wrong_compact_sha_format_rejected() -> None:
+    inputs = _inputs()
+    inputs["source"]["compact_json_sha256"] = "C7113378" + "0" * 56  # uppercase
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any(
+        "compact_json_sha256 must be 64 lowercase hex" in item
+        for item in payload["problems"]
+    )
+
+
+def test_sample_workflow_run_mismatch_rejected() -> None:
+    inputs = _inputs()
+    inputs["samples"][2]["workflow_run_id"] = "34352345105"
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("share the source workflow_run_id" in item for item in payload["problems"])
+
+
+def test_calibration_count_mismatch_rejected() -> None:
+    inputs = _inputs()
+    inputs["calibration_count"] = 4
+    payload = generator.generate_policy(inputs)
+    assert payload["accepted"] is False
+    assert any("exactly 5" in item for item in payload["problems"])

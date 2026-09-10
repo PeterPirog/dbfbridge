@@ -303,7 +303,9 @@ def test_duplicate_scenario_fails() -> None:
 
 
 def test_smoke_candidate_accepted() -> None:
-    """Smoke: the same scenarios with reduced counts; ratios evaluate."""
+    """Smoke: the real W1-W12 scenario contract with reduced counts; ALL
+    hard ratio gates have their required scenarios present and evaluate
+    (F3B1-BLK-04)."""
     candidate = _candidate()
     candidate["mode"] = "smoke"
     # reduce counts per SMOKE_COUNTS-like shape (bounded smoke)
@@ -319,12 +321,50 @@ def test_smoke_candidate_accepted() -> None:
     )
     assert payload["correctness"]["status"] == "PASS"
     assert payload["overall_status"] in {"PASS", "REGRESSION"}
-    # smoke evaluates ratios: every hard gate has a concrete value
+    # smoke exercises real hard gates: all five must have concrete values
+    # (the benchmark produces all 12 scenarios in both modes)
+    evaluated = [
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["status"] in {"PASS", "REGRESSION"}
+    ]
+    assert len(evaluated) >= 1, (
+        "smoke must exercise at least one actual hard performance gate"
+    )
     for gate in payload["performance"]["hard_gates"]:
-        assert gate["status"] in {"PASS", "REGRESSION"}, gate
+        assert gate["status"] != "NOT_EVALUATED_IN_SMOKE", (
+            f"{gate['label']}: all 12 scenarios are present in the real smoke "
+            "contract; no gate may be NOT_EVALUATED"
+        )
 
 
-def test_smoke_ratio_not_evaluated_when_scenario_missing() -> None:
+def test_empty_smoke_rejected() -> None:
+    """F3B1-BLK-04: an empty smoke candidate is a correctness FAIL."""
+    candidate = _candidate()
+    candidate["mode"] = "smoke"
+    candidate["scenarios"] = []
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="smoke"
+    )
+    assert payload["correctness"]["status"] == "FAIL"
+    assert payload["overall_status"] == "INCORRECT"
+    assert any("empty candidate" in item for item in payload["correctness"]["problems"])
+
+
+def test_smoke_missing_w1_rejected() -> None:
+    candidate = _candidate()
+    candidate["mode"] = "smoke"
+    candidate["scenarios"] = [
+        row for row in candidate["scenarios"]
+        if row["scenario"] != "direct_write_190k_flat"
+    ]
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="smoke"
+    )
+    assert payload["correctness"]["status"] == "FAIL"
+    assert any("missing scenarios" in item for item in payload["correctness"]["problems"])
+
+
+def test_smoke_missing_w3_rejected() -> None:
     candidate = _candidate()
     candidate["mode"] = "smoke"
     candidate["scenarios"] = [
@@ -334,11 +374,42 @@ def test_smoke_ratio_not_evaluated_when_scenario_missing() -> None:
     payload = comparator.compare_candidate(
         _policy(), candidate, _PROVENANCE, mode="smoke"
     )
-    w3_gate = next(
-        gate for gate in payload["performance"]["hard_gates"]
-        if gate["label"] == "W3/W1 wall-seconds-per-record"
+    assert payload["correctness"]["status"] == "FAIL"
+    assert any("missing scenarios" in item for item in payload["correctness"]["problems"])
+
+
+def test_smoke_missing_w12_rejected() -> None:
+    candidate = _candidate()
+    candidate["mode"] = "smoke"
+    candidate["scenarios"] = [
+        row for row in candidate["scenarios"]
+        if row["scenario"] != "cancellation_cleanup_smoke"
+    ]
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="smoke"
     )
-    assert w3_gate["status"] == "NOT_EVALUATED_IN_SMOKE"
+    assert payload["correctness"]["status"] == "FAIL"
+    assert any("missing scenarios" in item for item in payload["correctness"]["problems"])
+
+
+def test_smoke_unexpected_scenario_rejected() -> None:
+    candidate = _candidate()
+    candidate["mode"] = "smoke"
+    candidate["scenarios"].append(
+        {
+            "scenario": "unexpected_scenario",
+            "status": "MEASURED",
+            "record_count": 100,
+            "wall_seconds": 1.0,
+            "intermediate_jsonl_bytes": 0,
+            "temporary_bytes_left": 0,
+        }
+    )
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="smoke"
+    )
+    assert payload["correctness"]["status"] == "FAIL"
+    assert any("unexpected scenarios" in item for item in payload["correctness"]["problems"])
 
 
 def test_not_comparable_does_not_produce_false_regression() -> None:
@@ -520,3 +591,468 @@ def test_memo_heavy_candidate_wall_values_not_massaged() -> None:
         if item["scenario"] == "direct_write_memo_heavy"
     )
     assert w5_advisory["wall_seconds"] == 60.0  # raw value preserved
+
+
+def test_rss_ratio_uses_raw_formula() -> None:
+    """F3B1-BLK-01: the RSS ratio must be the RAW peak-RSS-delta quotient
+    (NOT per-record normalized).  A candidate with W1 delta 38 MB and W3
+    delta 132 MB yields 132/38 ≈ 3.4737 — near the calibrated center
+    3.481296 — NOT the ~0.66 a per-record normalization would produce."""
+    payload = comparator.compare_candidate(
+        _policy(), _candidate(), _PROVENANCE, mode="full"
+    )
+    rss_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 peak-RSS-delta ratio"
+    )
+    assert rss_gate["numerator_delta_bytes"] == 132_000_000
+    assert rss_gate["denominator_delta_bytes"] == 38_000_000
+    expected = 132_000_000 / 38_000_000
+    assert abs(rss_gate["value"] - expected) < 1e-6
+    assert rss_gate["value"] > 3.0  # raw ratio, not a per-record figure
+
+
+def test_rss_regression_mechanically_fails() -> None:
+    """A candidate whose W3 peak-RSS-delta exceeds the policy RSS envelope
+    must produce a REGRESSION on COMPARABLE evidence."""
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            # 3.481296 * 1.5 (discrimination bound) < ratio -> exceeds envelope
+            row["peak_rss_delta_bytes"] = 260_000_000
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    rss_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 peak-RSS-delta ratio"
+    )
+    expected_ratio = 260_000_000 / 38_000_000
+    assert abs(rss_gate["value"] - expected_ratio) < 1e-6
+    assert expected_ratio > rss_gate["envelope_upper"]
+    assert rss_gate["status"] == "REGRESSION"
+    assert payload["overall_status"] == "REGRESSION"
+
+
+def test_w1_zero_rss_delta_is_candidate_malformed() -> None:
+    """F3B1-BLK-08: a zero W1 RSS delta denominator must reject cleanly and
+    deterministically (never PASS, never an internal exception)."""
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_190k_flat":
+            row["peak_rss_delta_bytes"] = 0
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    rss_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 peak-RSS-delta ratio"
+    )
+    assert rss_gate["status"] == "CANDIDATE_MALFORMED"
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+    json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-08: malformed candidate numerics fail closed, never crash
+# ---------------------------------------------------------------------------
+
+
+def _gate_status(payload: dict, label: str) -> str:
+    gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == label
+    )
+    return gate["status"]
+
+
+def test_wall_seconds_string_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_190k_flat":
+            row["wall_seconds"] = "bad"
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+    wall_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 wall-seconds-per-record"
+    )
+    assert wall_gate["status"] == "CANDIDATE_MALFORMED"
+    json.dumps(payload)
+
+
+def test_wall_seconds_nan_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            row["wall_seconds"] = float("nan")
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+
+
+def test_zero_record_count_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            row["record_count"] = 0
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+    wall_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 wall-seconds-per-record"
+    )
+    assert wall_gate["status"] == "CANDIDATE_MALFORMED"
+
+
+def test_bool_record_count_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            row["record_count"] = True
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+
+
+def test_peak_rss_delta_string_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            row["peak_rss_delta_bytes"] = "bad"
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    rss_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 peak-RSS-delta ratio"
+    )
+    assert rss_gate["status"] == "CANDIDATE_MALFORMED"
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+
+
+def test_w3_infinite_rss_delta_is_candidate_malformed() -> None:
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_1m_flat":
+            row["peak_rss_delta_bytes"] = float("inf")
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    rss_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 peak-RSS-delta ratio"
+    )
+    assert rss_gate["status"] == "CANDIDATE_MALFORMED"
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+
+
+def test_oversized_integer_wall_is_candidate_malformed() -> None:
+    """A wall value too large for float must fail cleanly (no uncaught
+    OverflowError)."""
+    candidate = _candidate()
+    for row in candidate["scenarios"]:
+        if row["scenario"] == "direct_write_190k_flat":
+            row["wall_seconds"] = 10**400
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="full"
+    )
+    wall_gate = next(
+        gate for gate in payload["performance"]["hard_gates"]
+        if gate["label"] == "W3/W1 wall-seconds-per-record"
+    )
+    assert wall_gate["status"] == "CANDIDATE_MALFORMED"
+    assert payload["overall_status"] == "CANDIDATE_MALFORMED"
+
+
+def test_malformed_candidate_never_reports_pass() -> None:
+    """Every malformed-numeric case must produce a deterministic FAILURE
+    overall status (never PASS/NOT_COMPARABLE_PASS)."""
+    for mutate in (
+        lambda candidate: candidate["scenarios"][0].update({"wall_seconds": "bad"}),
+        lambda candidate: candidate["scenarios"][0].update({"wall_seconds": float("nan")}),
+        lambda candidate: candidate["scenarios"][0].update({"wall_seconds": -1.0}),
+        lambda candidate: candidate["scenarios"][0].update({"record_count": 0}),
+        lambda candidate: candidate["scenarios"][0].update({"record_count": "x"}),
+        lambda candidate: candidate["scenarios"][0].update({"peak_rss_delta_bytes": "bad"}),
+        lambda candidate: candidate["scenarios"][0].update({"peak_rss_delta_bytes": 0}),
+        lambda candidate: candidate["scenarios"][2].update({"peak_rss_delta_bytes": float("inf")}),
+        lambda candidate: candidate["scenarios"][2].update({"peak_rss_delta_bytes": -5}),
+    ):
+        candidate = _candidate()
+        mutate(candidate)
+        payload = comparator.compare_candidate(
+            _policy(), candidate, _PROVENANCE, mode="full"
+        )
+        assert payload["overall_status"] not in {"PASS", "NOT_COMPARABLE_PASS"}, (
+            payload["overall_status"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-02/03/12: strict policy shape and fail-closed policy numerics
+# ---------------------------------------------------------------------------
+
+
+def _tamper(policy: dict, mutate) -> dict:
+    comparator.validate_policy(policy)  # sanity: baseline policy is valid
+    assert comparator.validate_policy(policy) == []
+    mutate(policy)
+    return policy
+
+
+def test_policy_numerator_tampering_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"]["numerator"] = (
+        "direct_write_cp1250.wall_seconds"
+    )
+    problems = comparator.validate_policy(policy)
+    assert any("mispaired numerator" in item for item in problems)
+
+
+def test_policy_denominator_tampering_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"]["denominator"] = (
+        "direct_write_1m_flat.wall_seconds"
+    )
+    problems = comparator.validate_policy(policy)
+    assert any("mispaired denominator" in item for item in problems)
+
+
+def test_policy_metric_tampering_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"]["metric"] = (
+        "peak_rss_delta_bytes"
+    )
+    problems = comparator.validate_policy(policy)
+    assert any("metric tampered" in item for item in problems)
+
+
+def test_policy_normalization_tampering_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W3/W1 peak-RSS-delta ratio"][
+        "normalization"
+    ] = "per_record_ratio"  # RSS must NEVER be per-record normalized
+    problems = comparator.validate_policy(policy)
+    assert any("normalization tampered" in item for item in problems)
+
+
+def test_policy_missing_ratio_metadata_rejected() -> None:
+    policy = _policy()
+    del policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"]["metric"]
+    problems = comparator.validate_policy(policy)
+    assert any("missing required field 'metric'" in item for item in problems)
+
+
+def test_policy_nan_center_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W3/W1 peak-RSS-delta ratio"]["center"] = float("nan")
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("non-finite center" in item for item in payload["problems"])
+
+
+def test_policy_nan_envelope_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W3/W1 peak-RSS-delta ratio"][
+        "envelope_upper"
+    ] = float("nan")
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+
+
+def test_policy_infinity_mad_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W3/W1 wall-seconds-per-record"]["mad"] = float("inf")
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("non-finite MAD" in item for item in payload["problems"])
+
+
+def test_policy_nan_derived_fields_rejected() -> None:
+    for field in (
+        "relative_mad",
+        "max_observed_deviation",
+        "spread_based",
+        "tail_based",
+        "envelope_upper_over_center",
+    ):
+        policy = _policy()
+        policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"][field] = float("nan")
+        payload = comparator.compare_candidate(
+            policy, _candidate(), _PROVENANCE, mode="full"
+        )
+        assert payload["overall_status"] == "INVALID_POLICY", field
+        assert any(f"non-finite {field}" in item for item in payload["problems"])
+
+
+def test_policy_nan_calibration_value_rejected() -> None:
+    policy = _policy()
+    policy["ratio_calibration"]["W5/W1 wall-seconds-per-record"]["values"][1] = float("nan")
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("non-finite calibration value" in item for item in payload["problems"])
+
+
+def test_policy_nan_advisory_metric_rejected() -> None:
+    policy = _policy()
+    policy["scenario_calibration"]["direct_write_190k_flat"][
+        "advisory_envelope_upper"
+    ] = float("nan")
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any(
+        "non-finite advisory advisory_envelope_upper" in item
+        for item in payload["problems"]
+    )
+
+
+def test_policy_advisory_center_nan_rejected() -> None:
+    policy = _policy()
+    policy["scenario_calibration"]["direct_write_190k_flat"]["center"] = float("nan")
+    problems = comparator.validate_policy(policy)
+    assert any("non-finite advisory center" in item for item in problems)
+
+
+def test_policy_hard_label_lists_tampering_rejected() -> None:
+    policy = _policy()
+    policy["hard_ratio_labels"] = [label for label in policy["hard_ratio_labels"] if label != "W5/W1 wall-seconds-per-record"]
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("missing from hard_ratio_labels" in item for item in payload["problems"])
+
+
+def test_policy_label_lists_not_covering_all_ratios_rejected() -> None:
+    policy = _policy()
+    policy["advisory_ratio_labels"] = list(policy["advisory_ratio_labels"]) + [
+        "W3/W1 wall-seconds-per-record"
+    ]
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+
+
+def test_policy_scenario_calibration_extra_scenario_rejected() -> None:
+    policy = _policy()
+    policy["scenario_calibration"]["cancellation_cleanup_smoke"] = {
+        "scenario": "cancellation_cleanup_smoke",
+        "metric": "wall_seconds",
+        "classification": "advisory_only",
+        "values": [1.0] * 5,
+        "center": 1.0,
+        "mad": 0.0,
+        "advisory_envelope_upper": 2.0,
+    }
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("W1-W11" in item for item in payload["problems"])
+
+
+def test_policy_calibration_count_mismatch_with_provenance_rejected() -> None:
+    policy = _policy()
+    policy["calibration_sources"]["benchmark_run_ids"] = policy[
+        "calibration_sources"
+    ]["benchmark_run_ids"][:4]
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("must match the benchmark_run_ids" in item for item in payload["problems"])
+
+
+def test_policy_authority_format_tampering_rejected() -> None:
+    policy = _policy()
+    policy["calibration_sources"]["artifact_id"] = "10104538589"  # not an int
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("artifact_id must be a positive integer" in item for item in payload["problems"])
+
+
+def test_policy_wrong_source_context_rejected() -> None:
+    policy = _policy()
+    policy["calibration_sources"]["source_context"] = "pull_request_merge_ref"
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+
+
+def test_policy_parameter_kind_tampering_rejected() -> None:
+    policy = _policy()
+    policy["parameters"]["mad_multiplier"]["kind"] = "measured_fact"
+    payload = comparator.compare_candidate(policy, _candidate(), _PROVENANCE, mode="full")
+    assert payload["overall_status"] == "INVALID_POLICY"
+    assert any("kind must be engineering_policy_parameter" in item for item in payload["problems"])
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-05: candidate provenance reuses the AUTHORITATIVE F3A validator
+# ---------------------------------------------------------------------------
+
+
+def _provenance_variants() -> dict[str, dict]:
+    return {
+        "wrong contract": {"provenance_contract": "some-other/1"},
+        "wrong version": {"provenance_contract_version": 2},
+        "unknown key": {"environment_dump": {"PATH": "C:\\windows"}},
+        "extra dependency": {
+            "dependencies": {"dbf": "0.99.11", "dbfread": "2.0.7", "psutil": "7.2.2", "pyyaml": "6.0"}
+        },
+        "missing dependency": {"dependencies": {"dbf": "0.99.11", "psutil": "7.2.2"}},
+        "dependencies not object": {"dependencies": "0.99.11"},
+        "invalid SHA": {"github_sha": "zzzz-not-a-sha"},
+        "invalid source_context": {"source_context": "mystery_context"},
+    }
+
+
+def test_malformed_candidate_provenance_never_comparable() -> None:
+    base = dict(_PROVENANCE)
+    for description, override in _provenance_variants().items():
+        provenance = dict(base)
+        provenance.update(override)
+        payload = comparator.compare_candidate(
+            _policy(), _candidate(), provenance, mode="full"
+        )
+        assert payload["comparability"]["classification"] == "NOT_COMPARABLE", description
+        assert any(
+            "provenance: INVALID" in item for item in payload["comparability"]["checks"]
+        ), description
+        json.dumps(payload)
+
+
+def test_malformed_provenance_never_crashes_on_non_object() -> None:
+    payload = comparator.compare_candidate(
+        _policy(),
+        _candidate(),
+        "not-an-object",  # type: ignore[arg-type]
+        mode="full",
+    )
+    assert payload["comparability"]["classification"] == "NOT_COMPARABLE"
+    json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# F3B1-BLK-04/§11: smoke evidence contract
+# ---------------------------------------------------------------------------
+
+
+def test_comparable_smoke_with_missing_metrics_never_passes() -> None:
+    """A COMPARABLE smoke candidate whose scenario facts are present but
+    whose performance metrics are missing cannot PASS — incomplete smoke
+    evidence must fail (F3B1-BLK-04/§11)."""
+    candidate = _candidate()
+    candidate["mode"] = "smoke"
+    for row in candidate["scenarios"]:
+        if row.get("scenario") == "cancellation_cleanup_smoke":
+            continue
+        row["wall_seconds"] = None  # all hard-gate wall facts gone
+        row.pop("record_count", None)
+    payload = comparator.compare_candidate(
+        _policy(), candidate, _PROVENANCE, mode="smoke"
+    )
+    assert payload["correctness"]["status"] == "PASS"
+    statuses = {gate["status"] for gate in payload["performance"]["hard_gates"]}
+    assert "NOT_EVALUATED_IN_SMOKE" in statuses
+    assert payload["overall_status"] == "INCOMPLETE_EVIDENCE"
+    assert payload["overall_status"] != "PASS"
