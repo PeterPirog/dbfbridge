@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-10
+
 ### Added
 - Public Direct Write API (additive v1.1 contract, `docs/api-1.1.md`):
   `write_table()` writes a typed `TableSchema` + record stream as a fresh
@@ -162,5 +164,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development Status: Alpha (Direct Read Core stable, broader API stabilization continues)
 - Python 3.14 CI support added
 
-[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...v1.1.0
 [0.2.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.2.0

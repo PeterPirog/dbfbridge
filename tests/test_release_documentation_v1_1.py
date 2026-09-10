@@ -1,11 +1,12 @@
-"""Cross-document v1.1 release-truth contract tests (Phase F4A).
+"""Cross-document v1.1 release-truth contract tests (Phase F4A + F4B2).
 
 Narrow, deterministic anti-drift tests for the maintained USER-FACING
 documentation that have no existing authority:
 
-- release truth: PyPI access is available, the target controlled release is
-  ``1.1.0``, and it has not been published (no "PyPI blocked" / "final
-  1.0.0" claims in current-release documents);
+- release truth: the release version (``1.1.0`` from F4B2 onward) is named
+  durably, users are pointed at PyPI/GitHub Releases for the currently
+  published versions, and no "PyPI blocked" / release-preparation wording
+  returns to current-release documents;
 - public-surface terminology: nine protected v1.0 operations PLUS the
   additive v1.1 ``write_table``;
 - docs/api-1.0.md stays the protected historical baseline (no v1.1 content);
@@ -90,13 +91,24 @@ def test_current_docs_do_not_target_final_1_0_0() -> None:
 
 
 def test_release_truth_is_current() -> None:
+    """Final 1.1.0 release-state contract (F4B2): the maintained surfaces
+    name the release version durably and point users at PyPI/GitHub
+    Releases for the currently published versions — with NO permanently
+    aging release-preparation wording ("not yet published", "deferred",
+    "publication pending") and no hard "is currently the latest" claim."""
     readme = _text(ROOT / "README.md")
     pypi = _text(ROOT / "docs" / "pypi-usage.md")
-    assert "1.1.0" in readme and "1.1.0" in pypi
     for text in (readme, pypi):
-        assert "available" in text.casefold()  # PyPI access available
-        assert "has not been published" in text
-        assert "deliberately deferred" in text
+        assert "1.1.0" in text
+        assert "PyPI" in text
+        lowered = text.casefold()
+        assert "not been published" not in lowered, lowered[:200]
+        assert "deliberately deferred" not in lowered, lowered[:200]
+        assert "publication pending" not in lowered, lowered[:200]
+        assert "release preparation" not in lowered, lowered[:200]
+        assert "1.1.0 is currently the latest" not in lowered, lowered[:200]
+    assert "github releases" in readme.casefold() or "Releases" in readme
+    assert "pypi.org/p/dbfbridge" in readme or "PyPI" in readme
 
 
 def test_no_document_claims_1_1_0_is_already_published() -> None:

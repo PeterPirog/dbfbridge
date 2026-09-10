@@ -7,17 +7,14 @@ have a repository checkout, a `src/` directory, or any development tools.
 Everything here works with a normal `pip install`; nothing requires Git, an
 `examples/` folder, or `PYTHONPATH`.
 
-> **Availability note:** this guide describes the **implemented v1.1
-> installed-distribution contract on `main`** — nine protected v1.0
-> operations plus the additive v1.1 Direct Write operation, with the
-> install-profile extras documented here as the current contract. **PyPI
-> account access is available**, and the target controlled release is
-> **1.1.0**; that release has not been published yet — the version bump,
-> tag, GitHub Release, and PyPI publication are deliberately deferred to
-> the controlled release step (they are no longer blocked). The historical
-> release/tag `v0.2.0` exists as a release-history fact. The `pip install`
-> instructions below show exactly how installation will work for the final
-> distribution.
+> **Availability note:** this guide documents the **dbfbridge 1.1.0
+> installed-distribution contract** — nine protected v1.0 operations plus
+> the additive v1.1 Direct Write operation, with the install-profile extras
+> documented here as the current contract. Check
+> [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
+> currently available published versions. The historical release/tag
+> `v0.2.0` exists as a release-history fact. The `pip install` instructions
+> below are exactly how installation works for the distribution.
 
 ## Contents
 
