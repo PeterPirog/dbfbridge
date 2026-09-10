@@ -15,7 +15,11 @@ documentation that have no existing authority:
 - the implemented Direct Write regression CI lifecycle (F3A/F3B1/F3B2) is
   documented as implemented, not future work;
 - maintained documentation navigation links resolve;
-- maintained Python examples stay public-import only.
+- maintained Python examples stay public-import only;
+- release-history durability (F4B2-R1): the historical **tag** ``v0.2.0``
+  is the retained release-history provenance; current documents must not
+  depend on the old GitHub **Release object** v0.2.0 continuing to exist,
+  and the ``CHANGELOG`` ``[0.2.0]`` link must target the retained tag tree.
 
 Complements (never duplicates) ``test_api_1_0_contract.py``,
 ``test_api_1_1_contract.py``, and
@@ -117,6 +121,67 @@ def test_no_document_claims_1_1_0_is_already_published() -> None:
         assert not re.search(r"1\.1\.0\s+(is|has been)\s+publ", text, re.I), (
             document.name
         )
+
+
+# ---------------------------------------------------------------------------
+# release-history durability (F4B2-R1: REL-DOC-01/02/03)
+#
+# The operator-authorized post-publication cleanup deletes the OLD GitHub
+# Release OBJECT v0.2.0 (after successful v1.1.0 publication) while the
+# historical TAG v0.2.0 remains permanently.  These tests make the final
+# release documentation true in BOTH states: they must survive the old
+# Release object's deletion.
+# ---------------------------------------------------------------------------
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", text).casefold()
+
+
+def test_readme_historical_v0_2_0_release_history_is_tag_durable() -> None:
+    text = _text(ROOT / "README.md")
+    # the durable provenance: the historical TAG v0.2.0 remains
+    assert re.search(r"historical\s+tag[\s`*>]*v0\.2\.0", _normalized(text))
+    # the non-durable coupling must not return: no wording that keeps the
+    # old GitHub Release OBJECT (Release/tag) as release history
+    lowered = _normalized(text)
+    assert "historical github release/tag" not in lowered
+    assert "github release/tag" not in lowered
+    assert not re.search(
+        r"historical\s+(github\s+)?release/tag\s+`?\*?v0\.2\.0", lowered
+    )
+
+
+def test_pypi_guide_historical_v0_2_0_release_history_is_tag_durable() -> None:
+    text = _text(ROOT / "docs" / "pypi-usage.md")
+    assert re.search(r"historical\s+tag[\s`*>]*v0\.2\.0", _normalized(text))
+    lowered = _normalized(text)
+    assert "historical release/tag" not in lowered
+    assert not re.search(
+        r"historical\s+(github\s+)?release/tag\s+`?\*?v0\.2\.0", lowered
+    )
+
+
+def test_changelog_v0_2_0_link_uses_retained_tag_tree() -> None:
+    changelog = _text(ROOT / "CHANGELOG.md")
+    link_match = re.search(
+        r"^\[0\.2\.0\]:\s*(\S+)\s*$", changelog, re.MULTILINE
+    )
+    assert link_match, "the [0.2.0] link definition must remain"
+    target = link_match.group(1)
+    assert target.endswith("/tree/v0.2.0")
+    assert "/releases/tag/v0.2.0" not in changelog
+    # the surrounding release-state links stay as accepted
+    assert (
+        "https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...HEAD"
+        in changelog
+    )
+    assert (
+        "https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...v1.1.0"
+        in changelog
+    )
+    # the historical [0.2.0] section itself is untouched
+    assert "## [0.2.0] - 2026-09-01" in changelog
 
 
 # ---------------------------------------------------------------------------

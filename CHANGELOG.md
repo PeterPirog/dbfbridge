@@ -166,4 +166,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...v1.1.0
-[0.2.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.2.0
+[0.2.0]: https://github.com/PeterPirog/dbfbridge/tree/v0.2.0

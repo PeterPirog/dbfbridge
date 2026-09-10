@@ -99,7 +99,7 @@ dbf-bridge --help
 > **Repository status:** the declared **v1.1 architecture is implemented on
 > `main`** (nine protected v1.0 operations plus the additive v1.1 Direct
 > Write contract), and this commit is the **1.1.0** release state.  A
-> historical GitHub Release/tag **v0.2.0 exists** as release history.  Check
+> historical tag **v0.2.0 remains** as release history.  Check
 > [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
 > currently published versions.  The install-profile extras documented here
 > are the current contract (not an upcoming one): `pip install dbfbridge`

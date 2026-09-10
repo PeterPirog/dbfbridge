@@ -12,8 +12,8 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 > the additive v1.1 Direct Write operation, with the install-profile extras
 > documented here as the current contract. Check
 > [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
-> currently available published versions. The historical release/tag
-> `v0.2.0` exists as a release-history fact. The `pip install` instructions
+> currently available published versions. The historical tag
+> `v0.2.0` remains as a release-history fact. The `pip install` instructions
 > below are exactly how installation works for the distribution.
 
 ## Contents

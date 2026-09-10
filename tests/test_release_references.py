@@ -27,14 +27,17 @@ def test_changelog_does_not_reference_nonexistent_v010() -> None:
     assert "releases/tag/v0.1.0" not in changelog
 
 
-def test_changelog_contains_valid_historical_v020_release_url() -> None:
-    """v0.2.0 is an EXISTING annotated tag with an EXISTING GitHub Release —
-    the changelog link must point to the real release page."""
+def test_changelog_contains_valid_historical_v020_tag_url() -> None:
+    """v0.2.0 is an EXISTING annotated tag and remains permanently; the old
+    GitHub Release object may be deleted after successful v1.1.0 publication,
+    so the changelog link must target the retained tag tree — never the
+    release page."""
     changelog = CHANGELOG.read_text(encoding="utf-8")
     assert (
-        "[0.2.0]: https://github.com/PeterPirog/dbfbridge/releases/tag/v0.2.0"
+        "[0.2.0]: https://github.com/PeterPirog/dbfbridge/tree/v0.2.0"
         in changelog
     )
+    assert "/releases/tag/v0.2.0" not in changelog
 
 
 def test_current_state_docs_distinguish_release_from_publication() -> None:
