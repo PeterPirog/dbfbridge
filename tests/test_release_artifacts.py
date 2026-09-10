@@ -95,12 +95,18 @@ def _make_sdist(directory: Path, version: str = VERSION, *, missing: tuple[str, 
     all_files = {
         "README.md": "# dbfbridge\n",
         "LICENSE": "MIT\n",
+        "CHANGELOG.md": "# Changelog\n",
         "pyproject.toml": '[project]\nname = "dbfbridge"\nversion = "9.9.9"\n',
         "PUBLISHING.md": "# Publishing\n",
+        "docs/README.md": "# Docs map\n",
         "docs/pypi-usage.md": "# PyPI usage\n",
         "docs/api-1.0.md": "# API contract\n",
+        "docs/api-1.1.md": "# v1.1 Direct Write contract\n",
         "docs/migration-1.0.md": "# Migration\n",
+        "docs/python-api-examples.md": "# Examples\n",
+        "docs/tool-server-integration.md": "# Tool-server integration\n",
         "docs/compatibility-vfp.md": "# Compatibility\n",
+        "docs/schemas/write-result.schema.json": '{"type": "object"}\n',
         "src/dbf_bridge/py.typed": "",
         "src/dbfbridge/py.typed": "",
     }
@@ -283,12 +289,18 @@ def test_wrong_sdist_name_fails(tmp_path: Path) -> None:
         for name, content in {
             "README.md": "# x\n",
             "LICENSE": "MIT\n",
+            "CHANGELOG.md": "",
             "pyproject.toml": "",
             "PUBLISHING.md": "",
+            "docs/README.md": "",
             "docs/pypi-usage.md": "",
             "docs/api-1.0.md": "",
+            "docs/api-1.1.md": "",
             "docs/migration-1.0.md": "",
+            "docs/python-api-examples.md": "",
+            "docs/tool-server-integration.md": "",
             "docs/compatibility-vfp.md": "",
+            "docs/schemas/write-result.schema.json": "",
             "src/dbf_bridge/py.typed": "",
             "src/dbfbridge/py.typed": "",
         }.items():
@@ -307,6 +319,139 @@ def test_missing_required_public_doc_fails(tmp_path: Path) -> None:
     _make_sdist(dist, missing=("docs/migration-1.0.md",))
     violations = _verify(dist)
     assert any("sdist lacks docs/migration-1.0.md" in violation for violation in violations)
+
+
+# ---------------------------------------------------------------------------
+# ART-02: the complete v1.1 sdist documentation contract
+# ---------------------------------------------------------------------------
+
+
+def test_missing_api_1_1_doc_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("docs/api-1.1.md",))
+    violations = _verify(dist)
+    assert any("sdist lacks docs/api-1.1.md" in violation for violation in violations)
+
+
+def test_missing_write_result_schema_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("docs/schemas/write-result.schema.json",))
+    violations = _verify(dist)
+    assert any(
+        "sdist lacks docs/schemas/write-result.schema.json" in violation
+        for violation in violations
+    )
+
+
+def test_missing_changelog_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("CHANGELOG.md",))
+    violations = _verify(dist)
+    assert any("sdist lacks CHANGELOG.md" in violation for violation in violations)
+
+
+def test_missing_docs_map_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("docs/README.md",))
+    violations = _verify(dist)
+    assert any("sdist lacks docs/README.md" in violation for violation in violations)
+
+
+def test_missing_python_api_examples_doc_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("docs/python-api-examples.md",))
+    violations = _verify(dist)
+    assert any(
+        "sdist lacks docs/python-api-examples.md" in violation for violation in violations
+    )
+
+
+def test_missing_tool_server_doc_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist, missing=("docs/tool-server-integration.md",))
+    violations = _verify(dist)
+    assert any(
+        "sdist lacks docs/tool-server-integration.md" in violation
+        for violation in violations
+    )
+
+
+# ---------------------------------------------------------------------------
+# ART-08: author-privacy artifact boundary
+# ---------------------------------------------------------------------------
+
+
+def test_wheel_author_email_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    wheel = dist / f"dbfbridge-{VERSION}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel) as archive:
+        payload = archive.read("dbfbridge-9.9.9.dist-info/METADATA")
+    payload = payload + b"\nAuthor-email: Peter Pirog <author@example.com>\n"
+    wheel.unlink()
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("dbfbridge-9.9.9.dist-info/METADATA", payload)
+        archive.writestr("dbf_bridge/py.typed", "")
+        archive.writestr("dbfbridge/py.typed", "")
+    violations = _verify(dist)
+    assert any("wheel METADATA exposes an Author-email field" in violation for violation in violations)
+
+
+def test_sdist_author_email_fails(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _make_wheel(dist)
+    _make_sdist(dist)
+    sdist = dist / f"dbfbridge-{VERSION}.tar.gz"
+    with tarfile.open(sdist) as tar:
+        pkg = tar.extractfile(f"dbfbridge-{VERSION}/PKG-INFO")
+        payload = pkg.read() + b"\nAuthor-email: Peter Pirog <author@example.com>\n"  # type: ignore[union-attr]
+    sdist.unlink()
+    root = f"dbfbridge-{VERSION}"
+    with tarfile.open(sdist, "w:gz") as tar:
+        info = tarfile.TarInfo(f"{root}/PKG-INFO")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+        for name, content in {
+            "README.md": "# x\n",
+            "LICENSE": "MIT\n",
+            "CHANGELOG.md": "",
+            "pyproject.toml": "",
+            "PUBLISHING.md": "",
+            "docs/README.md": "",
+            "docs/pypi-usage.md": "",
+            "docs/api-1.0.md": "",
+            "docs/api-1.1.md": "",
+            "docs/migration-1.0.md": "",
+            "docs/python-api-examples.md": "",
+            "docs/tool-server-integration.md": "",
+            "docs/compatibility-vfp.md": "",
+            "docs/schemas/write-result.schema.json": "",
+            "src/dbf_bridge/py.typed": "",
+            "src/dbfbridge/py.typed": "",
+        }.items():
+            data = content.encode("utf-8")
+            member = tarfile.TarInfo(f"{root}/{name}")
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    violations = _verify(dist)
+    assert any(
+        "sdist PKG-INFO exposes an Author-email field" in violation
+        for violation in violations
+    )
 
 
 def test_missing_pkg_info_fails(tmp_path: Path) -> None:
