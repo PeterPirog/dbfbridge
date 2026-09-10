@@ -1,0 +1,152 @@
+name: Direct Write regression
+
+# DBFB-PERF-006 stage F3B2: the designated calibrated Direct Write
+# performance CI gate.  This workflow is SEPARATE from the F3A calibration
+# workflow (five fresh FULL runs -> descriptive calibration evidence, no
+# threshold) and from the historical Phase 3 Performance Regression (never
+# touched here).  It runs ONE fresh FULL W1-W12 Direct Write profile of the
+# exact commit, records truthful run provenance with the authoritative F3A
+# generator, and compares the candidate against the ACCEPTED COMMITTED
+# policy (benchmarks/regression/direct-write-regression-policy-v1.json) with
+# the offline comparator.  CI consumes policy; CI NEVER creates or rewrites
+# policy — a regression failure or a comparability failure NEVER rewrites
+# the baseline (recalibration is a separate architecture-reviewed task).
+#
+# The FULL profile is intentional: the accepted policy was calibrated from
+# FULL runs, and smoke counts are wiring/contract validation, NOT final
+# performance evidence.  Correctness and measurement validity outrank CI
+# speed.  The candidate evidence is written under RUNNER_TEMP and never
+# committed; only the compact evidence files are uploaded as an artifact.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "benchmarks/direct_write_profile.py"
+      - "benchmarks/metrics.py"
+      - "benchmarks/direct_write_calibration.py"
+      - "benchmarks/direct_write_run_provenance.py"
+      - "benchmarks/direct_write_regression_contract.py"
+      - "benchmarks/compare_direct_write_regression.py"
+      - "benchmarks/regression/direct-write-regression-policy-v1.json"
+      - ".github/workflows/direct-write-regression.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "benchmarks/direct_write_profile.py"
+      - "benchmarks/metrics.py"
+      - "benchmarks/direct_write_calibration.py"
+      - "benchmarks/direct_write_run_provenance.py"
+      - "benchmarks/direct_write_regression_contract.py"
+      - "benchmarks/compare_direct_write_regression.py"
+      - "benchmarks/regression/direct-write-regression-policy-v1.json"
+      - ".github/workflows/direct-write-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Direct Write full-profile regression (windows-2025, 3.12.10)
+    # The accepted F3A calibration physically ran on Windows Server 2025;
+    # the designated hard regression gate pins the OS generation instead of
+    # a moving floating runner label.  The comparator separately verifies
+    # runner_os/runner_arch/Python/install_recipe/dependency versions.
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12.10 (exact accepted F3A calibration version)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.10"
+
+      - name: Install project with benchmark/write dependencies (accepted F3A recipe)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run full W1-W12 Direct Write profile (regression candidate)
+        shell: pwsh
+        run: |
+          python -m benchmarks.direct_write_profile --mode full --out "$env:RUNNER_TEMP\direct-write-regression"
+
+      - name: Structurally validate the candidate report
+        shell: pwsh
+        run: |
+          python -c "import json, os; from pathlib import Path; report = Path(os.environ['RUNNER_TEMP']) / 'direct-write-regression' / 'direct-write-v1-full.json'; payload = json.loads(report.read_text(encoding='utf-8')); assert payload['benchmark_contract'] == 'dbfbridge-direct-write-v1'; assert payload['mode'] == 'full'; assert payload['validation_problems'] == [], payload['validation_problems']; assert len(payload['scenarios']) == 12; assert all(row['status'] == 'MEASURED' for row in payload['scenarios']); assert all(row['intermediate_jsonl_bytes'] == 0 for row in payload['scenarios']); assert all(row['temporary_bytes_left'] == 0 for row in payload['scenarios']); assert all(row['private_spool_bytes_written'] > 0 for row in payload['scenarios'] if row['scenario'] == 'direct_write_varchar_nullflags'); w12 = next(row for row in payload['scenarios'] if row['scenario'] == 'cancellation_cleanup_smoke'); assert w12['validation']['cleanup_verified'] is True; print('candidate structural validation OK')"
+
+      - name: Record run provenance (authoritative F3A generator, per-event semantics)
+        shell: pwsh
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Build the provenance argument list per event type (the pattern
+          # proven in the F3A workflow).  For pull_request: GitHub measured
+          # the synthetic merge ref; the PR head/base SHAs are REQUIRED.
+          # For main push: the checked-out SHA IS the branch head; base_sha
+          # is OMITTED (never passed empty).
+          $p = @(
+            "-m", "benchmarks.direct_write_run_provenance",
+            "--workflow-run-id", "${{ github.run_id }}",
+            "--replica-id", "regression-ci",
+            "--github-sha", "${{ github.sha }}",
+            "--runner-os", "${{ runner.os }}",
+            "--runner-arch", "${{ runner.arch }}"
+          )
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $p += @("--source-context", "pull_request_merge_ref")
+            $p += @("--branch-head-sha", "${{ github.event.pull_request.head.sha }}")
+            $p += @("--base-sha", "${{ github.event.pull_request.base.sha }}")
+          }
+          else {
+            # push to main: source_context = main_push
+            $p += @("--source-context", "main_push")
+            $p += @("--branch-head-sha", "${{ github.sha }}")
+          }
+          $p += @(
+            "--output",
+            "$env:RUNNER_TEMP\direct-write-regression\direct-write-provenance.json"
+          )
+          python @p
+
+      - name: Compare candidate against the accepted committed policy (comparator)
+        shell: pwsh
+        run: |
+          python -m benchmarks.compare_direct_write_regression `
+            --policy benchmarks/regression/direct-write-regression-policy-v1.json `
+            --candidate "$env:RUNNER_TEMP\direct-write-regression\direct-write-v1-full.json" `
+            --candidate-provenance "$env:RUNNER_TEMP\direct-write-regression\direct-write-provenance.json" `
+            --mode full `
+            --output-json "$env:RUNNER_TEMP\direct-write-regression\direct-write-regression.json" `
+            --output-md "$env:RUNNER_TEMP\direct-write-regression\direct-write-regression.md"
+
+      - name: Enforce COMPARABLE full-pass regression gate
+        shell: pwsh
+        run: |
+          python -c "import json, os, sys; from pathlib import Path; result = json.loads((Path(os.environ['RUNNER_TEMP']) / 'direct-write-regression' / 'direct-write-regression.json').read_text(encoding='utf-8')); overall = result['overall_status']; correctness = result['correctness']['status']; comparability = result['comparability']['classification']; gates = result['performance']['hard_gates']; failed = []; failed += ['overall_status=' + repr(overall) + ' (expected PASS)'] if overall != 'PASS' else []; failed += ['correctness.status=' + repr(correctness) + ' (expected PASS)'] if correctness != 'PASS' else []; failed += ['comparability.classification=' + repr(comparability) + ' (expected COMPARABLE)'] if comparability != 'COMPARABLE' else []; print('DIRECT_WRITE_REGRESSION_ENVIRONMENT_NOT_COMPARABLE') if comparability != 'COMPARABLE' else None; print('The designated measurement environment no longer matches the calibrated policy; authoritative regression evidence is unavailable. NO automatic rebaseline.') if comparability != 'COMPARABLE' else None; failed += ['no hard performance gates were evaluated'] if not gates else []; [failed.append(gate['label'] + '=' + repr(gate['status'])) for gate in gates if gate['status'] != 'PASS']; print('overall_status=' + overall + ' | correctness=' + correctness + ' | comparability=' + comparability + ' | hard_gates=' + str(len(gates))); [print('  ' + gate['label'] + ' = ' + gate['status'] + ' (value ' + repr(gate.get('value')) + ' vs envelope ' + repr(gate.get('envelope_upper')) + ')') for gate in gates]; sys.exit('DIRECT WRITE REGRESSION GATE FAILED: ' + ' ; '.join(failed)) if failed else print('DIRECT WRITE REGRESSION GATE: PASS')"
+
+      - name: Upload Direct Write regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: direct-write-regression-evidence
+          path: |
+            ${{ runner.temp }}/direct-write-regression/direct-write-v1-full.json
+            ${{ runner.temp }}/direct-write-regression/direct-write-v1-full.md
+            ${{ runner.temp }}/direct-write-regression/direct-write-provenance.json
+            ${{ runner.temp }}/direct-write-regression/direct-write-regression.json
+            ${{ runner.temp }}/direct-write-regression/direct-write-regression.md
+          retention-days: 30
+          if-no-files-found: warn

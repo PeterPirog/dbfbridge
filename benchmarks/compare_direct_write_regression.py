@@ -956,7 +956,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = compare_candidate(policy, candidate, provenance, mode=args.mode)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\\n",
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     if args.output_md:
