@@ -18,10 +18,14 @@ reconstruction guarantees and CDX/raw-layout limitations are documented in the
 compatibility guide, and the encoding labels are selected legacy Polish
 examples rather than an exhaustive codec list.
 
-> **Status: 0.2.0 (alpha)** — the declared 1.x architecture is code-complete
-> on `main`; the package is not yet published (PyPI publication is externally
-> blocked by Trusted Publisher / account access, and the final release
-> version/tag has intentionally not been created yet).  Test the result on a
+> **Status: 0.2.0 package metadata (alpha)** — the declared **v1.1
+> architecture is implemented on `main`**: all nine protected v1.0 operations
+> plus the additive v1.1 Direct Write contract
+> ([docs/api-1.1.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.1.md)).
+> PyPI account access is **available**; the target release
+> `dbfbridge` **1.1.0** has not been published yet — the version bump, tag,
+> GitHub Release, and PyPI publication are deliberately deferred to the
+> controlled release step (not technically blocked). Test the result on a
 > copy of production data before using it as an archival replacement. CDX
 > index definitions are not reconstructed.
 
@@ -31,9 +35,10 @@ examples rather than an exhaustive codec list.
 |---|---|
 | [docs/README.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/README.md) | documentation map / start here |
 | [docs/pypi-usage.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/pypi-usage.md) | complete installed-distribution user guide |
-| [docs/python-api-examples.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/python-api-examples.md) | complete Python API examples (all nine operations) |
+| [docs/python-api-examples.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/python-api-examples.md) | complete Python API examples (nine protected v1.0 operations plus the additive v1.1 `write_table`) |
 | [docs/tool-server-integration.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/tool-server-integration.md) | tool-server / MCP integration patterns |
-| [docs/api-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.0.md) | normative stable 1.x API contract |
+| [docs/api-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.0.md) | protected historical 1.0 API baseline |
+| [docs/api-1.1.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.1.md) | normative additive v1.1 Direct Write contract |
 | [docs/compatibility-vfp.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/compatibility-vfp.md) | VFP format support truth |
 | [docs/migration-1.0.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/migration-1.0.md) | migrating from 0.x to the 1.x API |
 | [docs/architecture-closure.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/architecture-closure.md) | maintainer evidence / architecture closure |
@@ -85,22 +90,23 @@ dbf-bridge --help
 | Command | Capabilities | When to use |
 |---|---|---|
 | `pip install dbfbridge` | `import dbfbridge`, full Direct Read (`inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`), DBF → JSONL/JSON/CSV migration (stdlib/Python engines) | reading and exporting DBF data |
-| `pip install "dbfbridge[write]"` | everything above + DBF/FPT reconstruction (`reconstruct_dbf`) and quality round trips (`check_conversion_quality`) | rebuilding DBF files from exported data |
+| `pip install "dbfbridge[write]"` | everything above + the additive v1.1 Direct Write operation (`write_table`), DBF/FPT reconstruction (`reconstruct_dbf`), and quality round trips (`check_conversion_quality`) | writing fresh DBF/FPT pairs and rebuilding DBF files from exported data |
 | `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) | spreadsheet exchange |
 | `pip install "dbfbridge[write,xlsx]"` | XLSX → DBF/FPT reconstruction (`[write]` + `[xlsx]` together) | XLSX → DBF round trips |
 | `pip install "dbfbridge[fast]"` | optional accelerators (`orjson`, `polars`); identical logical results, faster conversions | large conversion jobs |
-| `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install |
+| `pip install "dbfbridge[all]"` | the full feature set: Direct Read + migration + Direct Write (`write_table`) + reconstruction + XLSX + accelerators | one-command complete install |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | older scripts that used the old extra name |
 
-> **Repository status:** the declared 1.x architecture is **code-complete on
-> `main`**.  **Release status:** a historical GitHub Release/tag **v0.2.0
-> exists**, but its PyPI Trusted Publishing attempt did not complete
-> successfully — no successful PyPI publication is verified.  Current `main`
-> contains the code-complete declared 1.x contract; the final `1.0.0`
-> release/tag remains intentionally deferred until the PyPI publication path
-> is available.  Package metadata remains `0.2.0` until the final
+> **Repository status:** the declared **v1.1 architecture is implemented on
+> `main`** (nine protected v1.0 operations plus the additive v1.1 Direct
+> Write contract).  **Release status:** a historical GitHub Release/tag
+> **v0.2.0 exists**; its historical 0.2.0 PyPI publishing attempt did not
+> complete, but **PyPI account access is now available** — the controlled
+> **1.1.0** release (version bump, tag, GitHub Release, PyPI publication) is
+> deliberately deferred to a dedicated release step and has **not** been
+> performed yet.  Package metadata remains `0.2.0` until that controlled
 > release-preparation commit.  The install-profile extras documented here are
-> the current 1.x contract (not an upcoming one): `pip install dbfbridge`
+> the current contract (not an upcoming one): `pip install dbfbridge`
 > installs the minimal base profile and the extras below are opt-in.
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the

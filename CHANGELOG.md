@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mandatory runtime dependency (`dbfread`) and covers `import dbfbridge`,
   the complete read-only Direct Read surface, and DBF → JSONL/JSON/CSV
   migration. Heavy capabilities became opt-in extras:
-  - `[write]` — DBF/FPT reconstruction (`reconstruct_dbf`,
-    `check_conversion_quality`);
+  - `[write]` — the additive v1.1 Direct Write operation (`write_table`),
+    DBF/FPT reconstruction (`reconstruct_dbf`, `check_conversion_quality`);
   - `[xlsx]` — XLSX export and XLSX-format reading/verification support;
   - `[fast]` — optional `orjson`/`polars` accelerators (pure speed:
     identical logical results, absence never raises);
@@ -88,10 +88,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typing, and atomic reconstruction failures that publish nothing and
   leave no `.partial` residue.
 
+### Fixed
+- Direct Write regression comparator: `compare_direct_write_regression
+  --output-json` emitted a literal backslash+`n` suffix after the JSON
+  document (uncaught until the first real CI consumer); it now terminates
+  the document with one real newline, and a CLI-path regression test proves
+  strict `json.loads`/`json.load` consumption with exactly one trailing LF.
+
 ### Developer / infrastructure
 - Performance regression CI: canonical Phase 3 BEFORE baseline, measured
   regression policy with calibration provenance, strict workflow-ID and
   policy-parameter integrity validation.
+- Direct Write performance lifecycle (DBFB-PERF-006, additive): the
+  W1-W12 Direct Write benchmark; the F3A multi-sample main-push calibration
+  (five FULL replicas, descriptive statistics only, no threshold); the F3B1
+  committed versioned regression policy plus self-verifying offline
+  comparator (canonical per-record wall ratios and the raw W3/W1
+  peak-RSS-delta ratio; mechanically derived statistics; fail-closed policy
+  and candidate validation); and the F3B2 dedicated regression workflow
+  (`.github/workflows/direct-write-regression.yml`) running one FULL
+  candidate on `pull_request` and `push` to `main` against the committed
+  policy with an explicit COMPARABLE/PASS gate — the policy is never
+  rewritten automatically and historical Phase 3 remains separate.
 - PyPI install-profile wheel smokes: fresh-venv verification of every
   install profile (base, `[write]`, `[xlsx]`, `[write,xlsx]`, `[fast]`,
   `[all]`, `[import]`) outside the repository checkout.
@@ -110,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Base-wheel explicit Polish encoding correctness: cp1250 → cp852 → Mazovia
   decoding works in the minimal base install; explicit overrides no longer
   depend on caller-side codec registration order.
+- Documentation convergence: maintained user-facing documentation, examples
+  and the tool-server/MCP integration guide were brought to release-truth
+  agreement with the implemented v1.1 architecture (Direct Write install
+  profiles, nine-plus-one public surface terminology, current PyPI/release
+  truth, the implemented Direct Write regression CI lifecycle, and the
+  production host-security checklist).
 
 ## [0.2.0] - 2026-09-01
 

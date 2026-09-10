@@ -7,23 +7,28 @@ have a repository checkout, a `src/` directory, or any development tools.
 Everything here works with a normal `pip install`; nothing requires Git, an
 `examples/` folder, or `PYTHONPATH`.
 
-> **Availability note:** this guide describes the **code-complete declared
-> 1.x installed-distribution contract implemented on `main`** — the
-> install-profile extras documented here are the current contract, not an
-> upcoming one.  A historical GitHub Release/tag v0.2.0 exists, but
-> successful PyPI publication was **not completed** (the publish step failed
-> on Trusted Publisher verification); the final 1.0.0 publication lifecycle
-> is still deferred.  The `pip install` instructions below show exactly how
-> installation will work for the final distribution.
+> **Availability note:** this guide describes the **implemented v1.1
+> installed-distribution contract on `main`** — nine protected v1.0
+> operations plus the additive v1.1 Direct Write operation, with the
+> install-profile extras documented here as the current contract. **PyPI
+> account access is available**, and the target controlled release is
+> **1.1.0**; that release has not been published yet — the version bump,
+> tag, GitHub Release, and PyPI publication are deliberately deferred to
+> the controlled release step (they are no longer blocked). The historical
+> release/tag `v0.2.0` exists as a release-history fact. The `pip install`
+> instructions below show exactly how installation will work for the final
+> distribution.
 
 ## Contents
 
-> **Further reading:** complete copy/paste examples for all nine public
-> operations are in [python-api-examples.md](python-api-examples.md), and the
+> **Further reading:** complete copy/paste examples for the nine protected
+> v1.0 operations plus the additive v1.1 `write_table` are in
+> [python-api-examples.md](python-api-examples.md), and the
 > transport-neutral integration patterns for tool servers and MCP backends
-> are in [tool-server-integration.md](tool-server-integration.md). The
-> normative stable API contract is [api-1.0.md](api-1.0.md); the
-> documentation map is [README.md](README.md).
+> are in [tool-server-integration.md](tool-server-integration.md).
+> [api-1.0.md](api-1.0.md) is the protected historical 1.0 baseline and
+> [api-1.1.md](api-1.1.md) is the current additive v1.1 Direct Write
+> reference; the documentation map is [README.md](README.md).
 
 1. [Requirements](#requirements)
 2. [Create a virtual environment](#create-a-virtual-environment)
@@ -41,12 +46,13 @@ Everything here works with a normal `pip install`; nothing requires Git, an
 14. [JSON and CSV without the fast extras](#json-and-csv-without-the-fast-extra)
 15. [Reconstruct DBF/FPT files](#reconstruct-dbffpt-files)
 16. [XLSX](#xlsx)
-17. [Full installation](#full-installation)
-18. [Command-line interface](#command-line-interface)
-19. [Structured error handling](#structured-error-handling)
-20. [Progress and cancellation](#progress-and-cancellation)
-21. [Polish encodings](#polish-encodings)
-22. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
+17. [Write DBF/FPT tables (write_table, v1.1)](#write-dbffpt-tables-write_table-v11)
+18. [Full installation](#full-installation)
+19. [Command-line interface](#command-line-interface)
+20. [Structured error handling](#structured-error-handling)
+21. [Progress and cancellation](#progress-and-cancellation)
+22. [Polish encodings](#polish-encodings)
+23. [What dbfbridge does not support](#what-dbfbridge-does-not-support)
 
 ## Requirements
 
@@ -104,17 +110,18 @@ dbf-bridge --help
 | Command | Capabilities | When to use |
 |---|---|---|
 | `pip install dbfbridge` | `import dbfbridge`; Direct Read: `inspect_table`, `read_schema`, `iter_records`, `read_records`, `iter_raw_records`; DBF → JSONL/JSON/CSV migration (stdlib/Python engines); verification | reading and exporting DBF data |
-| `pip install "dbfbridge[write]"` | everything above **plus** DBF/FPT reconstruction (`reconstruct_dbf`) and quality round trips (`check_conversion_quality`) | rebuilding DBF files from exported formats |
+| `pip install "dbfbridge[write]"` | everything above **plus** the additive v1.1 Direct Write operation (`write_table`), DBF/FPT reconstruction (`reconstruct_dbf`), and quality round trips (`check_conversion_quality`) | writing fresh DBF/FPT pairs and rebuilding DBF files from exported formats |
 | `pip install "dbfbridge[xlsx]"` | XLSX export (`xlsxwriter`) and XLSX-format reading/verification support (`openpyxl`) | Excel interchange |
 | `pip install "dbfbridge[write,xlsx]"` | XLSX → DBF/FPT reconstruction (`[write]` + `[xlsx]` together) | XLSX → DBF round trips |
 | `pip install "dbfbridge[fast]"` | optional accelerators: `orjson` (JSON) and `polars` (CSV) | large conversion jobs; identical logical results, only faster |
-| `pip install "dbfbridge[all]"` | the complete feature set: Direct Read + migration + reconstruction + XLSX + accelerators | one-command complete install (not a development environment) |
+| `pip install "dbfbridge[all]"` | the complete feature set: Direct Read + migration + Direct Write (`write_table`) + reconstruction + XLSX + accelerators | one-command complete install (not a development environment) |
 | `pip install "dbfbridge[import]"` | historical compatibility alias — installs the same reconstruction dependency as `[write]` | scripts written against the pre-0.3 extras |
 
 Rules of thumb:
 
 - Direct Read and DBF → JSONL/JSON/CSV need **no extra**.
-- Reconstruction (JSONL/JSON/CSV → DBF/FPT) needs `[write]`.
+- Reconstruction (JSONL/JSON/CSV → DBF/FPT) and the additive v1.1 Direct
+  Write operation (`write_table`) need `[write]`.
 - XLSX export needs `[xlsx]`; XLSX → DBF reconstruction needs
   `[write,xlsx]` together.
 - `[fast]` is a pure accelerator: without it, JSON uses the stdlib `json`
@@ -421,9 +428,10 @@ python -m pip install "dbfbridge[all]"
 ```
 
 `[all]` installs the complete user-facing feature set (Direct Read +
-migration + reconstruction + XLSX + accelerators). It is equivalent to
-`[write,xlsx,fast]` and is **not** a development environment: it contains no
-`pytest`, `ruff`, `build`, `twine`, or benchmark tooling.
+migration + Direct Write (`write_table`) + reconstruction + XLSX +
+accelerators). It is equivalent to `[write,xlsx,fast]` and is **not** a
+development environment: it contains no `pytest`, `ruff`, `build`, `twine`,
+or benchmark tooling.
 
 ## Command-line interface
 

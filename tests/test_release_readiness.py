@@ -3,13 +3,18 @@
 These tests protect the release contract that pure unit tests cannot see:
 version synchronization across `pyproject.toml`, the package `__version__`,
 and the built wheel METADATA; reusable (version-agnostic) release
-workflows; and truthfulness of the user-facing release documentation.
+workflows; truthfulness of the user-facing release documentation; and the
+F4A-R1 privacy/repository-hygiene policy (no personal author email in
+package metadata, no secret/junk categories reachable in the tracked tree,
+and a fail-closed .gitignore for accidental secret/junk commits).
 """
 
 from __future__ import annotations
 
 import email.parser
 import re
+import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -347,3 +352,145 @@ def test_install_profile_smoke_has_an_import_alias_venv() -> None:
     assert "import_extra_smoke" in source
     # The orchestrator self-checks every canonical profile reported PASS.
     assert "p not in profiles_passed" in source
+
+# ---------------------------------------------------------------------------
+# F4A-R1: privacy / repository-hygiene policy
+# ---------------------------------------------------------------------------
+
+
+def test_pyproject_authors_carry_no_email() -> None:
+    """PRIV-01: package metadata must identify the author by NAME only —
+    PEP 621 does not require an email and a personal address must not ship
+    in the distribution metadata.  Tested STRUCTURALLY (no email field),
+    never against a hardcoded address literal."""
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    authors = data["project"]["authors"]
+    assert authors == [{"name": "Peter Pirog"}]
+    for author in authors:
+        assert "email" not in author
+
+
+def _package_metadata_text() -> str:
+    wheel = _built_wheel()
+    if wheel is None:
+        return ""
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_path = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        return archive.read(metadata_path).decode("utf-8")
+
+
+def _sdist_pkginfo_text() -> str:
+    sdists = sorted(DIST.glob("dbfbridge-*.tar.gz"))
+    if not sdists:
+        return ""
+    with tarfile.open(sdists[0]) as archive:
+        pkginfo_name = next(
+            name for name in archive.getnames() if name.endswith("PKG-INFO")
+        )
+        content = archive.extractfile(pkginfo_name)
+        assert content is not None
+        return content.read().decode("utf-8")
+
+
+def test_wheel_and_sdist_metadata_carry_no_author_email() -> None:
+    """PRIV-01 artifact proof: when local build artifacts exist, neither the
+    wheel METADATA nor the sdist PKG-INFO may expose an Author-email field
+    from the project metadata.  The author NAME may remain."""
+    metadata = _package_metadata_text()
+    pkginfo = _sdist_pkginfo_text()
+    if not metadata or not pkginfo:
+        import pytest
+
+        pytest.skip("no built wheel/sdist in dist/ (run `python -m build` to exercise)")
+        raise AssertionError("unreachable")  # pragma: no cover - skip() above
+    for text in (metadata, pkginfo):
+        assert "Author-email" not in text
+        assert "email" not in text.casefold().replace("author-email", "")
+    assert "Peter Pirog" in metadata
+
+
+def test_gitignore_protects_secret_and_junk_categories() -> None:
+    """F4A-R1: the tracked .gitignore fail-closes accidental secret/junk
+    commits; none of the protected patterns may hide an intentional tracked
+    project asset."""
+    ignore_text = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    for required in (
+        ".env",
+        ".ruff_cache/",
+        ".mypy_cache/",
+        "*.pem",
+        "*.key",
+        "*.p12",
+        "*.kdbx",
+        "*.sqlite",
+        "*.log",
+        "*.tmp",
+        "*.bak",
+        "*.orig",
+        "*.rej",
+        "*~",
+    ):
+        assert required in ignore_text, required
+    # the hardened patterns must not hide any INTENTIONAL tracked file
+    tracked = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, check=True, cwd=ROOT
+    ).stdout.splitlines()
+    protected_candidates = (
+        ".env", "cert.pem", "server.key", "backup.p12", "vault.kdbx",
+        "data.sqlite", "debug.log", "temp.tmp", "copy.bak", "patch.orig",
+        "reject.rej", "notes~",
+    )
+    check = subprocess.run(
+        ["git", "check-ignore", *protected_candidates],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+    )
+    ignored = set(check.stdout.splitlines())
+    for candidate in protected_candidates:
+        assert candidate in ignored, candidate
+    # no tracked file may rely on the hardened junk patterns
+    for tracked_name in tracked:
+        assert not tracked_name.endswith(
+            (".log", ".tmp", ".bak", ".orig", ".rej", ".pem", ".key",
+             ".p12", ".pfx", ".jks", ".kdbx", ".sqlite", ".sqlite3")
+        ), tracked_name
+        assert Path(tracked_name).name != ".env"
+
+
+def test_no_tracked_junk_or_generated_paths() -> None:
+    """F4A-R1 hygiene: the tracked tree contains no accidental build/cache/
+    IDE/backup/generated-output/database/archive paths.  Intentional
+    evidence (benchmark baselines/evidence, py.typed markers, the docs
+    asset, tests, examples) is not in the junk vocabulary."""
+    junk = re.compile(
+        r"(^|/)(__pycache__|\.pytest_cache|\.ruff_cache|\.mypy_cache|\.pyright"
+        r"|\.idea|\.vscode|htmlcov|\.tox)(/|$)|\.(pyc|pyo|pyd|log|tmp|bak|orig"
+        r"|rej|swp|sqlite|sqlite3|kdbx|pem|key|p12|pfx|jks)$"
+        r"|(^|/)(dist|build|htmlcov|node_modules)/"
+        r"|\.DS_Store$|Thumbs\.db$|(^|/)~\$|~$"
+        r"|migration_report\.|verification_report\.|conversion_checksums\.",
+        re.IGNORECASE,
+    )
+    data = re.compile(
+        r"\.(dbf|fpt|cdx|ndx|mdx|zip|7z|rar|accdb|mdb)$", re.IGNORECASE
+    )
+    tracked = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True, check=True, cwd=ROOT
+    ).stdout.splitlines()
+    assert len(tracked) > 100  # the audit actually ran over the real tree
+    for tracked_name in tracked:
+        assert not junk.search(tracked_name), tracked_name
+        assert not data.search(tracked_name), tracked_name
+    # intentional non-junk artifacts remain tracked
+    for expected in (
+        "src/dbf_bridge/py.typed",
+        "src/dbfbridge/py.typed",
+        "docs/assets/dbfbridge-overview.png",
+        "PUBLISHING.md",
+        "benchmarks/baselines/.gitkeep",
+    ):
+        assert expected in tracked, expected

@@ -9,10 +9,12 @@ python -m pip install dbfbridge
 ```
 
 you do not need this repository. You use the installed commands
-(`dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import`, `dbf-bridge-quality`)
-and the public API `from dbfbridge import ...`. The complete guide is
-[docs/pypi-usage.md](../docs/pypi-usage.md); complete Python examples for all
-nine public operations are in
+(`dbf-bridge`, `dbf-bridge-verify`, `dbf-bridge-import`,
+`dbf-bridge-quality`) and the public API `from dbfbridge import ...`. The
+complete guide is
+[docs/pypi-usage.md](../docs/pypi-usage.md); complete Python examples for the
+nine protected v1.0 public operations plus the additive v1.1 `write_table`
+are in
 [docs/python-api-examples.md](../docs/python-api-examples.md). The scripts in
 this directory are **repository examples** — the installed package works
 without them and without a `src` directory.
@@ -33,6 +35,7 @@ normal installation path for a user.
 | `export_from_file_to_dbf.py` | `dbf-bridge-import` | DBF/FPT reconstruction from one format |
 | `check_conversion_quality.py` | `dbf-bridge-quality` | diagnostic DBF → JSONL → DBF round trip |
 | `python_api.py` | public API | complete flow through `from dbfbridge import ...` |
+| `direct_copy.py` | public API (v1.1) | Direct Read → Direct Write streaming copy (`read_schema` + `iter_records` + `write_table`; requires `[write]`) |
 | `inspect_table.py` | public API (historical: Phase 1A) | read-only header and schema inspection |
 | `read_records.py` | public API (historical: Phase 1B) | streaming record read (projection, memo policies, raw) |
 

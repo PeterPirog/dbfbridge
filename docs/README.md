@@ -13,9 +13,10 @@ document is authoritative for.
 ## Complete Python API examples
 
 [python-api-examples.md](python-api-examples.md) — copy/paste examples for
-the stable public operations (`inspect_table`, `read_schema`,
+the nine protected v1.0 public operations (`inspect_table`, `read_schema`,
 `iter_records`, `read_records`, `iter_raw_records`, `export_dbf`,
-`reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`), the
+`reconstruct_dbf`, `verify_conversion`, `check_conversion_quality`) plus the
+additive v1.1 `write_table`, the
 install profiles, progress/cancellation, and the JSON-safe boundary.
 
 **USER GUIDE** — describes how the installed package is used.

@@ -470,3 +470,48 @@ def test_no_stale_unreleased_write_table_claim_in_phase_e_surfaces() -> None:
                 f"{document.name}: stale Direct-Write research claim: {match.group(0)!r}"
             )
     assert callable(write_table)
+
+# ---------------------------------------------------------------------------
+# F4A-R1 DOC-R1: oversized sources are refused BEFORE write_table with a
+# structured HOST error code (no unstructured RuntimeError mid-write)
+# ---------------------------------------------------------------------------
+
+
+def test_host_copy_job_refuses_oversized_source_before_writing(tmp_path: Path) -> None:
+    """DOC-R1: the maintained host job must enforce its input cap on the
+    PUBLIC schema fact (``schema.record_count``) BEFORE ``write_table`` is
+    invoked, returning a structured HOST error (no record data, no staging,
+    no exception-driven discovery mid-write)."""
+    guide_text = _guide_text()
+    job_block = next(
+        block for block in _blocks(guide_text) if "def host_copy_job(" in block
+    )
+    assert "RuntimeError" not in job_block
+    assert "schema.record_count" in job_block
+    assert "HOST_RECORD_LIMIT_EXCEEDED" in job_block
+    assert job_block.index("HOST_RECORD_LIMIT_EXCEEDED") < job_block.index(
+        "write_table("
+    )
+
+    import vfp_fixture_factory as fixture_factory
+
+    workspace = tmp_path
+    oversized = workspace / "big.dbf"
+    fixture_factory.build_vfp32_table(
+        oversized,
+        columns=[{"name": "KOD", "type": "C", "width": 5}],
+        rows=[{"KOD": str(index)} for index in range(10)],
+    )
+    namespace: dict = {}
+    exec(compile(job_block, "<guide>", "exec"), namespace)  # noqa: S102
+    payload = namespace["host_copy_job"](
+        str(oversized),
+        str(workspace / "out.dbf"),
+        write_capability_configured=True,
+        write_enabled=True,
+        cancel_requested=namespace["cancel_requested"],
+        max_records=5,
+    )
+    assert payload == {"ok": False, "error": {"code": "HOST_RECORD_LIMIT_EXCEEDED"}}
+    assert not (workspace / "out.dbf").exists()
+    json.dumps(payload)
