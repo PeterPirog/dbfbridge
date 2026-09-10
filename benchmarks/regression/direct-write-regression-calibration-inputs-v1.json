@@ -1,0 +1,284 @@
+{
+  "benchmark_contract": "dbfbridge-direct-write-v1",
+  "benchmark_contract_version": 1,
+  "calibration_contract": "dbfbridge-direct-write-calibration-v1",
+  "calibration_contract_version": 1,
+  "calibration_count": 5,
+  "memory_facts": [
+    {
+      "assessment": "MEASURED_FACTS_ONLY",
+      "peak_rss_delta_ratio": 3.4813,
+      "peak_rss_ratio": 2.8813,
+      "record_count_ratio": 5.2632,
+      "replica_id": "replica-1",
+      "w1_peak_rss_bytes": 63942656,
+      "w1_peak_rss_delta_bytes": 37666816,
+      "w1_record_count": 190000,
+      "w1_rss_after_bytes": 53497856,
+      "w1_rss_before_bytes": 26275840,
+      "w3_peak_rss_bytes": 184238080,
+      "w3_peak_rss_delta_bytes": 131129344,
+      "w3_record_count": 1000000,
+      "w3_rss_after_bytes": 142270464,
+      "w3_rss_before_bytes": 53108736
+    },
+    {
+      "assessment": "MEASURED_FACTS_ONLY",
+      "peak_rss_delta_ratio": 3.4316,
+      "peak_rss_ratio": 2.8532,
+      "record_count_ratio": 5.2632,
+      "replica_id": "replica-2",
+      "w1_peak_rss_bytes": 63832064,
+      "w1_peak_rss_delta_bytes": 37883904,
+      "w1_record_count": 190000,
+      "w1_rss_after_bytes": 53374976,
+      "w1_rss_before_bytes": 25948160,
+      "w3_peak_rss_bytes": 182128640,
+      "w3_peak_rss_delta_bytes": 130002944,
+      "w3_record_count": 1000000,
+      "w3_rss_after_bytes": 138592256,
+      "w3_rss_before_bytes": 52125696
+    },
+    {
+      "assessment": "MEASURED_FACTS_ONLY",
+      "peak_rss_delta_ratio": 3.4872,
+      "peak_rss_ratio": 2.8841,
+      "record_count_ratio": 5.2632,
+      "replica_id": "replica-3",
+      "w1_peak_rss_bytes": 63700992,
+      "w1_peak_rss_delta_bytes": 37523456,
+      "w1_record_count": 190000,
+      "w1_rss_after_bytes": 53239808,
+      "w1_rss_before_bytes": 26177536,
+      "w3_peak_rss_bytes": 183721984,
+      "w3_peak_rss_delta_bytes": 130850816,
+      "w3_record_count": 1000000,
+      "w3_rss_after_bytes": 141754368,
+      "w3_rss_before_bytes": 52871168
+    },
+    {
+      "assessment": "MEASURED_FACTS_ONLY",
+      "peak_rss_delta_ratio": 3.4528,
+      "peak_rss_ratio": 2.8853,
+      "record_count_ratio": 5.2632,
+      "replica_id": "replica-4",
+      "w1_peak_rss_bytes": 63688704,
+      "w1_peak_rss_delta_bytes": 37486592,
+      "w1_record_count": 190000,
+      "w1_rss_after_bytes": 53235712,
+      "w1_rss_before_bytes": 26202112,
+      "w3_peak_rss_bytes": 183762944,
+      "w3_peak_rss_delta_bytes": 129433600,
+      "w3_record_count": 1000000,
+      "w3_rss_after_bytes": 141795328,
+      "w3_rss_before_bytes": 54329344
+    },
+    {
+      "assessment": "MEASURED_FACTS_ONLY",
+      "peak_rss_delta_ratio": 3.4882,
+      "peak_rss_ratio": 2.8897,
+      "record_count_ratio": 5.2632,
+      "replica_id": "replica-5",
+      "w1_peak_rss_bytes": 63705088,
+      "w1_peak_rss_delta_bytes": 37552128,
+      "w1_record_count": 190000,
+      "w1_rss_after_bytes": 53243904,
+      "w1_rss_before_bytes": 26152960,
+      "w3_peak_rss_bytes": 184090624,
+      "w3_peak_rss_delta_bytes": 130990080,
+      "w3_record_count": 1000000,
+      "w3_rss_after_bytes": 142123008,
+      "w3_rss_before_bytes": 53100544
+    }
+  ],
+  "policy_inputs_contract": "dbfbridge-direct-write-calibration-inputs-v1",
+  "policy_inputs_version": 1,
+  "privacy_note": "No DBF record values, memo contents or credentials are contained in this file.",
+  "ratio_raw_values": {
+    "W10/W1 wall-seconds-per-record": [
+      0.9855460251269491,
+      1.0815846990199487,
+      1.0161299294447472,
+      0.9598718505598662,
+      1.0158666755025711
+    ],
+    "W2/W1 wall-seconds-per-record": [
+      1.1937772920075793,
+      1.191591666826306,
+      1.1661530091712686,
+      1.1885859229841342,
+      1.2424836332309066
+    ],
+    "W3/W1 peak-RSS-delta ratio": [
+      3.481296,
+      3.431614,
+      3.487174,
+      3.452797,
+      3.48822
+    ],
+    "W3/W1 wall-seconds-per-record": [
+      1.0214646772609786,
+      0.9951332646501805,
+      0.9776612112683664,
+      0.933061807741649,
+      0.9902604010803056
+    ],
+    "W5/W1 wall-seconds-per-record": [
+      1.4851084574383413,
+      1.338608230895978,
+      1.26182588799232,
+      1.377352605454371,
+      1.445069586235521
+    ]
+  },
+  "reference_commit": "ebc47bf0039329c32a039c98dca58d1a86175944",
+  "runtime_recipe": "Windows|X64|python-3.12|pip install -e \".[dev]\"|dbf=0.99.11|dbfread=2.0.7|psutil=7.2.2",
+  "samples": [
+    {
+      "benchmark_run_id": "run-b37ff774d0f5246dab884f6e6ba79fb9",
+      "measured_code_sha": "ebc47bf0039329c32a039c98dca58d1a86175944",
+      "os": "win32",
+      "python": "3.12.10",
+      "replica_id": "replica-1",
+      "report_sha256": "3f1f78851652b4631a944cab7551449f4dc2fab5c2025f89c6a4d608a2a687dd",
+      "workflow_run_id": "34352345104"
+    },
+    {
+      "benchmark_run_id": "run-720a517b88cea173c48e7c3cdca76987",
+      "measured_code_sha": "ebc47bf0039329c32a039c98dca58d1a86175944",
+      "os": "win32",
+      "python": "3.12.10",
+      "replica_id": "replica-2",
+      "report_sha256": "d1c03b610ef8327e98b6096a8de0705cc073780b1075f73147710c98db114272",
+      "workflow_run_id": "34352345104"
+    },
+    {
+      "benchmark_run_id": "run-dc08fc76ebaa3f9b332b3e4da9cde85d",
+      "measured_code_sha": "ebc47bf0039329c32a039c98dca58d1a86175944",
+      "os": "win32",
+      "python": "3.12.10",
+      "replica_id": "replica-3",
+      "report_sha256": "c42727673c2590c445f2ecbd09204d25aa8adea120c6569140dfc83deaa5073e",
+      "workflow_run_id": "34352345104"
+    },
+    {
+      "benchmark_run_id": "run-c4239b10476a7a1795476931ea447b7e",
+      "measured_code_sha": "ebc47bf0039329c32a039c98dca58d1a86175944",
+      "os": "win32",
+      "python": "3.12.10",
+      "replica_id": "replica-4",
+      "report_sha256": "2b2c853eb58b326dda8dcc0b2dad2d0007207abf6fa2ebae712d6e6a910455bf",
+      "workflow_run_id": "34352345104"
+    },
+    {
+      "benchmark_run_id": "run-99b1fe9db0739754ce669e8caa4c2b1a",
+      "measured_code_sha": "ebc47bf0039329c32a039c98dca58d1a86175944",
+      "os": "win32",
+      "python": "3.12.10",
+      "replica_id": "replica-5",
+      "report_sha256": "f71b515d0703298079f26aae20a29295d5711d26767c7b2073d1e9dfd45e84c0",
+      "workflow_run_id": "34352345104"
+    }
+  ],
+  "scenario_ids": [
+    "direct_write_190k_flat",
+    "direct_read_transform_write_190k",
+    "direct_write_1m_flat",
+    "direct_write_character_heavy",
+    "direct_write_memo_heavy",
+    "direct_write_deleted_include",
+    "direct_write_cp1250",
+    "direct_write_cp852",
+    "direct_write_mazovia",
+    "direct_write_varchar_nullflags",
+    "overwrite_transaction_staging_cost"
+  ],
+  "source": {
+    "artifact_digest": "sha256:93d2f3b873b64e821a01401862fe67703ef4a6b321fd8d44865b3df128af6d9f",
+    "artifact_id": 10104538589,
+    "branch": "main",
+    "compact_json_sha256": "c7113378d154a823e80c8e56f9f00b47bcbc2f9186d7fe72af40616e07125e28",
+    "github_event": "push",
+    "source_context": "main_push",
+    "workflow_run_id": "34352345104"
+  },
+  "wall_seconds_by_scenario": {
+    "direct_read_transform_write_190k": [
+      36.657071,
+      35.890685,
+      27.681304,
+      26.559145,
+      26.717343
+    ],
+    "direct_write_190k_flat": [
+      30.706792,
+      30.119953,
+      23.737283,
+      22.345162,
+      21.503175
+    ],
+    "direct_write_1m_flat": [
+      165.083702,
+      157.754564,
+      122.142215,
+      109.733775,
+      112.07233
+    ],
+    "direct_write_character_heavy": [
+      17.385831,
+      17.167045,
+      14.460923,
+      13.034823,
+      13.270063
+    ],
+    "direct_write_cp1250": [
+      6.369216,
+      6.379119,
+      5.059518,
+      4.430812,
+      4.371097
+    ],
+    "direct_write_cp852": [
+      6.428038,
+      7.411499,
+      5.126154,
+      4.468164,
+      4.528474
+    ],
+    "direct_write_deleted_include": [
+      13.77764,
+      13.626171,
+      9.799716,
+      8.711519,
+      9.055408
+    ],
+    "direct_write_mazovia": [
+      6.923074,
+      7.843941,
+      5.57997,
+      4.841748,
+      4.882543
+    ],
+    "direct_write_memo_heavy": [
+      24.001535,
+      21.22043,
+      15.764378,
+      16.198509,
+      16.354518
+    ],
+    "direct_write_varchar_nullflags": [
+      15.927872,
+      17.145937,
+      12.694823,
+      11.28868,
+      11.497031
+    ],
+    "overwrite_transaction_staging_cost": [
+      4.357779,
+      4.311568,
+      3.105848,
+      4.112198,
+      3.301783
+    ]
+  }
+}

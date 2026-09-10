@@ -480,6 +480,88 @@ python -m benchmarks.direct_write_profile --mode full
 Artifacts land in `benchmarks/evidence/direct-write-v1-<mode>.{json,md}`
 (generated from the same payload - one source of truth).
 
+## Direct Write regression policy and comparator (F3B1, `dbfbridge-direct-write-regression-policy-v1`)
+
+The authoritative main_push calibration (artifact 10104538589, workflow
+34352345104, reference commit `ebc47bf…`) is captured as a repository-controlled
+input (`benchmarks/regression/direct-write-regression-calibration-inputs-v1.json`)
+and converted by a deterministic policy generator
+(`benchmarks/calibrate_direct_write_regression.py`) into the committed
+versioned Direct Write regression policy
+(`benchmarks/regression/direct-write-regression-policy-v1.json`).
+
+Policy semantics (all mechanically derived, no hand-edited classification):
+
+- ABSOLUTE scenario wall times are **ADVISORY ONLY** — hosted-runner wall
+  variance is material; the advisory envelope can never hard-fail;
+- the ratio candidate set is EXACTLY five, with ONE operational definition
+  source (`benchmarks/direct_write_regression_contract.py`, consumed by both
+  the generator and the comparator): W3/W2/W5/W10 wall-seconds-per-record
+  relative to W1 are **per-record normalized**
+  (`(num.wall/count) / (den.wall/count)`), while W3/W1 peak-RSS-delta is the
+  **RAW quotient** `w3_delta_bytes / w1_delta_bytes` — RSS is never divided
+  by record counts (the calibration center is ~3.481296; a candidate with
+  W1 delta 38 MB and W3 delta 132 MB evaluates to ~3.4737, not ~0.66);
+  each ratio's envelope is
+  `max(center + max(3.0*MAD, max_observed_deviation), max(values)*1.15)` and a
+  ratio is `hard_gate` only when its envelope stays within 50 percent of the
+  calibrated center — in the authoritative calibration ALL FIVE ratios
+  hard-gate;
+- the policy generator recomputes every ratio from the RAW calibration
+  facts (wall seconds + canonical full record counts, raw W3/W1 RSS byte
+  deltas) and cross-checks the stored serialized values against them with
+  a documented 1e-6 serialization-rounding tolerance; inconsistent
+  calibration evidence is rejected;
+- the policy is SELF-VERIFYING (F3B1 final trust-boundary repair): both the
+  generator and the comparator derive ratio/advisory statistics with ONE
+  contract-module helper (`derive_ratio_statistics`), and the comparator
+  re-derives the complete derived specification (center, MAD, relative
+  MAD, max observed deviation, spread/tail components, envelope,
+  envelope/center and the hard/advisory classification) from each policy
+  entry's own `values` — any finite tampered statistic (including an
+  envelope raised to 5.0, still below center*1.5) is `INVALID_POLICY`;
+  absolute-wall advisory statistics are re-derived the same way while
+  staying ADVISORY ONLY; `accepted` must be exactly `true` and `problems`
+  exactly `[]`; the policy `runtime_recipe` must parse with the single
+  strict grammar parser (`parse_runtime_recipe`) — a malformed recipe is
+  `INVALID_POLICY` and can never disable performance comparison;
+- the committed policy file is regression-tested against the ACTUAL
+  deterministic generator output (canonical structural equality, byte
+  equality, and a fresh CLI run reproducing the committed bytes) — not
+  merely generate-vs-generate; a manually edited committed envelope,
+  runtime recipe or source field fails the repository gate;
+- the offline comparator (`benchmarks/compare_direct_write_regression.py`,
+  stdlib-only, never benchmarks) validates the policy strictly (tampered
+  numerator/denominator/metric/normalization, unknown parameters, NaN/
+  Infinity in any policy numeric, hidden thresholds and label-list
+  inconsistencies all rejected as `INVALID_POLICY`), runs CORRECTNESS gates
+  that always hard-fail regardless of environment, classifies comparability
+  (COMPARABLE/PARTIALLY_COMPARABLE/NOT_COMPARABLE) using the AUTHORITATIVE
+  F3A `validate_provenance` contract (a structurally invalid provenance can
+  never become COMPARABLE), and evaluates hard ratio gates only on
+  COMPARABLE evidence — NOT_COMPARABLE never creates a false regression,
+  correctness still hard-fails when not comparable, malformed candidate
+  numerics report `CANDIDATE_MALFORMED` (deterministic failure, never a
+  crash, never PASS), and COMPARABLE-but-unevaluated hard gates report
+  `INCOMPLETE_EVIDENCE` (a smoke run without its real performance facts can
+  never PASS); both full and smoke candidates must carry the EXACT W1-W12
+  scenario contract (smoke scales the counts down; W10 disk-spool evidence
+  stays full-only, W12 stays functional-only);
+- raw variability is preserved (no outlier removal, no normalization);
+- rebaselining requires an explicit architecture-reviewed task — the policy
+  is never rewritten automatically from CI runs.
+
+```powershell
+python -m benchmarks.calibrate_direct_write_regression --output policy.json
+python -m benchmarks.compare_direct_write_regression `
+  --policy benchmarks/regression/direct-write-regression-policy-v1.json `
+  --candidate <profile.json> --candidate-provenance <provenance.json> `
+  --mode full --output-json result.json --output-md result.md
+```
+
+The comparator is NOT yet wired into GitHub Actions — CI enforcement is F3B2
+after architect review of this policy.
+
 ## Direct Write regression calibration (F3A, `dbfbridge-direct-write-calibration-v1`)
 
 A **separate offline calibration layer** (distinct from the benchmark
