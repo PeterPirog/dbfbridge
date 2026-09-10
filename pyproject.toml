@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
-    { name = "Peter Pirog", email = "pirog.peter@gmail.com" },
+    { name = "Peter Pirog" },
 ]
 keywords = ["dbf", "foxpro", "visual foxpro", "csv", "json", "jsonl", "xlsx", "mazovia", "polish", "converter", "migration"]
 classifiers = [

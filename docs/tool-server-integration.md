@@ -517,22 +517,23 @@ def host_copy_job(
 
     schema = dbfbridge.read_schema(source)  # read-only schema source
 
+    # Host input cap, enforced BEFORE any write is attempted (DBFB-MCP-006):
+    # the public schema carries the declared record count, so an oversized
+    # source is refused fail-closed with a structured host error — no
+    # staging, no records, and no exception-driven discovery mid-write.
+    if schema.record_count > max_records:
+        return {"ok": False, "error": {"code": "HOST_RECORD_LIMIT_EXCEEDED"}}
+
     # The service layer creates the iterator; write_table consumes it
     # exactly once (DBFB-MCP-006). Deleted state is preserved through the
     # mapping marker so the copy keeps physical deleted rows in order.
-    produced = 0
-
     def records():
-        nonlocal produced
         for record in dbfbridge.iter_records(
             source,
             memo="inline",           # bounded memo policy for a copy
             include_deleted=True,    # preserve deleted rows and their order
             cancel_check=cancel_requested,  # host cancellation bridging
         ):
-            if produced >= max_records:
-                raise RuntimeError("host record cap exceeded")
-            produced += 1
             # Transform example: upper-case one Character field. Mapping
             # writers preserve deletion state via the `__deleted__` marker.
             row = {
