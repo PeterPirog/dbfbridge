@@ -445,6 +445,158 @@ print("negative-write OK")
     snippet(venv_dir, code, cwd=work)
 
 
+def negative_direct_write_smoke(venv_dir: Path, fixture: Path, work: Path) -> None:
+    """ART-04: Direct Write without ``[write]`` fails TYPED, BEFORE OUTPUT.
+
+    Proves on the base install (fresh wheel, no ``dbf``) that
+    ``write_table`` raises ``OptionalDependencyMissingError`` with the
+    structured ``OPTIONAL_DEPENDENCY_MISSING`` code and creates NO
+    destination DBF, NO FPT, NO ``.partial``, NO writer spool — the failure
+    happens before any output, staging, or spool is created.
+    """
+    code = f"""
+import json, sys
+from pathlib import Path
+from dbfbridge import OptionalDependencyMissingError, read_schema, write_table
+
+schema = read_schema(r"{str(fixture).replace(chr(92), "/")}")
+destination = Path("negative_direct_write_out/copy.dbf")
+try:
+    write_table(
+        destination,
+        schema=schema,
+        records=(record.values for record in __import__("dbfbridge").iter_records(r"{str(fixture).replace(chr(92), "/")}", memo="skip")),
+    )
+except OptionalDependencyMissingError as error:
+    payload = error.to_dict()
+    assert payload["code"] == "OPTIONAL_DEPENDENCY_MISSING", payload
+    assert payload["dependency"] == "dbf" and payload["extra"] == "write", payload
+    json.dumps(payload)  # JSON-safe typed failure
+else:
+    raise SystemExit("write_table must fail typed without [write]")
+assert 'dbf' not in sys.modules, "dbf must never load without [write]"
+assert not destination.exists(), "destination DBF must not exist"
+assert not destination.with_suffix(".fpt").exists(), "destination FPT must not exist"
+staging_dir = Path("negative_direct_write_out")
+if staging_dir.exists():
+    residue = [str(path) for path in staging_dir.rglob("*") if path.name.endswith((".partial", ".spool")) or "spool" in path.name.lower()]
+    assert not residue, residue
+assert not list(Path(".").glob("*.partial")) and not list(Path(".").glob("*.spool"))
+print("negative-direct-write OK (typed before output)")
+"""
+    snippet(venv_dir, code, cwd=work)
+
+
+def direct_write_smoke(
+    venv_dir: Path, fixture: Path, work: Path, schema_path: Path,
+    *, destination_dir: str = "direct_write_out",
+) -> None:
+    """ART-05/ART-06/ART-07: real additive v1.1 Direct Write on the
+    installed wheel.
+
+    Uses the public ``read_schema``/``write_table``/``WriteResult`` surface
+    with a deterministic generator (never ``list(records)``), asserts the
+    exact ``records_written``, that a memo-free schema publishes NO FPT,
+    that the payload is JSON-safe and that the shipped
+    ``write-result.schema.json`` matches the runtime payload keys/types —
+    then rereads the published file canonically through the public API.
+    """
+    code = f"""
+import hashlib, json, sys
+from pathlib import Path
+from dbfbridge import read_records, read_schema, write_table
+
+source = r"{str(fixture).replace(chr(92), "/")}"
+destination = Path(r"{destination_dir}/copy.dbf")
+
+schema = read_schema(source)
+assert schema.record_count == 200, schema.record_count
+
+# Generator records (streaming; never materialized as one list):
+records = (
+    {{"ID": index, "NAME": f"Klient {{index}}", "CITY": "Warszawa", "AMOUNT": round(index * 1.5, 2)}}
+    for index in range(1, 26)
+)
+result = write_table(destination, schema=schema, records=records)
+
+payload = result.to_dict()
+json.dumps(payload)  # ART-05: JSON-safe tool boundary
+assert payload["records_written"] == 25, payload["records_written"]
+assert payload["deleted_records"] == 0, payload["deleted_records"]
+assert payload["fpt_published"] is False and payload["fpt_path"] is None and payload["fpt_sha256"] is None, payload
+assert payload["destination"].endswith("copy.dbf"), payload["destination"]
+assert payload["warnings"] == [] or all(isinstance(warning, str) for warning in payload["warnings"])
+digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+assert payload["dbf_sha256"] == digest, (payload["dbf_sha256"], digest)
+
+# ART-07: maintained WriteResult JSON schema parity (stdlib structural).
+schema_contract = json.loads(Path(r"{str(schema_path).replace(chr(92), "/")}").read_text(encoding="utf-8"))
+assert set(schema_contract["required"]) == set(schema_contract["properties"])
+assert set(payload) == set(schema_contract["properties"]), (
+    set(payload) ^ set(schema_contract["properties"])
+)
+type_checks = {{"string": str, "integer": int, "boolean": bool, "array": list}}
+for key, spec in schema_contract["properties"].items():
+    raw_type = spec["type"]
+    allowed = raw_type if isinstance(raw_type, list) else [raw_type]
+    if payload[key] is None:
+        assert "null" in allowed, (key, allowed)
+        continue
+    expected = tuple(type_checks[name] for name in allowed if name in type_checks)
+    assert isinstance(payload[key], expected), (key, type(payload[key]), allowed)
+
+# Public reread of the published table must match the written values.
+page = read_records(destination, limit=10)
+assert len(page.records) == 10 and page.offset == 0 and page.next_offset == 10, page
+tail = read_records(destination, offset=10, limit=15)
+assert len(tail.records) == 15 and tail.next_offset is None, (len(tail.records), tail.next_offset)
+first = page.records[0].values
+assert first["ID"] == 1 and first["NAME"] == "Klient 1" and first["CITY"] == "Warszawa", first
+assert float(first["AMOUNT"]) == 1.5, first["AMOUNT"]
+last = tail.records[-1].values
+assert last["ID"] == 25 and last["NAME"] == "Klient 25", last
+assert not list(Path(".").glob("**/*.partial"))
+print("direct-write OK (25 records, no FPT, schema parity, canonical reread)")
+"""
+    snippet(venv_dir, code, cwd=work)
+
+
+def direct_write_memo_smoke(
+    venv_dir: Path, memo_fixture: Path, work: Path,
+    *, destination_dir: str = "direct_write_memo_out",
+) -> None:
+    """Small text-memo Direct Write round trip on the installed wheel."""
+    code = f"""
+import json
+from pathlib import Path
+from dbfbridge import iter_records, read_records, read_schema, write_table
+
+source = r"{str(memo_fixture).replace(chr(92), "/")}"
+destination = Path(r"{destination_dir}/notes.dbf")
+
+schema = read_schema(source)
+records = (
+    {{"__deleted__": record.deleted, **record.values}}
+    for record in __import__("dbfbridge").iter_records(source, memo="inline", include_deleted=True)
+)
+result = write_table(destination, schema=schema, records=records)
+payload = result.to_dict()
+json.dumps(payload)
+assert payload["records_written"] == 50, payload["records_written"]
+assert payload["fpt_published"] is True, payload
+assert payload["fpt_path"] is not None and payload["fpt_sha256"] is not None, payload
+
+reread = read_records(destination, memo="inline")
+assert len(reread.records) == 50, len(reread.records)
+memo_text = reread.records[0].values["NOTATKA"]
+assert "Mazovia memo 1" in memo_text, memo_text
+assert reread.records[49].values["NOTATKA"].endswith("śliwka."), reread.records[49].values["NOTATKA"]
+assert not list(Path("direct_write_memo_out").glob("**/*.partial"))
+print("direct-write-memo OK (50 records, FPT published, canonical reread)")
+"""
+    snippet(venv_dir, code, cwd=work)
+
+
 def negative_xlsx_smoke(venv_dir: Path, fixture: Path, work: Path) -> None:
     code = f"""
 from pathlib import Path
@@ -540,7 +692,8 @@ print("fast OK")
 
 
 def all_extra_smoke(venv_dir: Path, wheel: Path, repo_root: Path, work: Path) -> None:
-    # The full release wheel smoke (fresh venv, Direct Read + legacy + CLI).
+    # The full release wheel smoke (fresh venv, Direct Read + v1.1 write
+    # surface + negative direct-write + legacy + CLI).
     _run(
         [
             sys.executable,
@@ -550,6 +703,20 @@ def all_extra_smoke(venv_dir: Path, wheel: Path, repo_root: Path, work: Path) ->
             "--expected-version",
             _wheel_version(wheel),
         ]
+    )
+    # Direct Write (ART-06: shared helper, no second implementation).
+    direct_write_smoke(
+        venv_dir,
+        work / "fixtures" / "customers.dbf",
+        work,
+        repo_root / "docs" / "schemas" / "write-result.schema.json",
+        destination_dir="direct_write_all_out",
+    )
+    direct_write_memo_smoke(
+        venv_dir,
+        work / "fixtures" / "notes.dbf",
+        work,
+        destination_dir="direct_write_memo_all_out",
     )
     # Reconstruction + XLSX paths inside the [all] venv.
     xlsx_dir = xlsx_extra_smoke(venv_dir, work / "fixtures" / "customers.dbf", work)
@@ -659,6 +826,7 @@ def main(argv: list[str] | None = None) -> int:
         # 4) negative smokes on the base install
         negative_write_smoke(base, export_jsonl, work_root)
         negative_xlsx_smoke(base, fixtures["flat"], work_root)
+        negative_direct_write_smoke(base, fixtures["flat"], work_root)
         print("  [profile base] PASS")
         profiles_passed.append("base")
 
@@ -667,6 +835,13 @@ def main(argv: list[str] | None = None) -> int:
         install_extra(venv_write, wheel, "write", dist_dir)
         write_extra_smoke(venv_write, export_jsonl, work_root)
         write_memo_extra_smoke(venv_write, export_memo_jsonl, work_root)
+        direct_write_smoke(
+            venv_write,
+            fixtures["flat"],
+            work_root,
+            REPO_ROOT / "docs" / "schemas" / "write-result.schema.json",
+        )
+        direct_write_memo_smoke(venv_write, fixtures["memo"], work_root)
         print("  [profile write] PASS")
         profiles_passed.append("write")
 

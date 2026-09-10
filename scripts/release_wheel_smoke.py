@@ -203,18 +203,34 @@ from dbfbridge import (
     iter_records, read_records, iter_raw_records,
     FieldInfo, TableInfo, TableSchema,
     DirectRecord, RecordPage, LazyMemoValue,
+    export_dbf, reconstruct_dbf, verify_conversion, check_conversion_quality,
+    write_table, WriteResult, DirectWriteError,
 )
 from dbf_bridge import (
     inspect_table, read_schema,
     iter_records, read_records, iter_raw_records,
+    export_dbf, reconstruct_dbf, verify_conversion, check_conversion_quality,
+    write_table as dbf_bridge_write_table,
+    WriteResult as dbf_bridge_write_result,
+    DirectWriteError as dbf_bridge_direct_write_error,
 )
 
-from dbfbridge import (
-    export_dbf, reconstruct_dbf, verify_conversion, check_conversion_quality,
+# ART-03: the additive v1.1 surface is public from the BASE wheel without
+# the [write] extra, and both facades expose the identical symbols.
+assert write_table is dbf_bridge_write_table, "write_table facade parity"
+assert WriteResult is dbf_bridge_write_result, "WriteResult facade parity"
+assert DirectWriteError is dbf_bridge_direct_write_error, "DirectWriteError facade parity"
+
+# ART-03: public symbol availability != optional physical writer dependency.
+# The base wheel must stay dbf-free and lazily importable.
+assert 'dbf' not in sys.modules, (
+    "the optional 'dbf' writer library must not load on import"
 )
 
 print("Direct Read API: PASS")
 print("legacy API: PASS")
+print("additive v1.1 write surface: PASS (write_table/WriteResult/DirectWriteError)")
+print("lazy dbf-free import: PASS")
 print("module origins: PASS (fresh venv)")
 """
     result = _run([str(fresh_python), "-I", "-c", probe], cwd=work_dir, label="import_probe")
@@ -222,6 +238,7 @@ print("module origins: PASS (fresh venv)")
         print(f"  {line}")
     print("Direct Read API: PASS")
     print("legacy API: PASS")
+    print("additive v1.1 write surface: PASS")
 
     # --- Create a synthetic DBF for a real Direct Read round trip ---
     # Stdlib-only fixture writer: the fresh venv contains ONLY the wheel
@@ -247,6 +264,37 @@ print("module origins: PASS (fresh venv)")
     )
     print("Direct Read API: PASS")
 
+    # --- ART-04: Direct Write without [write] fails TYPED, BEFORE OUTPUT ---
+    _run(
+        [
+            str(fresh_python),
+            "-I",
+            "-c",
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from dbfbridge import OptionalDependencyMissingError, iter_records, read_schema, write_table\n"
+            "schema = read_schema('smoke.dbf')\n"
+            "destination = Path('negative_direct_write_out/copy.dbf')\n"
+            "try:\n"
+            "    write_table(destination, schema=schema, records=(record.values for record in iter_records('smoke.dbf')))\n"
+            "except OptionalDependencyMissingError as error:\n"
+            "    payload = error.to_dict()\n"
+            "    assert payload['code'] == 'OPTIONAL_DEPENDENCY_MISSING', payload\n"
+            "    assert payload['dependency'] == 'dbf' and payload['extra'] == 'write', payload\n"
+            "else:\n"
+            "    raise SystemExit('write_table must fail typed without [write]')\n"
+            "assert not destination.exists(), destination\n"
+            "assert not Path('negative_direct_write_out').exists() or not any(Path('negative_direct_write_out').rglob('*'))\n"
+            "assert not list(Path('.').glob('**/*.partial'))\n"
+            "assert not list(Path('.').glob('**/*.spool'))\n"
+            "assert 'dbf' not in sys.modules\n"
+            "print('negative direct-write OK: no destination DBF/FPT, no .partial, no spool')\n",
+        ],
+        cwd=work_dir,
+        label="negative_direct_write_smoke",
+    )
+    print("negative direct-write (typed, before output): PASS")
+
     # --- CLI smoke using the fresh venv's scripts directory ---
     for cli_name in ("dbf-bridge", "dbf-bridge-import", "dbf-bridge-verify", "dbf-bridge-quality"):
         if sys.platform == "win32":
@@ -263,6 +311,8 @@ print("module origins: PASS (fresh venv)")
     print(f"fresh venv location: {venv_dir}")
     print("Direct Read API: PASS")
     print("legacy API: PASS")
+    print("additive v1.1 write surface: PASS")
+    print("lazy dbf-free import: PASS")
     print("CLI entrypoints: PASS")
     return 0
 

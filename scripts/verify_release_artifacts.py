@@ -41,12 +41,18 @@ SDIST_GLOB = "dbfbridge-*.tar.gz"
 REQUIRED_SDIST_FILES = (
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
     "pyproject.toml",
     "PUBLISHING.md",
+    "docs/README.md",
     "docs/pypi-usage.md",
     "docs/api-1.0.md",
+    "docs/api-1.1.md",
     "docs/migration-1.0.md",
+    "docs/python-api-examples.md",
+    "docs/tool-server-integration.md",
     "docs/compatibility-vfp.md",
+    "docs/schemas/write-result.schema.json",
     "src/dbf_bridge/py.typed",
     "src/dbfbridge/py.typed",
 )
@@ -96,6 +102,10 @@ def _verify_wheel(wheel: Path, expected_version: str) -> list[str]:
         violations.append(
             f"wheel METADATA Version {metadata['Version']!r} != {expected_version!r}"
         )
+    if metadata["Author-email"] is not None:
+        # ART-08: project author metadata is NAME-ONLY; no personal email
+        # may ever ship in the distribution metadata.
+        violations.append("wheel METADATA exposes an Author-email field")
     if "Typing :: Typed" not in (metadata.get_all("Classifier") or []):
         violations.append("wheel METADATA lacks the 'Typing :: Typed' classifier")
     for marker in ("dbf_bridge/py.typed", "dbfbridge/py.typed"):
@@ -132,6 +142,9 @@ def _verify_sdist(sdist: Path, expected_version: str) -> list[str]:
             violations.append(
                 f"sdist PKG-INFO Version {pkg_info['Version']!r} != {expected_version!r}"
             )
+        if pkg_info["Author-email"] is not None:
+            # ART-08: no author email in the distribution metadata.
+            violations.append("sdist PKG-INFO exposes an Author-email field")
         for required in REQUIRED_SDIST_FILES:
             if f"{root}/{required}" not in members:
                 violations.append(f"sdist lacks {required}")
