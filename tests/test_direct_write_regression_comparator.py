@@ -1438,3 +1438,56 @@ def test_committed_policy_is_a_valid_authority_and_passes() -> None:
     )
     assert payload["overall_status"] == "PASS"
     json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# F3B2: comparator CLI serialization — strict JSON, exactly one real LF
+# ---------------------------------------------------------------------------
+
+
+def test_main_cli_output_json_is_strict_json_ending_in_one_lf(tmp_path: Path) -> None:
+    """Regression for the first real F3B2 CI consumer (PR #30 workflow):
+    the comparator ``main()`` ``--output-json`` artifact must be VALID
+    strict JSON terminated by EXACTLY ONE real LF — never the literal
+    backslash+n suffix that made the accepted F3B1 output unreadable.
+
+    Exercises the real CLI/argparse output path (not json.dumps directly):
+    it must FAIL against starting HEAD a6a827c and pass after the repair."""
+    policy_path = tmp_path / "policy.json"
+    candidate_path = tmp_path / "candidate.json"
+    provenance_path = tmp_path / "provenance.json"
+    result_path = tmp_path / "result.json"
+    policy_path.write_text(json.dumps(_policy()), encoding="utf-8")
+    candidate_path.write_text(json.dumps(_candidate()), encoding="utf-8")
+    provenance_path.write_text(json.dumps(_PROVENANCE), encoding="utf-8")
+    exit_code = comparator.main(
+        [
+            "--policy", str(policy_path),
+            "--candidate", str(candidate_path),
+            "--candidate-provenance", str(provenance_path),
+            "--mode", "full",
+            "--output-json", str(result_path),
+        ]
+    )
+    # 1. main() completes with the expected return code
+    assert exit_code == 0
+    # 2. the output JSON exists
+    assert result_path.is_file()
+    raw = result_path.read_bytes()
+    # 4. the byte output ends with exactly ONE real LF
+    assert raw.endswith(b"\n")
+    # 5. it does NOT end with the literal backslash+n characters
+    assert raw.endswith(b"\\n") is False
+    # 6. no accidental duplicate blank lines
+    assert raw.endswith(b"\n\n") is False
+    # 3. strict standard-library parsing succeeds
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    # 7. the parsed payload carries the expected contract and status
+    assert payload["result_contract"] == comparator.RESULT_CONTRACT
+    assert payload["overall_status"] == "PASS"
+    assert payload["correctness"]["status"] == "PASS"
+    assert payload["comparability"]["classification"] == "COMPARABLE"
+    # optional stronger checks: json.load(file_object) and no UTF-8 BOM
+    with result_path.open("r", encoding="utf-8") as handle:
+        assert json.load(handle) == payload
+    assert not raw.startswith(b"\xef\xbb\xbf")
