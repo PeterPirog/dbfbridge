@@ -29,6 +29,29 @@ Thumbs.db
 .coverage
 htmlcov/
 .tox/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Local environment / secret material (fail-closed by absence)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.kdbx
+*.sqlite
+*.sqlite3
+
+# Logs / temporary / backup / editor residue
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
 
 # Synthetic data output (regenerated locally)
 tests/fixtures/output/

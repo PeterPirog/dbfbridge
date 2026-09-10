@@ -155,7 +155,11 @@ while the policy-neutral Direct Read keeps raising the typed
 ## Out of scope / non-goals
 
 - No Q/W decoding implementation, no binary C/V parser, no CDX parsing, no
-  native reader, no writer rewrite, no Direct Write, no dBASE Level 7 table
-  dialect support (the `+`/`O`/`@` rows are parser-level compatibility only).
+  native reader, no writer rewrite (the shared physical writer is frozen),
+  no dBASE Level 7 table dialect support (the `+`/`O`/`@` rows are
+  parser-level compatibility only).  This matrix was assembled during the
+  Direct Read/reconstruction hardening phases; the additive v1.1 Direct
+  Write public contract (`write_table`, `docs/api-1.1.md`) was promoted
+  afterwards and reuses that same shared writer.
 - Non-VFP tables (dBase III/IV `B`-memo semantics) are outside this matrix.
 - Any type without an honest fixture is recorded as `NOT_YET_VERIFIED`.

@@ -559,14 +559,30 @@ python -m benchmarks.compare_direct_write_regression `
   --mode full --output-json result.json --output-md result.md
 ```
 
-The comparator is NOT yet wired into GitHub Actions — CI enforcement is F3B2
-after architect review of this policy.
+Direct Write regression enforcement is **implemented** as the dedicated
+GitHub Actions workflow
+`.github/workflows/direct-write-regression.yml` (stage F3B2, additive and
+path-filtered; never touches Phase 3 artifacts or the F3A calibration
+workflow).  For both `pull_request` and `push` to `main` it runs ONE fresh
+FULL W1-W12 profile of the exact commit on the calibrated OS generation
+(`windows-2025`, Python `3.12.10`), records run provenance with the F3A
+generator (`pull_request_merge_ref` / `main_push`), and compares the
+candidate against THIS COMMITTED POLICY with the offline comparator.  The
+workflow consumes policy; it never creates or rewrites it.  Its explicit
+post-comparison gate requires `overall_status == PASS`,
+`correctness == PASS`, `comparability == COMPARABLE`, a non-empty hard-gate
+set and every returned hard gate `PASS` — `NOT_COMPARABLE` fails the
+workflow as "authoritative performance evidence is unavailable" (no
+automatic rebaseline).  Compact evidence (profile, provenance, result) is
+uploaded as an always-on artifact; no benchmark DBF/FPT working files are
+committed.
 
 ## Direct Write regression calibration (F3A, `dbfbridge-direct-write-calibration-v1`)
 
 A **separate offline calibration layer** (distinct from the benchmark
-contract) collects multi-sample Direct Write evidence for the future F3B
-regression policy (DBFB-PERF-006).  The offline collector
+contract) collects multi-sample Direct Write evidence and feeds the
+versioned Direct Write regression policy (stage F3A; DBFB-PERF-006).  The
+offline collector
 (`benchmarks/direct_write_calibration.py`, stdlib-only, never benchmarks)
 consumes saved full W1-W12 profile reports and emits compact deterministic
 calibration evidence: safe per-sample provenance, descriptive min/median/
@@ -578,7 +594,8 @@ rejected.  The collector validates the complete set fail-closed (sample
 count >= 5, unique identities/run ids, one source SHA, one contract,
 mode=full, all W1-W12 MEASURED, zero JSONL/residue, W10 spool evidence,
 W12 functional-only, privacy sentinels).  It establishes NO performance
-threshold; the versioned regression policy is F3B's job.
+threshold; the versioned regression policy (stage F3B1, implemented and
+merged) derives it.
 
 ```powershell
 python -m benchmarks.direct_write_calibration --report replica-1=<json> ... `
