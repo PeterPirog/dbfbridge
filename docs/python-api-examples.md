@@ -1,8 +1,10 @@
 # Complete Python API examples
 
-Complete, copy/paste examples for the nine stable public operations of the
-declared 1.x contract (see
-[docs/api-1.0.md](api-1.0.md) for the normative guarantees). These examples
+Complete, copy/paste examples for the **nine protected v1.0 public
+operations** of the declared 1.0 contract **plus the additive v1.1
+`write_table`** operation (see [docs/api-1.0.md](api-1.0.md) for the
+protected 1.0 guarantees and [docs/api-1.1.md](api-1.1.md) for the additive
+Direct Write contract). These examples
 describe usage **after a normal installation**:
 
 ```bash
@@ -24,7 +26,7 @@ The examples use small synthetic file names:
 | Operation group | Install |
 |---|---|
 | Direct Read + JSONL/JSON/CSV export + verification | `pip install dbfbridge` |
-| Reconstruction + quality round trip | `pip install "dbfbridge[write]"` |
+| Reconstruction (`reconstruct_dbf`) + quality round trips + the additive v1.1 Direct Write (`write_table`) | `pip install "dbfbridge[write]"` |
 | XLSX export / XLSX-format reading and verification support | `pip install "dbfbridge[xlsx]"` |
 | XLSX → DBF/FPT reconstruction | `pip install "dbfbridge[write,xlsx]"` |
 | Optional accelerators (`orjson`, `polars`) | `pip install "dbfbridge[fast]"` |
@@ -280,7 +282,11 @@ Quality is a **write** operation creating retained diagnostic output and is
 more expensive than Direct Read — it is a dedicated diagnostic call, not a
 lightweight table-read request.
 
-## 10. `write_table()` - typed schema + record stream -> DBF/FPT (v1.1)
+## 10. `write_table()` - typed schema + record stream -> DBF/FPT (v1.1, additive)
+
+Section 10 documents the **additive v1.1 operation** — it is not part of the
+protected 1.0 baseline (see [docs/api-1.1.md](api-1.1.md) for the normative
+Direct Write contract).
 
 ```python
 from dbfbridge import (
@@ -345,7 +351,8 @@ for record in iter_records("KLIENCI.DBF", progress=show, cancel_check=lambda: Fa
 ## JSON-safe boundary
 
 Ordinary result models expose `to_dict()` — `TableInfo`, `TableSchema`,
-`DirectRecord`, `RecordPage`, `ReconstructionResult`,
+`DirectRecord`, `RecordPage`, `ExportRunResult`, `WriteResult` (v1.1,
+`write_table`), `ReconstructionResult`,
 `ReconstructionRunResult`, `VerificationRunResult`, `QualityRunResult`, and
 every public error. Always serialize through `to_dict()`; never use
 `dataclasses.asdict`, `__dict__`, or `repr` as an integration boundary.

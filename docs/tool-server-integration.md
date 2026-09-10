@@ -468,6 +468,115 @@ def reconstruct_tool(source: str, output: str) -> dict:
 Everything above imports only `dbfbridge` / `from dbfbridge import ...` and
 returns plain JSON-safe dictionaries.
 
+### 12.1 Host-controlled Direct Read → transform → Direct Write job
+
+The following application-layer job ties the patterns together for a
+host-controlled **copy/transform** service action (DBFB-MCP-005/006/007/008):
+the host owns write capability (explicit flags), path policy
+(`source != destination` is rejected BEFORE any write), bounded request
+limits, and cancellation; dbfbridge receives only plain public calls. This
+is application-layer Python — not an MCP protocol implementation.
+
+```python
+from pathlib import Path
+
+import dbfbridge
+from dbfbridge import (
+    DirectReadError,
+    OperationOutputExistsError,
+    OptionalDependencyMissingError,
+    WriteCancelledError,
+    write_table,
+)
+
+
+def host_copy_job(
+    source: str,
+    destination: str,
+    *,
+    write_capability_configured: bool,   # host deployment fact
+    write_enabled: bool,                 # host authorization fact
+    cancel_requested,                    # host cancellation callable
+    max_records: int = 50_000,           # host input cap (DBFB-MCP-006)
+) -> dict:
+    """Host-controlled Direct Read -> transform -> Direct Write job.
+
+    The job streams records through a GENERATOR (never `list(records)`) and
+    hands `write_table` a fresh one-shot iterator. dbfbridge never sees the
+    transport, the session, or the authorization state."""
+    # Host policy gate: existence of write_table is NOT write capability
+    # (DBFB-MCP-009). The host decides, fail-closed.
+    if not (write_capability_configured and write_enabled):
+        return {"ok": False, "error": {"code": "WRITE_NOT_ENABLED_BY_HOST"}}
+
+    # Host path policy: source must never resolve to the destination, even
+    # when the caller would request overwrite=True (DBFB-MCP-007). This is
+    # host policy — dbfbridge is not a sandbox.
+    if Path(source).resolve() == Path(destination).resolve():
+        return {"ok": False, "error": {"code": "SOURCE_EQUALS_DESTINATION"}}
+
+    schema = dbfbridge.read_schema(source)  # read-only schema source
+
+    # The service layer creates the iterator; write_table consumes it
+    # exactly once (DBFB-MCP-006). Deleted state is preserved through the
+    # mapping marker so the copy keeps physical deleted rows in order.
+    produced = 0
+
+    def records():
+        nonlocal produced
+        for record in dbfbridge.iter_records(
+            source,
+            memo="inline",           # bounded memo policy for a copy
+            include_deleted=True,    # preserve deleted rows and their order
+            cancel_check=cancel_requested,  # host cancellation bridging
+        ):
+            if produced >= max_records:
+                raise RuntimeError("host record cap exceeded")
+            produced += 1
+            # Transform example: upper-case one Character field. Mapping
+            # writers preserve deletion state via the `__deleted__` marker.
+            row = {
+                name: value.upper() if name == "NAZWA" and isinstance(value, str)
+                else value
+                for name, value in record.values.items()
+            }
+            row["__deleted__"] = record.deleted
+            yield row
+
+    try:
+        result = write_table(
+            destination,
+            schema=schema,
+            records=records(),
+            overwrite=False,          # OUTPUT_EXISTS unless host policy says otherwise
+            cancel_check=cancel_requested,
+        )
+    except OperationOutputExistsError as exc:
+        return {"ok": False, "error": exc.to_dict()}
+    except OptionalDependencyMissingError as exc:
+        return {"ok": False, "error": exc.to_dict()}
+    except WriteCancelledError as exc:
+        # normal machine-classifiable outcome: nothing was published
+        return {"ok": False, "error": exc.to_dict()}
+    except dbfbridge.DirectWriteError as exc:  # structured write family
+        return {"ok": False, "error": exc.to_dict()}
+    except DirectReadError as exc:  # structured read family
+        return {"ok": False, "error": exc.to_dict()}
+    return {"ok": True, "data": result.to_dict()}  # DBFB-MCP-010 boundary
+
+
+_cancelled = False
+
+
+def cancel_requested() -> bool:
+    return _cancelled
+```
+
+The same pattern scales down to a bounded read tool (`read_table_page_tool`
+above) and up to a job worker: the job function returns plain JSON-safe
+dictionaries, classifies failures by `error.code`, and never embeds records
+in the request.
+
 ## 13. Synchronous API / async host
 
 dbfbridge API calls are **synchronous filesystem operations**. The library
@@ -847,3 +956,25 @@ The adapter must remain thin:
 
 All DBF/FPT domain knowledge stays inside dbfbridge; the transport owns only
 transport concerns.
+
+## 24. Production host-security checklist
+
+A thin adapter is production-ready only when the host owns every item below.
+dbfbridge enforces none of them on the host's behalf:
+
+- [ ] authentication/authorization handled by the host;
+- [ ] allowed source paths enforced (path allowlist);
+- [ ] allowed destination/workspace roots enforced;
+- [ ] source != destination rejected (even when `overwrite=True` is requested);
+- [ ] bounded page/read limits (`read_records(..., limit=N)` with a host `MAX_PAGE_SIZE`);
+- [ ] bounded write/job input (never one unbounded record-array argument);
+- [ ] write disabled unless explicitly enabled (fail-closed capability);
+- [ ] overwrite policy explicit (default `overwrite=False` / `OUTPUT_EXISTS`);
+- [ ] timeout/cancellation configured and mapped to `cancel_check`;
+- [ ] structured `error.code` classification (never message parsing);
+- [ ] privacy-safe logs (no arbitrary record/memo values in errors or logs);
+- [ ] no remote `LazyMemoValue` serialization;
+- [ ] no record/memo payload in error payloads;
+- [ ] structural CDX rebuild responsibility assigned (`index_rebuild_required=True`);
+- [ ] DBC limitations understood (`dbc_bound` reported; bindings not restored);
+- [ ] no protocol/session/auth state stored in dbfbridge.
