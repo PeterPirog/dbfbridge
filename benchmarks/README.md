@@ -512,6 +512,24 @@ Policy semantics (all mechanically derived, no hand-edited classification):
   deltas) and cross-checks the stored serialized values against them with
   a documented 1e-6 serialization-rounding tolerance; inconsistent
   calibration evidence is rejected;
+- the policy is SELF-VERIFYING (F3B1 final trust-boundary repair): both the
+  generator and the comparator derive ratio/advisory statistics with ONE
+  contract-module helper (`derive_ratio_statistics`), and the comparator
+  re-derives the complete derived specification (center, MAD, relative
+  MAD, max observed deviation, spread/tail components, envelope,
+  envelope/center and the hard/advisory classification) from each policy
+  entry's own `values` — any finite tampered statistic (including an
+  envelope raised to 5.0, still below center*1.5) is `INVALID_POLICY`;
+  absolute-wall advisory statistics are re-derived the same way while
+  staying ADVISORY ONLY; `accepted` must be exactly `true` and `problems`
+  exactly `[]`; the policy `runtime_recipe` must parse with the single
+  strict grammar parser (`parse_runtime_recipe`) — a malformed recipe is
+  `INVALID_POLICY` and can never disable performance comparison;
+- the committed policy file is regression-tested against the ACTUAL
+  deterministic generator output (canonical structural equality, byte
+  equality, and a fresh CLI run reproducing the committed bytes) — not
+  merely generate-vs-generate; a manually edited committed envelope,
+  runtime recipe or source field fails the repository gate;
 - the offline comparator (`benchmarks/compare_direct_write_regression.py`,
   stdlib-only, never benchmarks) validates the policy strictly (tampered
   numerator/denominator/metric/normalization, unknown parameters, NaN/

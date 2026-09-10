@@ -21,10 +21,20 @@ The five canonical ratio candidates have TWO mathematical forms:
 
   The RSS delta is a retained-memory ratio, not a throughput figure —
   normalizing it by record count would misstate the memory relationship.
+
+This module is ALSO the single mathematical authority for the v1 policy
+derivation (``derive_ratio_statistics``) and the single strict parser for
+the versioned runtime recipe (``parse_runtime_recipe``) — the generator
+derives with it and the comparator re-derives with it, so a finite but
+manually tampered derived statistic can never masquerade as policy.
 """
 
 from __future__ import annotations
 
+import math
+import re
+import statistics
+from collections.abc import Mapping, Sequence
 from typing import Any, NamedTuple
 
 POLICY_CONTRACT = "dbfbridge-direct-write-regression-policy-v1"
@@ -38,6 +48,165 @@ CALIBRATION_CONTRACT_VERSION = 1
 
 NORMALIZATION_PER_RECORD = "per_record_ratio"
 NORMALIZATION_RAW = "raw_ratio"
+
+#: The EXACT v1 policy engineering parameters (single authority; the
+#: generator and the comparator both consume these values).
+POLICY_PARAMETER_VALUES: dict[str, float] = {
+    "mad_multiplier": 3.0,
+    "small_sample_guard_band": 1.15,
+    "hard_gate_discrimination_bound": 1.5,
+}
+
+
+def derive_ratio_statistics(
+    values: Sequence[float],
+    parameters: Mapping[str, float],
+) -> dict[str, Any]:
+    """THE single mathematical authority for v1 ratio derivation.
+
+    Given a ratio ``values`` array and the v1 policy parameters, derives —
+    with the exact rounding rules the policy uses — the complete derived
+    specification:
+
+    - ``center`` = median(values)                          (full precision)
+    - ``mad`` = median(abs(value - center))                (full precision)
+    - ``max_observed_deviation`` = max(abs(v - center))    (full precision)
+    - ``spread_based`` = center + max(mad_multiplier*mad, max_dev)   (9 dp)
+    - ``tail_based`` = max(values) * small_sample_guard_band         (9 dp)
+    - ``envelope_upper`` = max(spread_based, tail_based)             (9 dp)
+    - ``relative_mad`` = round(mad / center, 6) or None    (center > 0)
+    - ``envelope_upper_over_center`` = round(envelope/center, 6) or None
+    - ``classification`` = hard_gate iff
+      envelope_upper <= center * hard_gate_discrimination_bound
+
+    Raises ``ValueError`` for missing/non-finite inputs — callers must
+    treat that as a fail-closed rejection.
+    """
+    finite = [float(value) for value in values]
+    if not finite or any(not math.isfinite(value) for value in finite):
+        raise ValueError("ratio values must be non-empty and finite")
+    try:
+        mad_multiplier = float(parameters["mad_multiplier"])
+        guard_band = float(parameters["small_sample_guard_band"])
+        discrimination_bound = float(
+            parameters["hard_gate_discrimination_bound"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("invalid policy parameters") from error
+    center = statistics.median(finite)
+    mad = statistics.median(abs(value - center) for value in finite)
+    max_observed_deviation = max(abs(value - center) for value in finite)
+    spread_based = center + max(mad_multiplier * mad, max_observed_deviation)
+    tail_based = max(finite) * guard_band
+    envelope_upper = max(spread_based, tail_based)
+    classification = (
+        "hard_gate"
+        if center > 0 and envelope_upper <= center * discrimination_bound
+        else "advisory_only"
+    )
+    return {
+        "center": center,
+        "mad": mad,
+        "relative_mad": round(mad / center, 6) if center else None,
+        "max_observed_deviation": max_observed_deviation,
+        "spread_based": round(spread_based, 9),
+        "tail_based": round(tail_based, 9),
+        "envelope_upper": round(envelope_upper, 9),
+        "envelope_upper_over_center": (
+            round(envelope_upper / center, 6) if center else None
+        ),
+        "classification": classification,
+    }
+
+
+class RuntimeRecipe(NamedTuple):
+    """Structurally parsed v1 policy runtime recipe."""
+
+    runner_os: str
+    runner_arch: str
+    python_major_minor: str
+    install_recipe: str
+    dependencies: dict[str, str]
+
+
+#: The EXACT dependency identity sequence of the v1 runtime recipe grammar.
+RUNTIME_RECIPE_DEPENDENCY_NAMES = ("dbf", "dbfread", "psutil")
+
+_PYTHON_COMPONENT_PATTERN = re.compile(r"^python-(\d+\.\d+)$")
+
+
+def parse_runtime_recipe(recipe: Any) -> tuple[RuntimeRecipe | None, list[str]]:
+    """THE single strict parser for the v1 policy runtime recipe.
+
+    Grammar (exactly seven ``|``-separated components, none empty):
+
+    ``runner_os | runner_arch | python-<major.minor> | install_recipe |``
+    ``dbf=<version> | dbfread=<version> | psutil=<version>``
+
+    Dependency components are positional and name-checked (wrong names,
+    duplicates, missing dependencies and malformed ``key=value`` parts are
+    rejected).  The parser fails closed and never leaks IndexError or
+    ValueError: it returns ``(None, problems)`` for ANY malformed recipe.
+    """
+    if not isinstance(recipe, str) or not recipe.strip():
+        return None, ["runtime_recipe must be a non-empty string"]
+    parts = recipe.split("|")
+    if len(parts) != 7:
+        return None, [
+            "runtime_recipe must have exactly 7 '|'-separated components "
+            f"(got {len(parts)})"
+        ]
+    problems: list[str] = []
+    runner_os, runner_arch, python_component, install_recipe = parts[:4]
+    if not runner_os:
+        problems.append("runtime_recipe runner_os component is empty")
+    if not runner_arch:
+        problems.append("runtime_recipe runner_arch component is empty")
+    if _PYTHON_COMPONENT_PATTERN.match(python_component) is None:
+        problems.append(
+            "runtime_recipe python component must be python-<major.minor> "
+            f"(got {python_component!r})"
+        )
+    if not install_recipe:
+        problems.append("runtime_recipe install_recipe component is empty")
+    dependencies: dict[str, str] = {}
+    for expected_name, part in zip(
+        RUNTIME_RECIPE_DEPENDENCY_NAMES, parts[4:], strict=True
+    ):
+        name, separator, version = part.partition("=")
+        if not separator:
+            problems.append(
+                f"runtime_recipe dependency component {part!r} is not "
+                f"key=value"
+            )
+            continue
+        if name != expected_name:
+            problems.append(
+                f"runtime_recipe dependency component {part!r} must start "
+                f"with {expected_name!r}="
+            )
+            continue
+        if not version or "=" in version:
+            problems.append(
+                f"runtime_recipe dependency {name!r} has an empty or "
+                f"malformed version"
+            )
+            continue
+        dependencies[name] = version
+    if problems or len(dependencies) != len(RUNTIME_RECIPE_DEPENDENCY_NAMES):
+        if not problems:
+            problems.append("runtime_recipe dependency components incomplete")
+        return None, problems
+    return (
+        RuntimeRecipe(
+            runner_os=runner_os,
+            runner_arch=runner_arch,
+            python_major_minor=python_component.removeprefix("python-"),
+            install_recipe=install_recipe,
+            dependencies=dependencies,
+        ),
+        [],
+    )
 
 
 class RatioDefinition(NamedTuple):

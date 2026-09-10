@@ -9,7 +9,10 @@ executed in these tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -202,10 +205,66 @@ def test_zero_hard_ratios_rejected_as_nondiscriminating(tmp_path: Path) -> None:
 
 
 def test_policy_reproducible_from_committed_inputs() -> None:
+    """F3B1-BLK-08: the COMMITTED policy file must equal the deterministic
+    generator output — structural equality AND byte equality under the
+    generator's canonical serialization.  A manually edited committed
+    envelope/runtime recipe/source field makes this test FAIL."""
     inputs = _inputs()
-    first = generator.generate_policy(inputs)
-    second = generator.generate_policy(inputs)
-    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+    generated = generator.generate_policy(inputs)
+    committed_path = (
+        ROOT / "benchmarks" / "regression"
+        / "direct-write-regression-policy-v1.json"
+    )
+    committed_text = committed_path.read_text(encoding="utf-8")
+    committed = json.loads(committed_text)
+    canonical = json.dumps(generated, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    # canonical structural equality (JSON-normalized structures)
+    assert json.loads(canonical) == committed
+    # deterministic serialized equality under the generator's serialization
+    assert committed_text == canonical
+
+
+def test_committed_policy_bytes_reproduce_via_cli(tmp_path: Path) -> None:
+    """F3B1-BLK-08 (%TEMP% gate): the CLI generator run in a fresh process
+    reproduces the committed policy bytes exactly."""
+    output = tmp_path / "policy.json"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run(
+        [
+            sys.executable, "-m",
+            "benchmarks.calibrate_direct_write_regression",
+            "--output", str(output),
+        ],
+        cwd=ROOT, capture_output=True, text=True, env=env, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    committed_path = (
+        ROOT / "benchmarks" / "regression"
+        / "direct-write-regression-policy-v1.json"
+    )
+    committed = committed_path.read_bytes()
+    generated = output.read_bytes()
+    assert hashlib.sha256(generated).hexdigest() == hashlib.sha256(
+        committed
+    ).hexdigest()
+    assert generated == committed
+
+
+def test_committed_policy_tamper_is_detectable() -> None:
+    """F3B1-BLK-08 (negative control): a finite manually edited committed
+    envelope (or recipe/source field) is detected as drift from the
+    deterministic generator output."""
+    inputs = _inputs()
+    generated = generator.generate_policy(inputs)
+    tampered = json.loads(json.dumps(generated))
+    tampered["ratio_calibration"]["W3/W1 peak-RSS-delta ratio"][
+        "envelope_upper"
+    ] = 5.0
+    tampered["runtime_recipe"] = "Windows|X64|python-3.14|" + tampered["runtime_recipe"].split("|", 3)[3]
+    assert tampered != generated
+    assert json.dumps(tampered, sort_keys=True) != json.dumps(
+        generated, sort_keys=True
+    )
 
 
 def test_policy_source_provenance_complete() -> None:
