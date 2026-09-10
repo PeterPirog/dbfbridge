@@ -20,7 +20,16 @@ the committed ``dbfbridge-direct-write-regression-policy-v1``:
   normalized wall ratios and the RAW W3/W1 peak-RSS-delta quotient;
 - malformed candidate numerics (non-finite/wrong-typed/overflowing) and
   COMPARABLE-but-unevaluated hard gates are deterministic FAILURES
-  (``CANDIDATE_MALFORMED`` / ``INCOMPLETE_EVIDENCE``) — never PASS.
+  (``CANDIDATE_MALFORMED`` / ``INCOMPLETE_EVIDENCE``) — never PASS;
+- the complete derived ratio/advisory statistics are RE-DERIVED from the
+  policy's own ``values`` with the single contract-module derivation
+  helper — a finite but tampered envelope/center/MAD/... is
+  ``INVALID_POLICY`` (F3B1-BLK-07);
+- ``accepted`` must be exactly ``true`` and ``problems`` exactly ``[]``
+  (F3B1-BLK-10);
+- the policy ``runtime_recipe`` must parse with the single strict grammar
+  parser — a malformed recipe is ``INVALID_POLICY`` and can never disable
+  performance comparison (F3B1-BLK-09).
 
 Deterministic, offline, stdlib-only; never benchmarks, never touches the
 network, never modifies the candidate or the policy.
@@ -38,8 +47,11 @@ from typing import Any
 from .direct_write_regression_contract import (
     MEASURED_SCENARIO_ORDER,
     NORMALIZATION_PER_RECORD,
+    POLICY_PARAMETER_VALUES,
     RATIO_DEFINITIONS_BY_LABEL,
     RATIO_LABELS,
+    derive_ratio_statistics,
+    parse_runtime_recipe,
 )
 from .direct_write_regression_contract import (
     SCENARIO_ORDER as _SCENARIO_ORDER,
@@ -47,12 +59,30 @@ from .direct_write_regression_contract import (
 
 RESULT_CONTRACT = "dbfbridge-direct-write-regression-result-v1"
 
-#: The EXACT three policy parameters (kind/rationale-bearing; §12).
-_POLICY_PARAMETERS = {
-    "mad_multiplier": 3.0,
-    "small_sample_guard_band": 1.15,
-    "hard_gate_discrimination_bound": 1.5,
-}
+#: The EXACT three policy parameters (single contract-module authority).
+_POLICY_PARAMETERS = POLICY_PARAMETER_VALUES
+
+#: Derived ratio fields the validator recomputes from ``values`` (F3B1-BLK-07).
+_DERIVED_RATIO_FIELDS = (
+    "center",
+    "mad",
+    "relative_mad",
+    "max_observed_deviation",
+    "spread_based",
+    "tail_based",
+    "envelope_upper",
+    "envelope_upper_over_center",
+    "classification",
+)
+
+#: Derived advisory fields recomputed per scenario (F3B1 §4).
+_DERIVED_ADVISORY_FIELDS = (
+    "center",
+    "mad",
+    "relative_mad",
+    "max_observed_deviation",
+    "advisory_envelope_upper",
+)
 
 _REQUIRED_RATIO_FIELDS = (
     "label",
@@ -157,8 +187,27 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
             problems.append(
                 "policy report SHA entries must be 64 lowercase hex characters"
             )
-    if not policy.get("runtime_recipe"):
-        problems.append("policy runtime_recipe missing")
+    # F3B1-BLK-09: the policy runtime_recipe must parse with the SINGLE
+    # strict grammar parser — a malformed recipe is an INVALID_POLICY (it
+    # can never silently disable performance comparison).
+    parsed_recipe, recipe_problems = parse_runtime_recipe(
+        policy.get("runtime_recipe")
+    )
+    if parsed_recipe is None:
+        problems.append(
+            "policy runtime_recipe structurally invalid: "
+            + "; ".join(recipe_problems)
+        )
+    # F3B1-BLK-10: policy STATUS contract — a policy that says it was not
+    # accepted must never be executable as a regression authority.
+    if policy.get("accepted") is not True:
+        problems.append("policy accepted must be exactly true")
+    policy_problems_field = policy.get("problems")
+    if (
+        not isinstance(policy_problems_field, list)
+        or policy_problems_field != []
+    ):
+        problems.append("policy problems must be an empty list")
     parameters = policy.get("parameters") or {}
     allowed_parameters = _POLICY_PARAMETERS
     if set(parameters) != set(allowed_parameters):
@@ -259,22 +308,37 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
         classification = spec.get("classification")
         if classification not in {"hard_gate", "advisory_only"}:
             problems.append(f"ratio {label!r}: invalid classification")
-        # mechanical classification re-derivation
-        if (
-            isinstance(center, (int, float))
-            and isinstance(envelope, (int, float))
-            and center > 0
-        ):
-            expected_classification = (
-                "hard_gate"
-                if envelope <= center * 1.5
-                else "advisory_only"
-            )
-            if classification != expected_classification:
-                problems.append(
-                    f"ratio {label!r}: classification tampered (expected "
-                    f"{expected_classification}, got {classification!r})"
-                )
+        # F3B1-BLK-07: mechanically re-derive the COMPLETE derived ratio
+        # specification from spec["values"] + the canonical v1 parameters
+        # with the SAME single helper (and rounding rules) the generator
+        # uses — a finite but different envelope/center/MAD/... can never
+        # masquerade as policy.
+        values_all_finite = all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in values
+        )
+        if values and values_all_finite:
+            try:
+                recomputed = derive_ratio_statistics(values, _POLICY_PARAMETERS)
+            except ValueError as error:
+                problems.append(f"ratio {label!r}: derivation rejected ({error})")
+                recomputed = None
+            if recomputed is not None:
+                for field in _DERIVED_RATIO_FIELDS:
+                    stored_value = spec.get(field)
+                    expected_value = recomputed[field]
+                    if stored_value != expected_value:
+                        problems.append(
+                            f"ratio {label!r}: {field} mismatch (stored "
+                            f"{stored_value!r} vs recomputed {expected_value!r})"
+                        )
+                if classification != recomputed["classification"]:
+                    problems.append(
+                        f"ratio {label!r}: classification tampered (expected "
+                        f"{recomputed['classification']!r}, got "
+                        f"{classification!r})"
+                    )
     hard_ratio_labels = policy.get("hard_ratio_labels")
     advisory_ratio_labels = policy.get("advisory_ratio_labels")
     if not isinstance(hard_ratio_labels, list) or not isinstance(
@@ -361,6 +425,40 @@ def validate_policy(policy: dict[str, Any]) -> list[str]:
                 problems.append(
                     f"scenario {scenario}: non-finite advisory {numeric_field}"
                 )
+        # F3B1-BLK-07/§4: the advisory descriptive statistics must remain
+        # truthful — mechanically re-derived from the scenario's own values
+        # with the same single helper and rounding rules.  This does NOT
+        # turn absolute walls into hard gates (classification stays
+        # advisory_only); it only protects their truthfulness.
+        advisory_values_all_finite = all(
+            isinstance(advisory_value, (int, float))
+            and not isinstance(advisory_value, bool)
+            and math.isfinite(float(advisory_value))
+            for advisory_value in advisory_values
+        )
+        if advisory_values and advisory_values_all_finite:
+            try:
+                recomputed = derive_ratio_statistics(
+                    advisory_values, _POLICY_PARAMETERS
+                )
+            except ValueError as error:
+                problems.append(
+                    f"scenario {scenario}: derivation rejected ({error})"
+                )
+                recomputed = None
+            if recomputed is not None:
+                for field in _DERIVED_ADVISORY_FIELDS:
+                    stored_value = spec.get(field)
+                    expected_value = recomputed.get(
+                        "envelope_upper"
+                        if field == "advisory_envelope_upper"
+                        else field
+                    )
+                    if stored_value != expected_value:
+                        problems.append(
+                            f"scenario {scenario}: {field} mismatch (stored "
+                            f"{stored_value!r} vs recomputed {expected_value!r})"
+                        )
     if policy.get("smoke_scenarios") != list(MEASURED_SCENARIO_ORDER):
         problems.append(
             "policy smoke_scenarios must match the canonical W1-W11 smoke "
@@ -506,15 +604,18 @@ def _comparability(
         return "NOT_COMPARABLE", checks, None
     checks: list[str] = []
     problems: list[str] = []
-    recipe_parts = str(policy.get("runtime_recipe") or "").split("|")
-    policy_runner_os = recipe_parts[0] if len(recipe_parts) > 0 else ""
-    policy_runner_arch = recipe_parts[1] if len(recipe_parts) > 1 else ""
-    policy_python_minor = (
-        recipe_parts[2].replace("python-", "") if len(recipe_parts) > 2 else ""
+    # F3B1-BLK-09: compare against the STRUCTURED recipe produced by the
+    # single strict parser (never an independent split of the raw string).
+    parsed_recipe, recipe_problems = parse_runtime_recipe(
+        policy.get("runtime_recipe")
     )
-    policy_install = recipe_parts[3] if len(recipe_parts) > 3 else ""
-    policy_deps_raw = recipe_parts[4:] if len(recipe_parts) > 4 else []
-    policy_deps = dict(part.split("=", 1) for part in policy_deps_raw if "=" in part)
+    if parsed_recipe is None:
+        checks.append(
+            "policy runtime_recipe invalid ("
+            + "; ".join(recipe_problems)
+            + ") — performance comparison disabled fail-closed"
+        )
+        return "NOT_COMPARABLE", checks, provenance
 
     candidate_runner_os = provenance.get("runner_os")
     candidate_runner_arch = provenance.get("runner_arch")
@@ -524,10 +625,10 @@ def _comparability(
     candidate_install = provenance.get("install_recipe")
 
     pairs = [
-        ("runner_os", candidate_runner_os, policy_runner_os),
-        ("runner_arch", candidate_runner_arch, policy_runner_arch),
-        ("python major.minor", candidate_python_minor, policy_python_minor),
-        ("install_recipe", candidate_install, policy_install),
+        ("runner_os", candidate_runner_os, parsed_recipe.runner_os),
+        ("runner_arch", candidate_runner_arch, parsed_recipe.runner_arch),
+        ("python major.minor", candidate_python_minor, parsed_recipe.python_major_minor),
+        ("install_recipe", candidate_install, parsed_recipe.install_recipe),
     ]
     for field, actual, expected in pairs:
         if actual == expected:
@@ -537,7 +638,7 @@ def _comparability(
             problems.append(field)
     for dependency in ("dbf", "dbfread", "psutil"):
         actual = (provenance.get("dependencies") or {}).get(dependency)
-        expected = policy_deps.get(dependency)
+        expected = parsed_recipe.dependencies.get(dependency)
         if actual == expected:
             checks.append(f"{dependency}: MATCH ({actual!r})")
         else:

@@ -24,17 +24,19 @@ import argparse
 import json
 import math
 import re
-import statistics
 from pathlib import Path
 from typing import Any
 
 from .direct_write_regression_contract import (
     FULL_SCENARIO_RECORD_COUNTS,
     MEASURED_SCENARIO_ORDER,
+    POLICY_PARAMETER_VALUES,
     RATIO_DEFINITIONS_BY_LABEL,
     RATIO_LABELS,
     SERIALIZATION_ROUNDING_TOLERANCE,
+    derive_ratio_statistics,
     evaluate_ratio_values,
+    parse_runtime_recipe,
 )
 
 #: Versioned Direct Write regression policy identity (SEPARATE from Phase 3).
@@ -51,10 +53,11 @@ _ARTIFACT_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 #: Versioned engineering policy parameters (repository methodology constants
 #: adopted from the proven Phase 3 calibration methodology; NOT measured
 #: facts — each carries an explicit rationale and Direct Write validation
-#: evidence recorded in the generated policy).
+#: evidence recorded in the generated policy).  The VALUES come from the
+#: single contract-module authority; only kind/rationale live here.
 PARAMETERS = {
     "mad_multiplier": {
-        "value": 3.0,
+        "value": POLICY_PARAMETER_VALUES["mad_multiplier"],
         "kind": "engineering_policy_parameter",
         "rationale": (
             "Standard 3-MAD dispersion envelope from the repository's proven "
@@ -63,7 +66,7 @@ PARAMETERS = {
         ),
     },
     "small_sample_guard_band": {
-        "value": 1.15,
+        "value": POLICY_PARAMETER_VALUES["small_sample_guard_band"],
         "kind": "engineering_policy_parameter",
         "rationale": (
             "Small-sample tail guard: five calibration samples cannot bound "
@@ -72,7 +75,7 @@ PARAMETERS = {
         ),
     },
     "hard_gate_discrimination_bound": {
-        "value": 1.5,
+        "value": POLICY_PARAMETER_VALUES["hard_gate_discrimination_bound"],
         "kind": "engineering_policy_parameter",
         "rationale": (
             "A ratio is hard-gated only when its envelope stays within 50 "
@@ -102,28 +105,21 @@ _CORRECTNESS_GATES = (
 SMOKE_SCENARIOS = MEASURED_SCENARIO_ORDER
 
 
-def _median_absolute_deviation(values: list[float], center: float) -> float:
-    return statistics.median(abs(value - center) for value in values)
+def _derive_ratio(
+    definition: Any, values: list[float], parameters: dict[str, dict]
+) -> dict[str, Any]:
+    """Mechanically derive one ratio calibration (F3B1 §10/§12).
 
-
-def _derive_ratio(definition: Any, values: list[float], parameters: dict[str, dict]) -> dict[str, Any]:
-    """Mechanically derive one ratio calibration (F3B1 §10/§12)."""
+    The distribution statistics are derived by the SINGLE mathematical
+    authority in the contract module (``derive_ratio_statistics``) — the
+    comparator re-derives with the same helper, so a finite tampered
+    statistic can never masquerade as policy (F3B1-BLK-07).
+    """
     finite = [float(value) for value in values]
     if not finite or any(not math.isfinite(value) for value in finite):
         raise ValueError(f"ratio {definition.label!r} contains non-finite values")
-    center = statistics.median(finite)
-    mad = _median_absolute_deviation(finite, center)
-    max_observed_deviation = max(abs(value - center) for value in finite)
-    mad_multiplier = float(parameters["mad_multiplier"]["value"])
-    guard_band = float(parameters["small_sample_guard_band"]["value"])
-    discrimination_bound = float(parameters["hard_gate_discrimination_bound"]["value"])
-    spread_based = center + max(mad_multiplier * mad, max_observed_deviation)
-    tail_based = max(finite) * guard_band
-    envelope_upper = max(spread_based, tail_based)
-    classification = (
-        "hard_gate"
-        if center > 0 and envelope_upper <= center * discrimination_bound
-        else "advisory_only"
+    stats = derive_ratio_statistics(
+        finite, {name: spec["value"] for name, spec in parameters.items()}
     )
     return {
         "label": definition.label,
@@ -136,45 +132,34 @@ def _derive_ratio(definition: Any, values: list[float], parameters: dict[str, di
         "metric": definition.metric,
         "normalization": definition.normalization,
         "values": finite,
-        "center": center,
-        "mad": mad,
-        "relative_mad": round(mad / center, 6) if center else None,
-        "max_observed_deviation": max_observed_deviation,
-        "spread_based": round(spread_based, 9),
-        "tail_based": round(tail_based, 9),
-        "envelope_upper": round(envelope_upper, 9),
-        "envelope_upper_over_center": (
-            round(envelope_upper / center, 6) if center else None
-        ),
-        "classification": classification,
+        **stats,
     }
 
 
 def _derive_scenario_advisory(
     scenario: str, values: list[float], parameters: dict[str, dict]
 ) -> dict[str, Any]:
-    """Absolute wall-time calibration is ADVISORY ONLY (never hard-fails)."""
+    """Absolute wall-time calibration is ADVISORY ONLY (never hard-fails).
+
+    Descriptive statistics come from the SAME single derivation helper the
+    comparator re-checks (F3B1-BLK-07); the envelope stays informational.
+    """
     finite = [float(value) for value in values]
     if not finite or any(not math.isfinite(value) for value in finite):
         raise ValueError(f"scenario {scenario!r} wall times contain non-finite values")
-    center = statistics.median(finite)
-    mad = _median_absolute_deviation(finite, center)
-    max_observed_deviation = max(abs(value - center) for value in finite)
-    mad_multiplier = float(parameters["mad_multiplier"]["value"])
-    guard_band = float(parameters["small_sample_guard_band"]["value"])
-    spread_based = center + max(mad_multiplier * mad, max_observed_deviation)
-    tail_based = max(finite) * guard_band
-    envelope_upper = max(spread_based, tail_based)
+    stats = derive_ratio_statistics(
+        finite, {name: spec["value"] for name, spec in parameters.items()}
+    )
     return {
         "scenario": scenario,
         "metric": "wall_seconds",
         "classification": ABSOLUTE_WALL_CLASSIFICATION,
         "values": finite,
-        "center": center,
-        "mad": mad,
-        "relative_mad": round(mad / center, 6) if center else None,
-        "max_observed_deviation": max_observed_deviation,
-        "advisory_envelope_upper": round(envelope_upper, 9),
+        "center": stats["center"],
+        "mad": stats["mad"],
+        "relative_mad": stats["relative_mad"],
+        "max_observed_deviation": stats["max_observed_deviation"],
+        "advisory_envelope_upper": stats["envelope_upper"],
         "note": (
             "Absolute wall time varies materially across hosted runners; this "
             "envelope is informational only and can NEVER hard-fail."
@@ -443,6 +428,10 @@ def validate_inputs(inputs: dict[str, Any]) -> list[str]:
         if not source.get(key):
             problems.append(f"missing source provenance {key}")
     problems.extend(_calibration_authority_problems(inputs))
+    # F3B1-BLK-09: the authoritative runtime recipe must parse with the
+    # SINGLE strict grammar parser before it may be copied into the policy.
+    _, recipe_problems = parse_runtime_recipe(inputs.get("runtime_recipe"))
+    problems.extend(f"runtime_recipe: {problem}" for problem in recipe_problems)
     samples = inputs.get("samples") or []
     identities = set()
     run_ids = set()
