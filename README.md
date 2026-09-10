@@ -18,16 +18,15 @@ reconstruction guarantees and CDX/raw-layout limitations are documented in the
 compatibility guide, and the encoding labels are selected legacy Polish
 examples rather than an exhaustive codec list.
 
-> **Status: 0.2.0 package metadata (alpha)** — the declared **v1.1
-> architecture is implemented on `main`**: all nine protected v1.0 operations
-> plus the additive v1.1 Direct Write contract
+> **Status: dbfbridge 1.1.0 (v1.1 public contract)** — the declared **v1.1
+> architecture is implemented on `main`**: all nine protected v1.0
+> operations plus the additive v1.1 Direct Write contract
 > ([docs/api-1.1.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.1.md)).
-> PyPI account access is **available**; the target release
-> `dbfbridge` **1.1.0** has not been published yet — the version bump, tag,
-> GitHub Release, and PyPI publication are deliberately deferred to the
-> controlled release step (not technically blocked). Test the result on a
-> copy of production data before using it as an archival replacement. CDX
-> index definitions are not reconstructed.
+> This commit is the dbfbridge **1.1.0** release state. See
+> [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
+> currently published versions. Test the result on a copy of production
+> data before using it as an archival replacement. CDX index definitions
+> are not reconstructed.
 
 ## Documentation
 
@@ -99,14 +98,11 @@ dbf-bridge --help
 
 > **Repository status:** the declared **v1.1 architecture is implemented on
 > `main`** (nine protected v1.0 operations plus the additive v1.1 Direct
-> Write contract).  **Release status:** a historical GitHub Release/tag
-> **v0.2.0 exists**; its historical 0.2.0 PyPI publishing attempt did not
-> complete, but **PyPI account access is now available** — the controlled
-> **1.1.0** release (version bump, tag, GitHub Release, PyPI publication) is
-> deliberately deferred to a dedicated release step and has **not** been
-> performed yet.  Package metadata remains `0.2.0` until that controlled
-> release-preparation commit.  The install-profile extras documented here are
-> the current contract (not an upcoming one): `pip install dbfbridge`
+> Write contract), and this commit is the **1.1.0** release state.  A
+> historical tag **v0.2.0 remains** as release history.  Check
+> [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
+> currently published versions.  The install-profile extras documented here
+> are the current contract (not an upcoming one): `pip install dbfbridge`
 > installs the minimal base profile and the extras below are opt-in.
 
 `[fast]` is **optional** by design: without `orjson`, JSON conversion uses the
