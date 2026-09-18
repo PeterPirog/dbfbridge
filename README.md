@@ -18,15 +18,14 @@ reconstruction guarantees and CDX/raw-layout limitations are documented in the
 compatibility guide, and the encoding labels are selected legacy Polish
 examples rather than an exhaustive codec list.
 
-> **Status: dbfbridge 1.1.0 (v1.1 public contract)** — the declared **v1.1
-> architecture is implemented on `main`**: all nine protected v1.0
-> operations plus the additive v1.1 Direct Write contract
+> **Status: dbfbridge 1.1.0 (public v1.1 contract implemented).** dbfbridge provides all nine
+> protected v1.0 operations plus the additive v1.1 Direct Write contract
 > ([docs/api-1.1.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.1.md)).
-> This commit is the dbfbridge **1.1.0** release state. See
-> [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
-> currently published versions. Test the result on a copy of production
-> data before using it as an archival replacement. CDX index definitions
-> are not reconstructed.
+> Published versions are available from
+> [PyPI](https://pypi.org/p/dbfbridge) and GitHub Releases; current `main`
+> may contain maintenance changes tracked under CHANGELOG `[Unreleased]`.
+> Test the result on a copy of production data before using it as an archival
+> replacement. CDX index definitions are not reconstructed.
 
 ## Documentation
 
@@ -98,8 +97,10 @@ dbf-bridge --help
 
 > **Repository status:** the declared **v1.1 architecture is implemented on
 > `main`** (nine protected v1.0 operations plus the additive v1.1 Direct
-> Write contract), and this commit is the **1.1.0** release state.  A
-> historical tag **v0.2.0 remains** as release history.  Check
+> Write contract). Published versions are available from PyPI and GitHub
+> Releases; current `main` may include maintenance changes tracked under
+> CHANGELOG `[Unreleased]`. A historical tag **v0.2.0 remains** as release
+> history. Check
 > [PyPI](https://pypi.org/p/dbfbridge) and the GitHub Releases page for the
 > currently published versions.  The install-profile extras documented here
 > are the current contract (not an upcoming one): `pip install dbfbridge`
@@ -412,7 +413,10 @@ print(result.records_written, result.dbf_sha256)
 pair (additive v1.1 API; requires the `[write]` extra; the caller iterable is
 consumed exactly once; `overwrite` defaults to `False`; failures are typed in
 the `DirectWriteError` family; canonical equivalence does not imply raw byte
-identity; structural CDX indexes are never fabricated). See `docs/api-1.1.md`.
+identity; structural CDX indexes are never fabricated). Nullable VFP fields
+preserve NULL as `None` — NULL and empty text are distinct logical states,
+and Direct Read -> Direct Write keeps that canonical state. See
+`docs/api-1.1.md`.
 
 ### API option reference
 

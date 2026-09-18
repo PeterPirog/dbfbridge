@@ -415,7 +415,11 @@ separate `DirectWriteError` family (`DestinationIoError`,
 `WriteSchemaInvalidError`, `WriteFieldUnsupportedError`, `WriteValueInvalidError`,
 `WriteMemoFailedError`, `WritePublicationFailedError`, `WriteCancelledError`).
 Canonical equivalence does not imply raw byte identity; structural CDX
-indexes require an external rebuild (`index_rebuild_required=True`). See
+indexes require an external rebuild (`index_rebuild_required=True`). The
+public 1.x contract distinguishes NULL (`None`) from empty text (`""`) on
+both the read and the write side: nullable VFP fields keep `None` and `""`
+as separate logical states across Direct Read -> Direct Write -> Direct
+Read, and the hidden `_NullFlags` column is writer-managed. See
 `docs/api-1.1.md` for the full contract.
 
 ## Full installation

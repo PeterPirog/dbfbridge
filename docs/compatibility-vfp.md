@@ -99,6 +99,56 @@ then its NULL bit when nullable):
 - the layout builder materializes its input once (one-shot generators
   accepted) — `test_nullflags_accepts_one_shot_iterable`.
 
+### Value-state truth (locked by `tests/test_null_fidelity.py`)
+
+For a NULLable field the `_NullFlags` NULL bit decides, never the appearance
+of the stored payload: **bit SET → `None`** (blank storage is never decoded
+into `''`/`0`/`Decimal('0')`); **bit CLEAR → decode normally**. The exact
+value states:
+
+- nullable `C`: `NULL` → `None`; empty text → `""`; non-empty → decoded text —
+  `test_nullable_c_tri_state_reads_none_empty_value`;
+- nullable `V`: `NULL` → `None`; empty → `""` (NULL bit CLEAR, varlength bit
+  SET, logical length byte 0); short value → exact logical value (length-byte
+  form); maximum-width value → exact full-width value (varlength bit CLEAR,
+  all declared bytes are data) —
+  `test_nullable_v_quartet_raw_bitmap_and_length_bytes`;
+- nullable numeric fields (`I`/`N`/`F`/`Y`/`B`/`O`): `NULL` → `None`; zero →
+  numeric zero; non-zero → decoded value; zero storage is never inferred as
+  NULL — `test_nullable_numeric_zero_stays_numeric_zero`.
+
+Canonical allocation (no one-byte assumption): bits are assigned in
+descriptor order — each `V`/`Q` column takes a **varlength** bit first and,
+when nullable, a **NULL** bit next; every other nullable column takes one
+NULL bit; the bitmap may span multiple bytes (bit `n` maps to byte
+`n // 8`, offset `n % 8`) —
+`test_mixed_bitmap_descriptor_order_allocation`,
+`test_cross_byte_nullflags_bitmap_direct_read`.
+
+Further invariants exercised by the matrix:
+
+- projection resolves selected-field NULL semantics from the physical bitmap
+  of the already-read record and never decodes unrelated application fields —
+  `test_unselected_undecodable_field_is_not_decoded_for_projection`;
+- Direct Write re-derives the canonical bitmap from logical values;
+  transported `_NullFlags` bytes cannot override `None`/`""`/value —
+  `test_writer_managed_bitmap_wins_over_transported_bytes`;
+- the private bounded spool preserves `None` vs `""` exactly, including the
+  forced disk-spill path —
+  `test_record_spool_preserves_none_vs_empty_after_disk_spill`;
+- the public round trip keeps every state distinct:
+  `Read(Write(Read(D))) ≡ Read(D)` —
+  `test_nullable_c_tri_state_public_round_trip`,
+  `test_nullable_v_quartet_projection_pagination_round_trip`,
+  `test_nullable_numeric_public_round_trip`,
+  `test_mixed_bitmap_public_round_trip`,
+  `test_cross_byte_bitmap_public_round_trip`.
+
+These value states are the v1.1.1 normative contract: the behavior already
+existed in the published 1.1.0 distribution and on `main` (independently
+reproduced against the PyPI wheel), and is now explicitly locked by the
+regression matrix — no runtime code correction was required.
+
 ## Text-policy boundary (Varchar)
 
 The single physical record loop owns the physical Varchar contract

@@ -8,10 +8,10 @@
 defaults, and semantics. Nothing from 1.0 was renamed, removed, or
 repurposed; v1.1 only adds Direct Write.
 
-> Release wording: this page describes the **implemented public v1.1
-> contract**. It is not a claim that a `1.1.0` package version is already
-> published — the version bump and publication belong to the controlled
-> release lifecycle (see the CHANGELOG `[Unreleased]` entry).
+> Release wording: this page defines the **implemented public v1.1 API
+> contract**. Published package versions are listed on
+> [PyPI](https://pypi.org/p/dbfbridge) and GitHub Releases; maintenance
+> changes on `main` are tracked under the CHANGELOG `[Unreleased]` section.
 
 ## 1. The new public operation
 
@@ -121,9 +121,43 @@ by parsing the message text.
   record boundaries and immediately before final publication; cancellation
   raises `WRITE_CANCELLED`, publishes nothing, and cleans staging.
 
+### NULL and empty-value fidelity (normative, locked by `tests/test_null_fidelity.py`)
+
+NULL semantics are controlled by the VFP `_NullFlags` bitmap, never by the
+appearance of the stored payload:
+
+- **NULL bit SET** → the public logical value is `None`; blank payload bytes
+  are never decoded into `""`, `0`, or a zero `Decimal`;
+- **NULL bit CLEAR** → the field is decoded normally.
+
+For nullable text this means `None`, `""`, and `"ABC"` remain three distinct
+logical states (nullable Character), and `None`, `""`, `"A"`, and the
+maximum-width value remain four distinct states (nullable Varchar):
+
+- empty Varchar: NULL bit CLEAR, varlength representation, logical length 0;
+- full-width Varchar: varlength bit CLEAR, all declared bytes are logical
+  data (no length-byte interpretation);
+- zero in a nullable numeric field is a number, never NULL.
+
+Additional invariants, all exercised by the committed regression matrix:
+
+- `iter_records(fields=[...])` preserves these semantics using the physical
+  bitmap of the already-read record; unrelated application fields stay
+  undecoded (an unselected undecodable field cannot cause
+  `TEXT_DECODE_ERROR`);
+- `read_records()` applies the same logical NULL contract as
+  `iter_records()`, including `offset`/`limit` pagination;
+- the public round-trip invariant `Read(Write(Read(D))) ≡ Read(D)` holds for
+  canonical logical values, including the NULL state;
+- `_NullFlags` is **writer-managed** for Direct Write: callers never compute
+  it, logical `None` values are authoritative, and transported bitmap bytes
+  cannot override logical values;
+- canonical equivalence (logical identity, bitmap normalized to the
+  canonical allocation) remains distinct from raw byte identity.
+
 ## 6. Versioning
 
 The v1.1 surface is additive per SemVer: no 1.0 symbol was removed or
-changed incompatibly, and the package version remains governed by the
-existing release lifecycle (the `1.1.0` bump happens in a controlled
-release step, not as a side effect of this promotion).
+changed incompatibly. Published package versions remain governed by the
+controlled release lifecycle; maintenance changes on `main` do not imply a
+new publication until the corresponding release is completed.
