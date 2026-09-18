@@ -7,19 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-18
+
 ### Changed
 - Explicit NULL/empty-string fidelity contract for nullable Visual FoxPro
   fields is now protected by a complete normative regression matrix
-  (`tests/test_null_fidelity.py`): NULL remains `None`, empty text remains
-  `""`, zero numeric values remain non-NULL zeros, and mixed plus
-  cross-byte `_NullFlags` bitmaps, field projection, `read_records`
-  pagination, the writer-managed bitmap, the private record spool, and the
-  public Direct Read -> Direct Write -> Direct Read round trip are all
-  covered (`Read(Write(Read(D))) ≡ Read(D)`).
+  (`tests/test_null_fidelity.py`): nullable Character preserves `None` / `""`
+  / value, nullable Varchar preserves `None` / `""` / short / maximum-width,
+  and nullable numeric fields preserve `None` / zero / non-zero.
+- Mixed and cross-byte `_NullFlags` bitmaps, field projection,
+  `read_records` pagination, writer-managed bitmap behavior, and private
+  bounded-spool replay all preserve the NULL/empty distinction. The public
+  Direct Read -> Direct Write -> Direct Read round trip preserves canonical
+  NULL state (`Read(Write(Read(D))) ≡ Read(D)`).
 - Phase A evidence proved this behavior already existed in the published
   1.1.0 distribution and on `main`; no runtime production-code correction
-  was required. The contract is documentation-locked only; the package
-  version stays under the controlled release lifecycle.
+  was required. This patch finalizes documentation and regression protection
+  for the existing runtime contract.
 
 ## [1.1.0] - 2026-09-10
 
@@ -178,6 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Development Status: Alpha (Direct Read Core stable, broader API stabilization continues)
 - Python 3.14 CI support added
 
-[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/PeterPirog/dbfbridge/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/PeterPirog/dbfbridge/compare/v0.2.0...v1.1.0
 [0.2.0]: https://github.com/PeterPirog/dbfbridge/tree/v0.2.0

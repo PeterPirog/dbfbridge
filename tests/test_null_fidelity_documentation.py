@@ -104,18 +104,23 @@ def test_python_examples_streaming_round_trip_contract() -> None:
     assert "writer-managed" in text.casefold()
 
 
-def test_changelog_unreleased_is_contract_not_fix() -> None:
+def test_changelog_release_is_contract_not_fix() -> None:
     text = _text(CHANGES)
-    # The [Unreleased] section must be present and before the [1.1.0] section.
-    unreleased = text.split("## [1.1.0]", 1)[0]
+    # A fresh empty [Unreleased] section precedes the dated patch release.
+    unreleased = text.split("## [1.1.1]", 1)[0]
     assert "## [Unreleased]" in unreleased
+    assert "### Changed" not in unreleased
+    release = text.split("## [1.1.1] - 2026-09-18", 1)[1].split(
+        "## [1.1.0]", 1
+    )[0]
     # Contract hardening language.
-    lowered = unreleased.casefold()
+    lowered = release.casefold()
     assert "contract" in lowered
     assert "null" in lowered
     assert "empty" in lowered
     # Explicit "no production fix" statement.
     assert "no runtime production-code correction" in lowered
+    assert "### Fixed" not in release
     # The 1.1.0 historical section is untouched.
     assert "## [1.1.0] - 2026-09-10" in text
 
