@@ -331,6 +331,32 @@ print(result.to_dict())       # JSON-safe payload (POSIX paths, warnings list)
   indexes are never fabricated (`index_rebuild_required=True` means "rebuild
   externally").
 
+### Direct Read → Direct Write → Direct Read (no intermediate JSONL)
+
+```python
+from dbfbridge import iter_records, read_schema, write_table
+
+schema = read_schema("data/KLIENCI.DBF")
+
+write_table(
+    "copy/KLIENCI.DBF",
+    schema=schema,
+    records=iter_records("data/KLIENCI.DBF", memo="inline", include_deleted=True),
+)
+
+# Re-read the destination: nullable fields keep NULL as None and empty text
+# as "" — two distinct logical states that survive the round trip.
+for record in iter_records("copy/KLIENCI.DBF", memo="inline"):
+    print(record.physical_index, record.deleted, record.values)
+```
+
+The write stream is the fresh `iter_records(...)` iterator itself — consumed
+exactly once, bounded memory, no JSONL intermediate. Nullable VFP text
+preserves the `None` versus `""` distinction (the `_NullFlags` NULL bit
+decides, never the blank payload); the hidden `_NullFlags` column is
+writer-managed and callers never touch it. The copy is canonical, not
+byte-identical (`Read(Write(Read(D))) ≡ Read(D)`).
+
 ## Progress and cancellation
 
 Direct Read operations accept `progress=` (a callback receiving
