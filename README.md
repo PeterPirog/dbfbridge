@@ -18,8 +18,9 @@ reconstruction guarantees and CDX/raw-layout limitations are documented in the
 compatibility guide, and the encoding labels are selected legacy Polish
 examples rather than an exhaustive codec list.
 
-> **Status: dbfbridge 1.1.0 (public v1.1 contract implemented).** dbfbridge provides all nine
-> protected v1.0 operations plus the additive v1.1 Direct Write contract
+> **Status: dbfbridge 1.1.1 (public v1.1 contract implemented).** This patch
+> hardens the documented NULL/empty-value fidelity contract while preserving
+> all nine protected v1.0 operations plus the additive v1.1 Direct Write contract
 > ([docs/api-1.1.md](https://github.com/PeterPirog/dbfbridge/blob/main/docs/api-1.1.md)).
 > Published versions are available from
 > [PyPI](https://pypi.org/p/dbfbridge) and GitHub Releases; current `main`

@@ -7,7 +7,7 @@ have a repository checkout, a `src/` directory, or any development tools.
 Everything here works with a normal `pip install`; nothing requires Git, an
 `examples/` folder, or `PYTHONPATH`.
 
-> **Availability note:** this guide documents the **dbfbridge 1.1.0
+> **Availability note:** this guide documents the **dbfbridge 1.1.1
 > installed-distribution contract** — nine protected v1.0 operations plus
 > the additive v1.1 Direct Write operation, with the install-profile extras
 > documented here as the current contract. Check
@@ -419,7 +419,8 @@ indexes require an external rebuild (`index_rebuild_required=True`). The
 public 1.x contract distinguishes NULL (`None`) from empty text (`""`) on
 both the read and the write side: nullable VFP fields keep `None` and `""`
 as separate logical states across Direct Read -> Direct Write -> Direct
-Read, and the hidden `_NullFlags` column is writer-managed. See
+Read (`Read(Write(Read(D))) ≡ Read(D)` for canonical logical state), and the
+hidden `_NullFlags` column is writer-managed. See
 `docs/api-1.1.md` for the full contract.
 
 ## Full installation

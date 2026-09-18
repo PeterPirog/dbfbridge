@@ -3,7 +3,7 @@
 Narrow, deterministic anti-drift tests for the maintained USER-FACING
 documentation that have no existing authority:
 
-- release truth: the release version (``1.1.0`` from F4B2 onward) is named
+- release truth: the release version (``1.1.1`` for this patch) is named
   durably, users are pointed at PyPI/GitHub Releases for the currently
   published versions, and no "PyPI blocked" / release-preparation wording
   returns to current-release documents;
@@ -95,7 +95,7 @@ def test_current_docs_do_not_target_final_1_0_0() -> None:
 
 
 def test_release_truth_is_current() -> None:
-    """Final 1.1.0 release-state contract (F4B2): the maintained surfaces
+    """Final 1.1.1 release-state contract: the maintained surfaces
     name the release version durably and point users at PyPI/GitHub
     Releases for the currently published versions — with NO permanently
     aging release-preparation wording ("not yet published", "deferred",
@@ -103,22 +103,22 @@ def test_release_truth_is_current() -> None:
     readme = _text(ROOT / "README.md")
     pypi = _text(ROOT / "docs" / "pypi-usage.md")
     for text in (readme, pypi):
-        assert "1.1.0" in text
+        assert "1.1.1" in text
         assert "PyPI" in text
         lowered = text.casefold()
         assert "not been published" not in lowered, lowered[:200]
         assert "deliberately deferred" not in lowered, lowered[:200]
         assert "publication pending" not in lowered, lowered[:200]
         assert "release preparation" not in lowered, lowered[:200]
-        assert "1.1.0 is currently the latest" not in lowered, lowered[:200]
+        assert "1.1.1 is currently the latest" not in lowered, lowered[:200]
     assert "github releases" in readme.casefold() or "Releases" in readme
     assert "pypi.org/p/dbfbridge" in readme or "PyPI" in readme
 
 
-def test_no_document_claims_1_1_0_is_already_published() -> None:
+def test_no_document_claims_1_1_1_is_already_published() -> None:
     for document in CURRENT_RELEASE_DOCS:
         text = _text(document)
-        assert not re.search(r"1\.1\.0\s+(is|has been)\s+publ", text, re.I), (
+        assert not re.search(r"1\.1\.1\s+(is|has been)\s+publ", text, re.I), (
             document.name
         )
 
@@ -173,7 +173,11 @@ def test_changelog_v0_2_0_link_uses_retained_tag_tree() -> None:
     assert "/releases/tag/v0.2.0" not in changelog
     # the surrounding release-state links stay as accepted
     assert (
-        "https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...HEAD"
+        "https://github.com/PeterPirog/dbfbridge/compare/v1.1.1...HEAD"
+        in changelog
+    )
+    assert (
+        "https://github.com/PeterPirog/dbfbridge/compare/v1.1.0...v1.1.1"
         in changelog
     )
     assert (
@@ -181,6 +185,8 @@ def test_changelog_v0_2_0_link_uses_retained_tag_tree() -> None:
         in changelog
     )
     # the historical [0.2.0] section itself is untouched
+    assert "## [1.1.1] - 2026-09-18" in changelog
+    assert "## [1.1.0] - 2026-09-10" in changelog
     assert "## [0.2.0] - 2026-09-01" in changelog
 
 
